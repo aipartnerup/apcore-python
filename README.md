@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="./apcore-logo.svg" alt="apcore logo" width="200"/>
+</div>
+
 # apcore
 
 Schema-driven module development framework for AI-perceivable interfaces.

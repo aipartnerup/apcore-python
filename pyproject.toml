@@ -6,12 +6,36 @@ build-backend = "setuptools.build_meta"
 name = "apcore"
 version = "0.1.0"
 description = "Schema-driven module development framework for AI-perceivable interfaces"
+readme = "README.md"
 requires-python = ">=3.11"
+authors = [
+    {name = "aipartnerup", email = "tercel.yi@gmail.com"}
+]
+license = {text = "Apache-2.0"}
+keywords = ["ai", "task-orchestration", "schema-driven", "llm", "framework", "pydantic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "pluggy>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://aipartnerup.com"
+Documentation = "https://github.com/aipartnerup/apcore"
+Repository = "https://github.com/aipartnerup/apcore"
+Issues = "https://github.com/aipartnerup/apcore/issues"
+Changelog = "https://github.com/aipartnerup/apcore/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
