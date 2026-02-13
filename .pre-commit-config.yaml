@@ -1,0 +1,26 @@
+repos:
+  # Custom import checks
+  - repo: local
+    hooks:
+      - id: check-allowed-chars
+        name: "Validate allowed character set"
+        entry: python scripts/check_allowed_chars.py
+        language: system
+        types: [text]
+        pass_filenames: true
+      - id: detect-circular-imports
+        name: Detect Circular Imports
+        entry: python scripts/detect_circular_imports.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # Ruff linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(src|tests)/
+      - id: ruff-format
+        files: ^(src|tests)/
