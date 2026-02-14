@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] - 2026-02-14
+## [0.2.0] - 2026-02-14
 
 ### Fixed
 
@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Robustness
 - **TracingMiddleware** - Added empty span stack guard in `after()` and `on_error()` to log a warning instead of raising `IndexError`
 - **Executor** - Set `daemon=True` on timeout and async bridge threads to prevent blocking process exit
+
+### Added
+
+#### Development Tooling
+- **apdev integration** - Added `apdev[dev]` as development dependency for code quality checks and project tooling
+- **pip install support** - Moved dev dependencies to `[project.optional-dependencies]` so `pip install -e ".[dev]"` works alongside `uv sync --group dev`
+- **pre-commit hooks** - Fixed `check-chars` and `check-imports` hooks to run as local hooks via `apdev` instead of incorrectly nesting under `ruff-pre-commit` repo
 
 ### Changed
 
@@ -81,5 +88,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[0.1.1]: https://github.com/aipartnerup/apcore-python/releases/tag/v0.1.1
+[0.2.0]: https://github.com/aipartnerup/apcore-python/releases/tag/v0.2.0
 [0.1.0]: https://github.com/aipartnerup/apcore-python/releases/tag/v0.1.0
