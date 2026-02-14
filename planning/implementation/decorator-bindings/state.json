@@ -1,0 +1,87 @@
+{
+  "feature": "decorator-bindings",
+  "created": "2026-02-13T00:00:00Z",
+  "updated": "2026-02-14T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "type-inference",
+    "function-module",
+    "module-decorator",
+    "binding-loader",
+    "schema-modes",
+    "binding-directory"
+  ],
+  "progress": {
+    "total_tasks": 6,
+    "completed": 6,
+    "in_progress": 0,
+    "pending": 0
+  },
+  "tasks": [
+    {
+      "id": "type-inference",
+      "file": "tasks/type-inference.md",
+      "title": "_generate_input_model/_generate_output_model from function signatures",
+      "status": "completed",
+      "started_at": "2026-02-13T08:00:00Z",
+      "completed_at": "2026-02-13T09:30:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "function-module",
+      "file": "tasks/function-module.md",
+      "title": "FunctionModule wrapper class (sync and async execute closures)",
+      "status": "completed",
+      "started_at": "2026-02-13T09:30:00Z",
+      "completed_at": "2026-02-13T11:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "module-decorator",
+      "file": "tasks/module-decorator.md",
+      "title": "@module decorator (bare and with arguments), auto-ID generation",
+      "status": "completed",
+      "started_at": "2026-02-13T11:00:00Z",
+      "completed_at": "2026-02-13T12:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "binding-loader",
+      "file": "tasks/binding-loader.md",
+      "title": "BindingLoader for YAML binding files",
+      "status": "completed",
+      "started_at": "2026-02-13T12:00:00Z",
+      "completed_at": "2026-02-13T13:30:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "schema-modes",
+      "file": "tasks/schema-modes.md",
+      "title": "4 schema modes (auto_schema, inline, schema_ref, default)",
+      "status": "completed",
+      "started_at": "2026-02-13T13:30:00Z",
+      "completed_at": "2026-02-13T15:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "binding-directory",
+      "file": "tasks/binding-directory.md",
+      "title": "Directory scanning for binding files",
+      "status": "completed",
+      "started_at": "2026-02-13T15:00:00Z",
+      "completed_at": "2026-02-13T15:30:00Z",
+      "assignee": null,
+      "commits": []
+    }
+  ],
+  "metadata": {
+    "source_doc": "planning/features/decorator-bindings.md",
+    "created_by": "code-forge",
+    "version": "1.0"
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "feature": "acl-system",
+  "created": "2026-02-13T00:00:00Z",
+  "updated": "2026-02-14T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "pattern-matching",
+    "acl-rule",
+    "acl-core",
+    "yaml-loading",
+    "conditional-rules"
+  ],
+  "progress": {
+    "total_tasks": 5,
+    "completed": 5,
+    "in_progress": 0,
+    "pending": 0
+  },
+  "tasks": [
+    {
+      "id": "pattern-matching",
+      "file": "tasks/pattern-matching.md",
+      "title": "Wildcard pattern matching utility (utils/pattern.py)",
+      "status": "completed",
+      "started_at": "2026-02-13T08:00:00Z",
+      "completed_at": "2026-02-13T09:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "acl-rule",
+      "file": "tasks/acl-rule.md",
+      "title": "ACLRule dataclass with callers/targets/effect/conditions",
+      "status": "completed",
+      "started_at": "2026-02-13T09:00:00Z",
+      "completed_at": "2026-02-13T09:30:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "acl-core",
+      "file": "tasks/acl-core.md",
+      "title": "ACL class with check(), first-match-wins evaluation, thread-safe",
+      "status": "completed",
+      "started_at": "2026-02-13T09:30:00Z",
+      "completed_at": "2026-02-13T11:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "yaml-loading",
+      "file": "tasks/yaml-loading.md",
+      "title": "ACL.load() for YAML configuration, reload support",
+      "status": "completed",
+      "started_at": "2026-02-13T11:00:00Z",
+      "completed_at": "2026-02-13T12:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "conditional-rules",
+      "file": "tasks/conditional-rules.md",
+      "title": "Conditions support (identity_types, roles, max_call_depth)",
+      "status": "completed",
+      "started_at": "2026-02-13T12:00:00Z",
+      "completed_at": "2026-02-13T13:00:00Z",
+      "assignee": null,
+      "commits": []
+    }
+  ],
+  "metadata": {
+    "source_doc": "planning/features/acl-system.md",
+    "created_by": "code-forge",
+    "version": "1.0"
+  }
+}

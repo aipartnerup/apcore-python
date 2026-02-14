@@ -1,0 +1,98 @@
+{
+  "feature": "observability",
+  "created": "2026-02-13T00:00:00Z",
+  "updated": "2026-02-14T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "span-model",
+    "exporters",
+    "tracing-middleware",
+    "metrics-collector",
+    "metrics-middleware",
+    "context-logger",
+    "obs-logging-middleware"
+  ],
+  "progress": {
+    "total_tasks": 7,
+    "completed": 7,
+    "in_progress": 0,
+    "pending": 0
+  },
+  "tasks": [
+    {
+      "id": "span-model",
+      "file": "tasks/span-model.md",
+      "title": "Span dataclass and SpanExporter protocol",
+      "status": "completed",
+      "started_at": "2026-02-13T08:00:00Z",
+      "completed_at": "2026-02-13T08:45:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "exporters",
+      "file": "tasks/exporters.md",
+      "title": "StdoutExporter, InMemoryExporter (bounded deque), OTLPExporter",
+      "status": "completed",
+      "started_at": "2026-02-13T08:45:00Z",
+      "completed_at": "2026-02-13T10:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "tracing-middleware",
+      "file": "tasks/tracing-middleware.md",
+      "title": "TracingMiddleware with stack-based spans, sampling strategies",
+      "status": "completed",
+      "started_at": "2026-02-13T10:00:00Z",
+      "completed_at": "2026-02-13T11:30:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "metrics-collector",
+      "file": "tasks/metrics-collector.md",
+      "title": "MetricsCollector with counters/histograms, Prometheus export",
+      "status": "completed",
+      "started_at": "2026-02-13T11:30:00Z",
+      "completed_at": "2026-02-13T13:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "metrics-middleware",
+      "file": "tasks/metrics-middleware.md",
+      "title": "MetricsMiddleware with stack-based timing",
+      "status": "completed",
+      "started_at": "2026-02-13T13:00:00Z",
+      "completed_at": "2026-02-13T13:45:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "context-logger",
+      "file": "tasks/context-logger.md",
+      "title": "ContextLogger with structured logging (JSON/text), redaction",
+      "status": "completed",
+      "started_at": "2026-02-13T13:45:00Z",
+      "completed_at": "2026-02-13T15:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "obs-logging-middleware",
+      "file": "tasks/obs-logging-middleware.md",
+      "title": "ObsLoggingMiddleware with stack-based timing",
+      "status": "completed",
+      "started_at": "2026-02-13T15:00:00Z",
+      "completed_at": "2026-02-13T15:45:00Z",
+      "assignee": null,
+      "commits": []
+    }
+  ],
+  "metadata": {
+    "source_doc": "planning/features/observability.md",
+    "created_by": "code-forge",
+    "version": "1.0"
+  }
+}

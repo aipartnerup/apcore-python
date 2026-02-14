@@ -1,0 +1,76 @@
+{
+  "feature": "core-executor",
+  "created": "2026-02-13T00:00:00Z",
+  "updated": "2026-02-14T00:00:00Z",
+  "status": "completed",
+  "execution_order": [
+    "setup",
+    "safety-checks",
+    "execution-pipeline",
+    "async-support",
+    "redaction"
+  ],
+  "progress": {
+    "total_tasks": 5,
+    "completed": 5,
+    "in_progress": 0,
+    "pending": 0
+  },
+  "tasks": [
+    {
+      "id": "setup",
+      "file": "tasks/setup.md",
+      "title": "Context, Identity, and Config Data Classes",
+      "status": "completed",
+      "started_at": "2026-02-13T08:00:00Z",
+      "completed_at": "2026-02-13T09:30:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "safety-checks",
+      "file": "tasks/safety-checks.md",
+      "title": "Call Depth Limits, Circular Detection, Frequency Throttling",
+      "status": "completed",
+      "started_at": "2026-02-13T09:30:00Z",
+      "completed_at": "2026-02-13T11:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "execution-pipeline",
+      "file": "tasks/execution-pipeline.md",
+      "title": "10-Step Synchronous Execution Pipeline",
+      "status": "completed",
+      "started_at": "2026-02-13T11:00:00Z",
+      "completed_at": "2026-02-13T15:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "async-support",
+      "file": "tasks/async-support.md",
+      "title": "Async Execution Path and Sync/Async Bridge",
+      "status": "completed",
+      "started_at": "2026-02-13T15:00:00Z",
+      "completed_at": "2026-02-13T18:00:00Z",
+      "assignee": null,
+      "commits": []
+    },
+    {
+      "id": "redaction",
+      "file": "tasks/redaction.md",
+      "title": "Sensitive Field Redaction Utility",
+      "status": "completed",
+      "started_at": "2026-02-13T18:00:00Z",
+      "completed_at": "2026-02-13T19:00:00Z",
+      "assignee": null,
+      "commits": []
+    }
+  ],
+  "metadata": {
+    "source_doc": "planning/features/core-executor.md",
+    "created_by": "code-forge",
+    "version": "1.0"
+  }
+}
