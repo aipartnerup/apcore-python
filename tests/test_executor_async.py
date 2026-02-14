@@ -93,9 +93,7 @@ class TestCallAsyncWithAsyncModule:
             input_schema = None
             output_schema = None
 
-            async def execute(
-                self, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any]:
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 return {"ok": True}
 
         ex = _make_executor(module=QuickAsync(), config=config)
@@ -167,9 +165,7 @@ class TestAsyncMiddleware:
         calls: list[str] = []
 
         class AsyncBeforeMW(Middleware):
-            async def before(
-                self, module_id: str, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any] | None:
+            async def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
                 calls.append("async_before")
                 return None
 
@@ -207,9 +203,7 @@ class TestAsyncMiddleware:
         calls: list[str] = []
 
         class SyncMW(Middleware):
-            def before(
-                self, module_id: str, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any] | None:
+            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
                 calls.append("sync_before")
                 return None
 

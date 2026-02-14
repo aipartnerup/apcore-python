@@ -112,9 +112,7 @@ class TestBindingCallableNotFoundError:
 
     def test_has_correct_code_and_includes_callable_name(self):
         """Error code is BINDING_CALLABLE_NOT_FOUND and details include callable name and module path."""
-        err = BindingCallableNotFoundError(
-            callable_name="send", module_path="myapp.email"
-        )
+        err = BindingCallableNotFoundError(callable_name="send", module_path="myapp.email")
         assert err.code == "BINDING_CALLABLE_NOT_FOUND"
         assert err.details["callable_name"] == "send"
         assert err.details["module_path"] == "myapp.email"
@@ -158,9 +156,7 @@ class TestBindingFileInvalidError:
 
     def test_has_correct_code_and_includes_file_path(self):
         """Error code is BINDING_FILE_INVALID and details include the file path."""
-        err = BindingFileInvalidError(
-            file_path="/etc/bindings.yaml", reason="empty file"
-        )
+        err = BindingFileInvalidError(file_path="/etc/bindings.yaml", reason="empty file")
         assert err.code == "BINDING_FILE_INVALID"
         assert err.details["file_path"] == "/etc/bindings.yaml"
         assert err.details["reason"] == "empty file"
@@ -689,9 +685,7 @@ class TestFunctionModuleConstructor:
 
     def test_description_from_explicit_param(self):
         """Explicit description parameter takes priority over docstring."""
-        fm = FunctionModule(
-            func=_greet, module_id="test.greet", description="Custom desc"
-        )
+        fm = FunctionModule(func=_greet, module_id="test.greet", description="Custom desc")
         assert fm.description == "Custom desc"
 
     def test_description_from_docstring(self):
@@ -1095,9 +1089,7 @@ class TestMakeAutoId:
         segments = auto_id.split(".")
         for seg in segments:
             if seg and seg[0].isdigit():
-                pytest.fail(
-                    f"Segment '{seg}' starts with digit but was not prepended with _"
-                )
+                pytest.fail(f"Segment '{seg}' starts with digit but was not prepended with _")
 
 
 class TestModuleRegistration:

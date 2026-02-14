@@ -117,9 +117,7 @@ class TestExecutorInit:
 
     def test_init_with_config(self) -> None:
         """Executor reads settings from config."""
-        config = Config(
-            data={"executor": {"default_timeout": 5000, "max_call_depth": 10}}
-        )
+        config = Config(data={"executor": {"default_timeout": 5000, "max_call_depth": 10}})
         reg = Registry()
         ex = Executor(registry=reg, config=config)
         assert ex._default_timeout == 5000
@@ -280,9 +278,7 @@ class TestCallFlow:
         before_calls: list[str] = []
 
         class TrackBefore(Middleware):
-            def before(
-                self, module_id: str, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any] | None:
+            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
                 before_calls.append(module_id)
                 return None
 
@@ -295,9 +291,7 @@ class TestCallFlow:
         mod = MockModule()
 
         class ModifyBefore(Middleware):
-            def before(
-                self, module_id: str, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any] | None:
+            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
                 return {**inputs, "name": "Modified"}
 
         ex = _make_executor(module=mod, middlewares=[ModifyBefore()])
@@ -416,9 +410,7 @@ class TestCallErrorHandling:
         on_error_calls: list[str] = []
 
         class FailBefore(Middleware):
-            def before(
-                self, module_id: str, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any] | None:
+            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
                 raise RuntimeError("before failed")
 
             def on_error(
@@ -546,9 +538,7 @@ class TestTimeout:
             input_schema = None
             output_schema = None
 
-            def execute(
-                self, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any]:
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 time.sleep(2)
                 return {"result": "slow"}
 
@@ -564,9 +554,7 @@ class TestTimeout:
             input_schema = None
             output_schema = None
 
-            def execute(
-                self, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any]:
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 return {"result": "quick"}
 
         config = Config(data={"executor": {"default_timeout": 0}})
@@ -583,9 +571,7 @@ class TestTimeout:
             input_schema = None
             output_schema = None
 
-            def execute(
-                self, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any]:
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 return {"result": "quick"}
 
         config = Config(data={"executor": {"default_timeout": -100}})
@@ -628,9 +614,7 @@ class TestAsyncCacheThreadSafety:
             input_schema = None
             output_schema = None
 
-            def execute(
-                self, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any]:
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 time.sleep(5)
                 return {"result": "slow"}
 

@@ -76,9 +76,7 @@ class LoggingMiddleware(Middleware):
 
         return None
 
-    def on_error(
-        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
-    ) -> None:
+    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context) -> None:
         """Log module error with redacted inputs and traceback."""
         if self._log_errors:
             redacted = getattr(context, "redacted_inputs", inputs)

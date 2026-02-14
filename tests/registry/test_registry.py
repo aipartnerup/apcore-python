@@ -246,9 +246,7 @@ class TestUnregister:
         reg.unregister("test.module")
         assert mod.unload_called is True
 
-    def test_unregister_on_unload_failure_still_unregisters(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_unregister_on_unload_failure_still_unregisters(self, caplog: pytest.LogCaptureFixture) -> None:
         """on_unload() failure is logged, but module is still removed."""
         reg = Registry()
         mod = _ModuleWithFailingOnUnload()
@@ -483,9 +481,7 @@ class TestDiscover:
         assert reg.has("hello")
         assert reg.has("world")
 
-    def test_discover_empty_dir(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_discover_empty_dir(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """discover() with empty dir returns 0."""
         ext = tmp_path / "extensions"
         ext.mkdir()
@@ -513,9 +509,7 @@ class TestDiscover:
         ext.mkdir()
         _write_module_file(ext / "mymod.py", "MyModModule", "Code description")
         meta = ext / "mymod_meta.yaml"
-        meta.write_text(
-            yaml.dump({"description": "YAML description", "tags": ["yaml_tag"]})
-        )
+        meta.write_text(yaml.dump({"description": "YAML description", "tags": ["yaml_tag"]}))
         reg = Registry(extensions_dir=str(ext))
         reg.discover()
         # Check that the merged metadata reflects YAML overrides
@@ -556,9 +550,7 @@ class LoadableModule:
         reg.discover()
         assert reg.has("loadable")
 
-    def test_discover_on_load_failure_skips(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_discover_on_load_failure_skips(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """discover() skips module whose on_load() fails."""
         ext = tmp_path / "extensions"
         ext.mkdir()

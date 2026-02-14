@@ -215,9 +215,7 @@ class TestStripExtensions:
         assert node == {"type": "integer"}
 
     def test_recursive_into_nested(self) -> None:
-        node: dict[str, Any] = {
-            "properties": {"a": {"x-sensitive": True, "type": "string"}}
-        }
+        node: dict[str, Any] = {"properties": {"a": {"x-sensitive": True, "type": "string"}}}
         _strip_extensions(node)
         assert node == {"properties": {"a": {"type": "string"}}}
 

@@ -72,9 +72,7 @@ class TestLoadMetadata:
 class TestParseDependencies:
     def test_list_of_dicts(self) -> None:
         """List of dicts returns DependencyInfo objects."""
-        result = parse_dependencies(
-            [{"module_id": "foo.bar"}, {"module_id": "baz.qux"}]
-        )
+        result = parse_dependencies([{"module_id": "foo.bar"}, {"module_id": "baz.qux"}])
         assert len(result) == 2
         assert result[0].module_id == "foo.bar"
         assert result[0].optional is False
@@ -180,9 +178,7 @@ class TestLoadIdMap:
     def test_class_override_present(self, tmp_path: Path) -> None:
         """Entry with class has class field in result."""
         f = tmp_path / "id_map.yaml"
-        f.write_text(
-            yaml.dump({"mappings": [{"file": "mod.py", "id": "m", "class": "MyClass"}]})
-        )
+        f.write_text(yaml.dump({"mappings": [{"file": "mod.py", "id": "m", "class": "MyClass"}]}))
         result = load_id_map(f)
         assert result["mod.py"]["class"] == "MyClass"
 

@@ -48,46 +48,32 @@ class SchemaValidator:
     def __init__(self, coerce_types: bool = True) -> None:
         self._coerce_types = coerce_types
 
-    def validate(
-        self, data: dict[str, Any], model: type[BaseModel]
-    ) -> SchemaValidationResult:
+    def validate(self, data: dict[str, Any], model: type[BaseModel]) -> SchemaValidationResult:
         """Validate data against a Pydantic model, returning a result object."""
         try:
             model.model_validate(data, strict=not self._coerce_types)
             return SchemaValidationResult(valid=True, errors=[])
         except PydanticValidationError as e:
-            return SchemaValidationResult(
-                valid=False, errors=self._pydantic_error_to_details(e)
-            )
+            return SchemaValidationResult(valid=False, errors=self._pydantic_error_to_details(e))
 
-    def validate_input(
-        self, data: dict[str, Any], model: type[BaseModel]
-    ) -> dict[str, Any]:
+    def validate_input(self, data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
         """Validate input data and return the validated dict. Raises SchemaValidationError on failure."""
         return self._validate_and_dump(data, model)
 
-    def validate_output(
-        self, data: dict[str, Any], model: type[BaseModel]
-    ) -> dict[str, Any]:
+    def validate_output(self, data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
         """Validate output data and return the validated dict. Raises SchemaValidationError on failure."""
         return self._validate_and_dump(data, model)
 
-    def _validate_and_dump(
-        self, data: dict[str, Any], model: type[BaseModel]
-    ) -> dict[str, Any]:
+    def _validate_and_dump(self, data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
         """Validate data and return model_dump(). Raises SchemaValidationError on failure."""
         try:
             instance = model.model_validate(data, strict=not self._coerce_types)
             return instance.model_dump()
         except PydanticValidationError as e:
-            result = SchemaValidationResult(
-                valid=False, errors=self._pydantic_error_to_details(e)
-            )
+            result = SchemaValidationResult(valid=False, errors=self._pydantic_error_to_details(e))
             raise result.to_error() from e
 
-    def _pydantic_error_to_details(
-        self, error: PydanticValidationError
-    ) -> list[SchemaValidationErrorDetail]:
+    def _pydantic_error_to_details(self, error: PydanticValidationError) -> list[SchemaValidationErrorDetail]:
         """Convert Pydantic v2 ValidationError to apcore error details."""
         details: list[SchemaValidationErrorDetail] = []
         for err in error.errors():

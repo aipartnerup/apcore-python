@@ -119,9 +119,7 @@ class TestLoad:
                     "Foo": {"type": "object", "properties": {"x": {"type": "string"}}},
                     "Bar": {"type": "integer"},
                 },
-                "$defs": {
-                    "Foo": {"type": "object", "properties": {"z": {"type": "boolean"}}}
-                },
+                "$defs": {"Foo": {"type": "object", "properties": {"z": {"type": "boolean"}}}},
             },
         )
         loader = make_loader(tmp_path)
@@ -129,9 +127,7 @@ class TestLoad:
         assert "Bar" in sd.definitions
         assert sd.definitions["Foo"]["properties"]["z"]["type"] == "boolean"
 
-    def test_long_description_logs_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_long_description_logs_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         write_yaml(
             tmp_path / "long.schema.yaml",
             {
@@ -352,9 +348,7 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {
-                    "status": {"type": "string", "enum": ["active", "inactive"]}
-                },
+                "properties": {"status": {"type": "string", "enum": ["active", "inactive"]}},
                 "required": ["status"],
             },
             "TestEnum",
@@ -416,9 +410,7 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {
-                    "age": {"type": "integer", "minimum": 0, "maximum": 150}
-                },
+                "properties": {"age": {"type": "integer", "minimum": 0, "maximum": 150}},
                 "required": ["age"],
             },
             "TestMinMax",
@@ -434,9 +426,7 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {
-                    "code": {"type": "string", "minLength": 3, "maxLength": 10}
-                },
+                "properties": {"code": {"type": "string", "minLength": 3, "maxLength": 10}},
                 "required": ["code"],
             },
             "TestStrLen",
@@ -500,9 +490,7 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {
-                    "value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
-                },
+                "properties": {"value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
                 "required": ["value"],
             },
             "TestOneOf",
@@ -515,9 +503,7 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {
-                    "value": {"anyOf": [{"type": "string"}, {"type": "integer"}]}
-                },
+                "properties": {"value": {"anyOf": [{"type": "string"}, {"type": "integer"}]}},
                 "required": ["value"],
             },
             "TestAnyOf",
@@ -689,9 +675,7 @@ class TestGetSchema:
 
         config = Config({"schema": {"root": str(tmp_path), "strategy": "native_first"}})
         loader = SchemaLoader(config, schemas_dir=tmp_path)
-        input_rs, _ = loader.get_schema(
-            "simple", native_input_schema=InputModel, native_output_schema=OutputModel
-        )
+        input_rs, _ = loader.get_schema("simple", native_input_schema=InputModel, native_output_schema=OutputModel)
         assert input_rs.model is InputModel
 
     def test_native_first_fallback_to_yaml(self, tmp_path: Path) -> None:
@@ -712,9 +696,7 @@ class TestGetSchema:
 
         config = Config({"schema": {"root": str(tmp_path), "strategy": "yaml_only"}})
         loader = SchemaLoader(config, schemas_dir=tmp_path)
-        input_rs, _ = loader.get_schema(
-            "simple", native_input_schema=InputModel, native_output_schema=OutputModel
-        )
+        input_rs, _ = loader.get_schema("simple", native_input_schema=InputModel, native_output_schema=OutputModel)
         assert input_rs.model is not InputModel
 
     def test_yaml_only_not_found_raises(self, tmp_path: Path) -> None:
@@ -739,9 +721,7 @@ class TestGetSchema:
 
         config = Config({"schema": {"root": str(tmp_path), "strategy": "native_first"}})
         loader = SchemaLoader(config, schemas_dir=tmp_path)
-        input_rs, _ = loader.get_schema(
-            "test", native_input_schema=ValidatedInput, native_output_schema=OutputModel
-        )
+        input_rs, _ = loader.get_schema("test", native_input_schema=ValidatedInput, native_output_schema=OutputModel)
         assert input_rs.model is ValidatedInput
 
 

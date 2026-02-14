@@ -32,9 +32,7 @@ class TestFullPipeline:
         result = executor.call("test.sync_module", {"name": "World"})
         assert result == {"greeting": "Hello, World!"}
 
-    def test_full_pipeline_with_middleware(
-        self, mock_registry: Registry, sample_middleware: Any
-    ) -> None:
+    def test_full_pipeline_with_middleware(self, mock_registry: Registry, sample_middleware: Any) -> None:
         """Middleware before/after called in correct order."""
         ex = Executor(registry=mock_registry, middlewares=[sample_middleware])
         result = ex.call("test.sync_module", {"name": "Alice"})
@@ -50,9 +48,7 @@ class TestFullPipeline:
         result = ex.call("test.sync_module", {"name": "Bob"})
         assert result == {"greeting": "Hello, Bob!"}
 
-    def test_full_pipeline_with_logging_middleware(
-        self, mock_registry: Registry
-    ) -> None:
+    def test_full_pipeline_with_logging_middleware(self, mock_registry: Registry) -> None:
         """LoggingMiddleware does not interfere with the pipeline."""
         ex = Executor(registry=mock_registry, middlewares=[LoggingMiddleware()])
         result = ex.call("test.sync_module", {"name": "Charlie"})
@@ -65,18 +61,14 @@ class TestFullPipeline:
 class TestCallChain:
     """Tests for module-to-module call chain propagation."""
 
-    def test_call_chain_propagation(
-        self, mock_registry: Registry, chain_module_factory: Any
-    ) -> None:
+    def test_call_chain_propagation(self, mock_registry: Registry, chain_module_factory: Any) -> None:
         """Module A calls module B via context.executor, chain propagates."""
         chain_module_factory("mod.a", calls="test.sync_module")
         ex = Executor(registry=mock_registry)
         result = ex.call("mod.a", {"name": "Chain"})
         assert result == {"greeting": "Hello, Chain!"}
 
-    def test_circular_detection(
-        self, mock_registry: Registry, chain_module_factory: Any
-    ) -> None:
+    def test_circular_detection(self, mock_registry: Registry, chain_module_factory: Any) -> None:
         """A->B->A raises CircularCallError."""
         chain_module_factory("mod.a", calls="mod.b")
         chain_module_factory("mod.b", calls="mod.a")
@@ -85,14 +77,10 @@ class TestCallChain:
             ex.call("mod.a", {"name": "test"})
         assert exc_info.value.module_id in ("mod.a", "mod.b")
 
-    def test_depth_exceeded(
-        self, mock_registry: Registry, chain_module_factory: Any
-    ) -> None:
+    def test_depth_exceeded(self, mock_registry: Registry, chain_module_factory: Any) -> None:
         """Self-recursive call chain exceeds max_call_depth."""
         chain_module_factory("mod.recursive", calls="mod.recursive")
-        config = Config(
-            data={"executor": {"max_call_depth": 5, "max_module_repeat": 100}}
-        )
+        config = Config(data={"executor": {"max_call_depth": 5, "max_module_repeat": 100}})
         ex = Executor(registry=mock_registry, config=config)
         with pytest.raises(CallDepthExceededError):
             ex.call("mod.recursive", {"name": "deep"})
@@ -219,9 +207,7 @@ class TestTimeoutIntegration:
         assert exc_info.value.timeout_ms == 100
 
     @pytest.mark.asyncio
-    async def test_async_timeout_with_slow_module(
-        self, mock_registry: Registry
-    ) -> None:
+    async def test_async_timeout_with_slow_module(self, mock_registry: Registry) -> None:
         """Async timeout with slow module raises ModuleTimeoutError."""
         config = Config(data={"executor": {"default_timeout": 100}})
         ex = Executor(registry=mock_registry, config=config)
@@ -301,21 +287,15 @@ class TestErrorConvenienceProperties:
         assert e.target_id == "db.write"
 
     def test_call_frequency_exceeded_module_id(self) -> None:
-        e = CallFrequencyExceededError(
-            module_id="X", count=5, max_repeat=3, call_chain=["X"]
-        )
+        e = CallFrequencyExceededError(module_id="X", count=5, max_repeat=3, call_chain=["X"])
         assert e.module_id == "X"
 
     def test_call_frequency_exceeded_count(self) -> None:
-        e = CallFrequencyExceededError(
-            module_id="X", count=5, max_repeat=3, call_chain=["X"]
-        )
+        e = CallFrequencyExceededError(module_id="X", count=5, max_repeat=3, call_chain=["X"])
         assert e.count == 5
 
     def test_call_frequency_exceeded_max_repeat(self) -> None:
-        e = CallFrequencyExceededError(
-            module_id="X", count=5, max_repeat=3, call_chain=["X"]
-        )
+        e = CallFrequencyExceededError(module_id="X", count=5, max_repeat=3, call_chain=["X"])
         assert e.max_repeat == 3
 
     def test_module_timeout_error_module_id(self) -> None:

@@ -190,9 +190,7 @@ class SchemaCircularRefError(ModuleError):
 class CallDepthExceededError(ModuleError):
     """Raised when call chain exceeds maximum depth."""
 
-    def __init__(
-        self, depth: int, max_depth: int, call_chain: list[str], **kwargs: Any
-    ) -> None:
+    def __init__(self, depth: int, max_depth: int, call_chain: list[str], **kwargs: Any) -> None:
         super().__init__(
             code="CALL_DEPTH_EXCEEDED",
             message=f"Call depth {depth} exceeds maximum {max_depth}",
@@ -277,9 +275,7 @@ class InvalidInputError(ModuleError):
 class FuncMissingTypeHintError(ModuleError):
     """Raised when a function parameter has no type annotation or a forward reference cannot be resolved."""
 
-    def __init__(
-        self, *, function_name: str, parameter_name: str, **kwargs: Any
-    ) -> None:
+    def __init__(self, *, function_name: str, parameter_name: str, **kwargs: Any) -> None:
         super().__init__(
             code="FUNC_MISSING_TYPE_HINT",
             message=(

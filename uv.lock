@@ -23,6 +23,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "apdev", extra = ["dev"] },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -39,11 +40,28 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "apdev", extras = ["dev"], specifier = ">=0.1.0" },
     { name = "mypy", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-asyncio", specifier = ">=0.21" },
     { name = "pytest-cov", specifier = ">=4.0" },
     { name = "ruff", specifier = ">=0.1.0" },
+]
+
+[[package]]
+name = "apdev"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/8f/1098ee1009e610a528563143db7ad4285a5503efdb09fc29a3605b296bd0/apdev-0.1.0.tar.gz", hash = "sha256:e2ff54a34a0da63752527c536d83df41bceb4f68428780ec4dbfb4b7afddc449", size = 17067, upload-time = "2026-02-14T04:30:34.419Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/e8/887798802073396b2ba0a50dac315cc8b122504c7c77de391a1020065930/apdev-0.1.0-py3-none-any.whl", hash = "sha256:94f598997328d43d94c23d01df72b479f0b68ddb830e650b4092ba1da4ebf0f0", size = 14673, upload-time = "2026-02-14T04:30:31.711Z" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
 ]
 
 [[package]]

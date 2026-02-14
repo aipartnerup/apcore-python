@@ -41,9 +41,7 @@ _logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def redact_sensitive(
-    data: dict[str, Any], schema_dict: dict[str, Any]
-) -> dict[str, Any]:
+def redact_sensitive(data: dict[str, Any], schema_dict: dict[str, Any]) -> dict[str, Any]:
     """Redact fields marked with x-sensitive in the schema.
 
     Implements Algorithm A13 from PROTOCOL_SPEC section 9.5.
@@ -83,20 +81,12 @@ def _redact_fields(data: dict[str, Any], schema_dict: dict[str, Any]) -> None:
             continue
 
         # Nested object: recurse
-        if (
-            field_schema.get("type") == "object"
-            and "properties" in field_schema
-            and isinstance(value, dict)
-        ):
+        if field_schema.get("type") == "object" and "properties" in field_schema and isinstance(value, dict):
             _redact_fields(value, field_schema)
             continue
 
         # Array: redact items
-        if (
-            field_schema.get("type") == "array"
-            and "items" in field_schema
-            and isinstance(value, list)
-        ):
+        if field_schema.get("type") == "array" and "items" in field_schema and isinstance(value, list):
             items_schema = field_schema["items"]
             if items_schema.get("x-sensitive") is True:
                 for i, item in enumerate(value):
@@ -258,18 +248,14 @@ class Executor:
                     errors=errors,
                 ) from e
 
-            ctx.redacted_inputs = redact_sensitive(
-                inputs, module.input_schema.model_json_schema()
-            )
+            ctx.redacted_inputs = redact_sensitive(inputs, module.input_schema.model_json_schema())
 
         executed_middlewares: list[Middleware] = []
 
         try:
             # Step 6 -- Middleware Before
             try:
-                inputs, executed_middlewares = self._middleware_manager.execute_before(
-                    module_id, inputs, ctx
-                )
+                inputs, executed_middlewares = self._middleware_manager.execute_before(module_id, inputs, ctx)
             except MiddlewareChainError as mce:
                 executed_middlewares = mce.executed_middlewares
                 recovery = self._middleware_manager.execute_on_error(
@@ -302,16 +288,12 @@ class Executor:
                     ) from e
 
             # Step 9 -- Middleware After
-            output = self._middleware_manager.execute_after(
-                module_id, inputs, output, ctx
-            )
+            output = self._middleware_manager.execute_after(module_id, inputs, output, ctx)
 
         except Exception as exc:
             # Error handling for steps 6-9
             if executed_middlewares:
-                recovery = self._middleware_manager.execute_on_error(
-                    module_id, inputs, exc, ctx, executed_middlewares
-                )
+                recovery = self._middleware_manager.execute_on_error(module_id, inputs, exc, ctx, executed_middlewares)
                 if recovery is not None:
                     return recovery
             raise
@@ -412,9 +394,7 @@ class Executor:
 
         # Async module in sync context: bridge to async
         if self._is_async_module(module_id, module):
-            return self._run_async_in_sync(
-                module.execute(inputs, ctx), module_id, timeout_ms
-            )
+            return self._run_async_in_sync(module.execute(inputs, ctx), module_id, timeout_ms)
 
         if timeout_ms == 0:
             _logger.warning("Timeout disabled for module %s", module_id)
@@ -463,9 +443,7 @@ class Executor:
         else:
             return self._run_in_new_thread(coro, module_id, timeout_s)
 
-    def _run_in_new_thread(
-        self, coro: Any, module_id: str, timeout_s: float | None
-    ) -> Any:
+    def _run_in_new_thread(self, coro: Any, module_id: str, timeout_s: float | None) -> Any:
         """Run coroutine in a new thread with its own event loop."""
         result_holder: dict[str, Any] = {}
         exception_holder: dict[str, Exception] = {}
@@ -475,9 +453,7 @@ class Executor:
             asyncio.set_event_loop(loop)
             try:
                 if timeout_s is not None:
-                    result_holder["output"] = loop.run_until_complete(
-                        asyncio.wait_for(coro, timeout=timeout_s)
-                    )
+                    result_holder["output"] = loop.run_until_complete(asyncio.wait_for(coro, timeout=timeout_s))
                 else:
                     result_holder["output"] = loop.run_until_complete(coro)
             except asyncio.TimeoutError:
@@ -554,9 +530,7 @@ class Executor:
                     message="Input validation failed",
                     errors=errors,
                 ) from e
-            ctx.redacted_inputs = redact_sensitive(
-                inputs, module.input_schema.model_json_schema()
-            )
+            ctx.redacted_inputs = redact_sensitive(inputs, module.input_schema.model_json_schema())
 
         executed_middlewares: list[Middleware] = []
 
@@ -604,9 +578,7 @@ class Executor:
         except Exception as exc:
             # Error handling for steps 6-9
             if executed_middlewares:
-                recovery = await self._execute_on_error_async(
-                    module_id, inputs, exc, ctx, executed_middlewares
-                )
+                recovery = await self._execute_on_error_async(module_id, inputs, exc, ctx, executed_middlewares)
                 if recovery is not None:
                     return recovery
             raise
@@ -614,9 +586,7 @@ class Executor:
         # Step 10 -- Return
         return output
 
-    async def _execute_async(
-        self, module: Any, module_id: str, inputs: dict[str, Any], ctx: Context
-    ) -> dict[str, Any]:
+    async def _execute_async(self, module: Any, module_id: str, inputs: dict[str, Any], ctx: Context) -> dict[str, Any]:
         """Execute module asynchronously with timeout."""
         timeout_ms = self._default_timeout
 

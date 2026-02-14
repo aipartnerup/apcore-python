@@ -34,9 +34,7 @@ class TestEndToEndFlow:
         executor.call("greet", {"name": "Alice"})
         assert len(recorder.contexts) == 1
         trace_id = recorder.contexts[0].trace_id
-        pattern = (
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        )
+        pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         assert re.match(pattern, trace_id)
 
     def test_trace_id_propagates_through_nested_calls(self):

@@ -37,13 +37,19 @@ Repository = "https://github.com/aipartnerup/apcore"
 Issues = "https://github.com/aipartnerup/apcore/issues"
 Changelog = "https://github.com/aipartnerup/apcore/blob/main/CHANGELOG.md"
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
+    "apdev[dev]>=0.1.0",
+]
+
+[dependency-groups]
+dev = [
+    {include-group = "dev"},
 ]
 
 [tool.setuptools.packages.find]
@@ -60,3 +66,7 @@ strict = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.apdev]
+base_package = "apcore"
+src_dir = "src"

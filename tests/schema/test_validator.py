@@ -81,63 +81,39 @@ class TestValidate:
         assert any(e.constraint == "required" for e in result.errors)
 
     def test_wrong_type_strict(self, strict_validator: SchemaValidator) -> None:
-        result = strict_validator.validate(
-            {"name": "Alice", "age": "not_a_number"}, SimpleModel
-        )
+        result = strict_validator.validate({"name": "Alice", "age": "not_a_number"}, SimpleModel)
         assert result.valid is False
         assert any(e.constraint == "type" for e in result.errors)
 
     def test_pattern_mismatch(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "AB", "count": 5, "code": "abc"}, ConstrainedModel
-        )
+        result = validator.validate({"name": "AB", "count": 5, "code": "abc"}, ConstrainedModel)
         assert result.valid is False
-        assert any(
-            e.path == "/code" and e.constraint == "pattern" for e in result.errors
-        )
+        assert any(e.path == "/code" and e.constraint == "pattern" for e in result.errors)
 
     def test_below_minimum(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "AB", "count": -1, "code": "ABC"}, ConstrainedModel
-        )
+        result = validator.validate({"name": "AB", "count": -1, "code": "ABC"}, ConstrainedModel)
         assert result.valid is False
-        assert any(
-            e.path == "/count" and e.constraint == "minimum" for e in result.errors
-        )
+        assert any(e.path == "/count" and e.constraint == "minimum" for e in result.errors)
 
     def test_above_maximum(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "AB", "count": 101, "code": "ABC"}, ConstrainedModel
-        )
+        result = validator.validate({"name": "AB", "count": 101, "code": "ABC"}, ConstrainedModel)
         assert result.valid is False
-        assert any(
-            e.path == "/count" and e.constraint == "maximum" for e in result.errors
-        )
+        assert any(e.path == "/count" and e.constraint == "maximum" for e in result.errors)
 
     def test_string_too_short(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "A", "count": 5, "code": "ABC"}, ConstrainedModel
-        )
+        result = validator.validate({"name": "A", "count": 5, "code": "ABC"}, ConstrainedModel)
         assert result.valid is False
-        assert any(
-            e.path == "/name" and e.constraint == "minLength" for e in result.errors
-        )
+        assert any(e.path == "/name" and e.constraint == "minLength" for e in result.errors)
 
     def test_string_too_long(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "A" * 51, "count": 5, "code": "ABC"}, ConstrainedModel
-        )
+        result = validator.validate({"name": "A" * 51, "count": 5, "code": "ABC"}, ConstrainedModel)
         assert result.valid is False
-        assert any(
-            e.path == "/name" and e.constraint == "maxLength" for e in result.errors
-        )
+        assert any(e.path == "/name" and e.constraint == "maxLength" for e in result.errors)
 
     def test_enum_invalid(self, validator: SchemaValidator) -> None:
         result = validator.validate({"status": "unknown"}, EnumModel)
         assert result.valid is False
-        assert any(
-            e.path == "/status" and e.constraint == "enum" for e in result.errors
-        )
+        assert any(e.path == "/status" and e.constraint == "enum" for e in result.errors)
 
     def test_multiple_errors(self, validator: SchemaValidator) -> None:
         result = validator.validate({}, SimpleModel)
@@ -155,9 +131,7 @@ class TestValidate:
         assert any("/items/0/quantity" in e.path for e in result.errors)
 
     def test_extra_properties_strict(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "Alice", "value": 1, "extra": "nope"}, StrictModel
-        )
+        result = validator.validate({"name": "Alice", "value": 1, "extra": "nope"}, StrictModel)
         assert result.valid is False
         assert any(e.constraint == "additionalProperties" for e in result.errors)
 
@@ -222,23 +196,17 @@ class TestErrorConversion:
         assert name_err.constraint == "type"
 
     def test_min_length_constraint(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "A", "count": 5, "code": "ABC"}, ConstrainedModel
-        )
+        result = validator.validate({"name": "A", "count": 5, "code": "ABC"}, ConstrainedModel)
         name_err = next(e for e in result.errors if e.path == "/name")
         assert name_err.constraint == "minLength"
 
     def test_pattern_constraint(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "AB", "count": 5, "code": "abc"}, ConstrainedModel
-        )
+        result = validator.validate({"name": "AB", "count": 5, "code": "abc"}, ConstrainedModel)
         code_err = next(e for e in result.errors if e.path == "/code")
         assert code_err.constraint == "pattern"
 
     def test_minimum_constraint(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "AB", "count": -1, "code": "ABC"}, ConstrainedModel
-        )
+        result = validator.validate({"name": "AB", "count": -1, "code": "ABC"}, ConstrainedModel)
         count_err = next(e for e in result.errors if e.path == "/count")
         assert count_err.constraint == "minimum"
 
@@ -248,9 +216,7 @@ class TestErrorConversion:
         assert status_err.constraint == "enum"
 
     def test_additional_properties_constraint(self, validator: SchemaValidator) -> None:
-        result = validator.validate(
-            {"name": "Alice", "value": 1, "extra": "x"}, StrictModel
-        )
+        result = validator.validate({"name": "Alice", "value": 1, "extra": "x"}, StrictModel)
         assert any(e.constraint == "additionalProperties" for e in result.errors)
 
     def test_loc_to_path(self, validator: SchemaValidator) -> None:

@@ -95,9 +95,7 @@ class SchemaValidationResult:
             }
             for e in self.errors
         ]
-        return SchemaValidationError(
-            message="Schema validation failed", errors=error_dicts
-        )
+        return SchemaValidationError(message="Schema validation failed", errors=error_dicts)
 
 
 @dataclass

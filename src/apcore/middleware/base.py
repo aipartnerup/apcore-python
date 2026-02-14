@@ -14,9 +14,7 @@ class Middleware:
     default, which signals 'no modification' to the middleware pipeline.
     """
 
-    def before(
-        self, module_id: str, inputs: dict[str, Any], context: Context
-    ) -> dict[str, Any] | None:
+    def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
         """Called before module execution. Return modified inputs or None."""
         return None
 

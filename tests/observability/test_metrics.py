@@ -117,20 +117,14 @@ class TestMetricsCollectorPrometheus:
     def test_export_prometheus_format(self):
         """Output string follows Prometheus text exposition conventions."""
         c = MetricsCollector()
-        c.increment(
-            "apcore_module_calls_total", {"module_id": "greet", "status": "success"}, 10
-        )
+        c.increment("apcore_module_calls_total", {"module_id": "greet", "status": "success"}, 10)
         output = c.export_prometheus()
-        assert (
-            'apcore_module_calls_total{module_id="greet",status="success"} 10' in output
-        )
+        assert 'apcore_module_calls_total{module_id="greet",status="success"} 10' in output
 
     def test_export_prometheus_type_help(self):
         """Each metric family starts with # HELP and # TYPE lines."""
         c = MetricsCollector()
-        c.increment(
-            "apcore_module_calls_total", {"module_id": "greet", "status": "success"}
-        )
+        c.increment("apcore_module_calls_total", {"module_id": "greet", "status": "success"})
         output = c.export_prometheus()
         assert "# HELP apcore_module_calls_total Total module calls" in output
         assert "# TYPE apcore_module_calls_total counter" in output
@@ -165,9 +159,7 @@ class TestMetricsCollectorConfiguration:
         lk = (("x", "1"),)
         # Only 3 bucket entries + inf
         bucket_keys = [k for k in snap["histograms"]["buckets"] if k[0] == "test"]
-        assert (
-            len(bucket_keys) == 3
-        )  # 5.0, 10.0, +Inf (not 1.0 since 3.0 > 1.0... wait, keys always exist)
+        assert len(bucket_keys) == 3  # 5.0, 10.0, +Inf (not 1.0 since 3.0 > 1.0... wait, keys always exist)
         # Actually the keys only exist if incremented. Let's check values.
         assert snap["histograms"]["buckets"].get(("test", lk, 1.0), 0) == 0
         assert snap["histograms"]["buckets"][("test", lk, 5.0)] == 1
@@ -186,9 +178,7 @@ class TestMetricsCollectorThreadSafety:
         c = MetricsCollector()
         threads = []
         for _ in range(100):
-            t = threading.Thread(
-                target=lambda: [c.increment("counter", {"t": "1"}) for _ in range(100)]
-            )
+            t = threading.Thread(target=lambda: [c.increment("counter", {"t": "1"}) for _ in range(100)])
             threads.append(t)
         for t in threads:
             t.start()

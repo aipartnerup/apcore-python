@@ -179,14 +179,10 @@ class TestEndToEnd:
 
         class TestMod:
             input_schema = type("I", (BaseModel,), {"__annotations__": {"value": str}})
-            output_schema = type(
-                "O", (BaseModel,), {"__annotations__": {"result": str}}
-            )
+            output_schema = type("O", (BaseModel,), {"__annotations__": {"result": str}})
             description = "test"
 
-            def execute(
-                self, inputs: dict[str, Any], context: Any = None
-            ) -> dict[str, Any]:
+            def execute(self, inputs: dict[str, Any], context: Any = None) -> dict[str, Any]:
                 return {"result": "ok"}
 
         register_mock = MagicMock()
@@ -252,9 +248,7 @@ class TestEndToEnd:
 
         ext = tmp_path / "extensions"
         ext.mkdir()
-        _write_module_file(
-            ext, "mymod.py", "MyModule", "Code description", tags=["code-tag"]
-        )
+        _write_module_file(ext, "mymod.py", "MyModule", "Code description", tags=["code-tag"])
         _write_meta_yaml(
             ext,
             "mymod",
@@ -291,9 +285,7 @@ class TestEndToEnd:
         assert not reg.has("broken_mod")
         assert not reg.has("empty_mod")
 
-    def test_conftest_fixtures_smoke(
-        self, registry: Any, sample_module_class: type
-    ) -> None:
+    def test_conftest_fixtures_smoke(self, registry: Any, sample_module_class: type) -> None:
         """Smoke test: conftest fixtures work correctly."""
         from apcore.registry.registry import Registry
 

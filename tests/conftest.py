@@ -99,9 +99,7 @@ class RecordingMiddleware(Middleware):
         self.after_calls.append((module_id, inputs, output))
         return None
 
-    def on_error(
-        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
-    ) -> None:
+    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context) -> None:
         self.error_calls.append((module_id, inputs, error))
         return None
 
@@ -191,9 +189,7 @@ def chain_module_factory(mock_registry: Registry) -> Any:
             def __init__(self, target: str | None) -> None:
                 self._target = target
 
-            def execute(
-                self, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any]:
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 if self._target:
                     return context.executor.call(self._target, inputs, context)
                 return {"greeting": f"Hello, {inputs['name']}!"}

@@ -36,16 +36,12 @@ class MetricsCollector:
     ]
 
     def __init__(self, buckets: list[float] | None = None) -> None:
-        self._buckets = (
-            sorted(buckets) if buckets is not None else list(self.DEFAULT_BUCKETS)
-        )
+        self._buckets = sorted(buckets) if buckets is not None else list(self.DEFAULT_BUCKETS)
         self._lock = threading.Lock()
         self._counters: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
         self._histogram_sums: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
         self._histogram_counts: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
-        self._histogram_buckets: dict[
-            tuple[str, tuple[tuple[str, str], ...], float], int
-        ] = {}
+        self._histogram_buckets: dict[tuple[str, tuple[tuple[str, str], ...], float], int] = {}
 
     @staticmethod
     def _labels_key(labels: dict[str, str]) -> tuple[tuple[str, str], ...]:
@@ -65,14 +61,10 @@ class MetricsCollector:
             for b in self._buckets:
                 if value <= b:
                     bkey = (name, labels_key, b)
-                    self._histogram_buckets[bkey] = (
-                        self._histogram_buckets.get(bkey, 0) + 1
-                    )
+                    self._histogram_buckets[bkey] = self._histogram_buckets.get(bkey, 0) + 1
             # Always increment +Inf
             inf_key = (name, labels_key, float("inf"))
-            self._histogram_buckets[inf_key] = (
-                self._histogram_buckets.get(inf_key, 0) + 1
-            )
+            self._histogram_buckets[inf_key] = self._histogram_buckets.get(inf_key, 0) + 1
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -127,17 +119,13 @@ class MetricsCollector:
                     count = self._histogram_buckets.get(bkey, 0)
                     le_str = f"{b:g}"
                     le_labels = {**labels_dict, "le": f"{le_str}"}
-                    lines.append(
-                        f"{name}_bucket{self._format_labels(le_labels)} {count}"
-                    )
+                    lines.append(f"{name}_bucket{self._format_labels(le_labels)} {count}")
 
                 # +Inf bucket
                 inf_key = (name, labels_tuple, float("inf"))
                 inf_count = self._histogram_buckets.get(inf_key, 0)
                 inf_labels = {**labels_dict, "le": "+Inf"}
-                lines.append(
-                    f"{name}_bucket{self._format_labels(inf_labels)} {inf_count}"
-                )
+                lines.append(f"{name}_bucket{self._format_labels(inf_labels)} {inf_count}")
 
                 # _sum and _count
                 sum_val = self._histogram_sums.get((name, labels_tuple), 0.0)
@@ -159,9 +147,7 @@ class MetricsCollector:
     # --- Convenience methods ---
 
     def increment_calls(self, module_id: str, status: str) -> None:
-        self.increment(
-            "apcore_module_calls_total", {"module_id": module_id, "status": status}
-        )
+        self.increment("apcore_module_calls_total", {"module_id": module_id, "status": status})
 
     def increment_errors(self, module_id: str, error_code: str) -> None:
         self.increment(
@@ -170,9 +156,7 @@ class MetricsCollector:
         )
 
     def observe_duration(self, module_id: str, duration_seconds: float) -> None:
-        self.observe(
-            "apcore_module_duration_seconds", {"module_id": module_id}, duration_seconds
-        )
+        self.observe("apcore_module_duration_seconds", {"module_id": module_id}, duration_seconds)
 
 
 class MetricsMiddleware(Middleware):
@@ -181,9 +165,7 @@ class MetricsMiddleware(Middleware):
     def __init__(self, collector: MetricsCollector) -> None:
         self._collector = collector
 
-    def before(
-        self, module_id: str, inputs: dict[str, Any], context: Any
-    ) -> dict[str, Any] | None:
+    def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
         context.data.setdefault("_metrics_starts", []).append(time.time())
         return None
 
@@ -200,14 +182,10 @@ class MetricsMiddleware(Middleware):
         self._collector.observe_duration(module_id, duration_s)
         return None
 
-    def on_error(
-        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any
-    ) -> dict[str, Any] | None:
+    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
         start_time = context.data["_metrics_starts"].pop()
         duration_s = time.time() - start_time
-        error_code = (
-            error.code if isinstance(error, ModuleError) else type(error).__name__
-        )
+        error_code = error.code if isinstance(error, ModuleError) else type(error).__name__
         self._collector.increment_calls(module_id, "error")
         self._collector.increment_errors(module_id, error_code)
         self._collector.observe_duration(module_id, duration_s)

@@ -53,18 +53,13 @@ class Registry:
             InvalidInputError: If both extensions_dir and extensions_dirs are specified.
         """
         if extensions_dir is not None and extensions_dirs is not None:
-            raise InvalidInputError(
-                message="Cannot specify both extensions_dir and extensions_dirs"
-            )
+            raise InvalidInputError(message="Cannot specify both extensions_dir and extensions_dirs")
 
         # Determine extension roots: individual params > config > defaults
         if extensions_dir is not None:
             self._extension_roots: list[dict[str, Any]] = [{"root": extensions_dir}]
         elif extensions_dirs is not None:
-            self._extension_roots = [
-                {"root": item} if isinstance(item, str) else item
-                for item in extensions_dirs
-            ]
+            self._extension_roots = [{"root": item} if isinstance(item, str) else item for item in extensions_dirs]
         elif config is not None:
             ext_root = config.get("extensions.root")
             if ext_root:
@@ -161,9 +156,7 @@ class Registry:
             try:
                 cls = resolve_entry_point(dm.file_path, meta=meta)
             except Exception as e:
-                logger.warning(
-                    "Failed to resolve entry point for '%s': %s", dm.canonical_id, e
-                )
+                logger.warning("Failed to resolve entry point for '%s': %s", dm.canonical_id, e)
                 continue
             resolved_classes[dm.canonical_id] = cls
 
@@ -172,9 +165,7 @@ class Registry:
         for mod_id, cls in resolved_classes.items():
             errors = validate_module(cls)
             if errors:
-                logger.warning(
-                    "Module '%s' failed validation: %s", mod_id, "; ".join(errors)
-                )
+                logger.warning("Module '%s' failed validation: %s", mod_id, "; ".join(errors))
                 continue
             valid_classes[mod_id] = cls
 
@@ -303,9 +294,7 @@ class Registry:
         with self._write_lock:
             return module_id in self._modules
 
-    def list(
-        self, tags: list[str] | None = None, prefix: str | None = None
-    ) -> list[str]:
+    def list(self, tags: list[str] | None = None, prefix: str | None = None) -> list[str]:
         """Return sorted list of registered module IDs, optionally filtered."""
         with self._write_lock:
             snapshot = dict(self._modules)
@@ -361,12 +350,8 @@ class Registry:
 
         cls = type(module)
 
-        input_schema_cls = getattr(module, "input_schema", None) or getattr(
-            cls, "input_schema", None
-        )
-        output_schema_cls = getattr(module, "output_schema", None) or getattr(
-            cls, "output_schema", None
-        )
+        input_schema_cls = getattr(module, "input_schema", None) or getattr(cls, "input_schema", None)
+        output_schema_cls = getattr(module, "output_schema", None) or getattr(cls, "output_schema", None)
 
         input_json = input_schema_cls.model_json_schema() if input_schema_cls else {}
         output_json = output_schema_cls.model_json_schema() if output_schema_cls else {}
@@ -375,16 +360,11 @@ class Registry:
             module_id=module_id,
             name=meta.get("name") or getattr(module, "name", None),
             description=meta.get("description") or getattr(module, "description", ""),
-            documentation=meta.get("documentation")
-            or getattr(module, "documentation", None),
+            documentation=meta.get("documentation") or getattr(module, "documentation", None),
             input_schema=input_json,
             output_schema=output_json,
             version=meta.get("version") or getattr(module, "version", "1.0.0"),
-            tags=(
-                meta.get("tags")
-                if meta.get("tags") is not None
-                else list(getattr(module, "tags", []) or [])
-            ),
+            tags=(meta.get("tags") if meta.get("tags") is not None else list(getattr(module, "tags", []) or [])),
             annotations=getattr(module, "annotations", None),
             examples=list(getattr(module, "examples", []) or []),
             metadata=meta.get("metadata", {}),
@@ -404,9 +384,7 @@ class Registry:
         """
         with self._write_lock:
             if event not in self._callbacks:
-                raise InvalidInputError(
-                    message=f"Invalid event: {event}. Must be 'register' or 'unregister'"
-                )
+                raise InvalidInputError(message=f"Invalid event: {event}. Must be 'register' or 'unregister'")
             self._callbacks[event].append(callback)
 
     def _trigger_event(self, event: str, module_id: str, module: Any) -> None:

@@ -86,13 +86,7 @@ class TestRelativeFileRef:
         )
         main_file = write_yaml(
             tmp_path / "main.schema.yaml",
-            {
-                "properties": {
-                    "err": {
-                        "$ref": "./common/error.schema.yaml#/definitions/ErrorDetail"
-                    }
-                }
-            },
+            {"properties": {"err": {"$ref": "./common/error.schema.yaml#/definitions/ErrorDetail"}}},
         )
         resolver = RefResolver(tmp_path)
         schema = yaml.safe_load(main_file.read_text())
@@ -103,9 +97,7 @@ class TestRelativeFileRef:
         }
 
     def test_resolve_relative_file_no_pointer(self, tmp_path: Path) -> None:
-        write_yaml(
-            tmp_path / "other.schema.yaml", {"type": "object", "description": "Other"}
-        )
+        write_yaml(tmp_path / "other.schema.yaml", {"type": "object", "description": "Other"})
         main_file = write_yaml(
             tmp_path / "main.schema.yaml",
             {"properties": {"x": {"$ref": "./other.schema.yaml"}}},
@@ -140,9 +132,7 @@ class TestCanonicalRef:
                 }
             },
         )
-        schema = {
-            "properties": {"err": {"$ref": "apcore://common.types.error/ErrorDetail"}}
-        }
+        schema = {"properties": {"err": {"$ref": "apcore://common.types.error/ErrorDetail"}}}
         resolver = RefResolver(tmp_path)
         result = resolver.resolve(schema)
         assert result["properties"]["err"] == {
@@ -167,9 +157,7 @@ class TestCanonicalRef:
 class TestNestedRef:
     def test_three_level_chain(self, tmp_path: Path) -> None:
         write_yaml(tmp_path / "c.schema.yaml", {"Final": {"type": "boolean"}})
-        write_yaml(
-            tmp_path / "b.schema.yaml", {"Mid": {"$ref": "./c.schema.yaml#/Final"}}
-        )
+        write_yaml(tmp_path / "b.schema.yaml", {"Mid": {"$ref": "./c.schema.yaml#/Final"}})
         file_a = write_yaml(
             tmp_path / "a.schema.yaml",
             {"properties": {"val": {"$ref": "./b.schema.yaml#/Mid"}}},
@@ -250,9 +238,7 @@ class TestSiblingKeys:
     def test_sibling_description_merged(self, tmp_path: Path) -> None:
         schema = {
             "definitions": {"Foo": {"type": "string"}},
-            "properties": {
-                "x": {"$ref": "#/definitions/Foo", "description": "Override"}
-            },
+            "properties": {"x": {"$ref": "#/definitions/Foo", "description": "Override"}},
         }
         resolver = RefResolver(tmp_path)
         result = resolver.resolve(schema)
@@ -262,9 +248,7 @@ class TestSiblingKeys:
     def test_sibling_overrides_target(self, tmp_path: Path) -> None:
         schema = {
             "definitions": {"Foo": {"type": "string", "description": "Original"}},
-            "properties": {
-                "x": {"$ref": "#/definitions/Foo", "description": "Override"}
-            },
+            "properties": {"x": {"$ref": "#/definitions/Foo", "description": "Override"}},
         }
         resolver = RefResolver(tmp_path)
         result = resolver.resolve(schema)
@@ -312,9 +296,7 @@ class TestJsonPointer:
         assert result["properties"]["y"] == {"type": "integer"}
 
     def test_empty_pointer_returns_document(self, tmp_path: Path) -> None:
-        write_yaml(
-            tmp_path / "doc.schema.yaml", {"type": "object", "description": "Whole doc"}
-        )
+        write_yaml(tmp_path / "doc.schema.yaml", {"type": "object", "description": "Whole doc"})
         file_main = write_yaml(
             tmp_path / "main.schema.yaml",
             {"x": {"$ref": "./doc.schema.yaml"}},

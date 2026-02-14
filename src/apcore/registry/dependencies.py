@@ -59,9 +59,7 @@ def resolve_dependencies(
             in_degree[module_id] += 1
 
     # Initialize queue with zero-in-degree nodes (sorted for determinism)
-    queue: deque[str] = deque(
-        sorted(mod_id for mod_id in in_degree if in_degree[mod_id] == 0)
-    )
+    queue: deque[str] = deque(sorted(mod_id for mod_id in in_degree if in_degree[mod_id] == 0))
 
     load_order: list[str] = []
     while queue:

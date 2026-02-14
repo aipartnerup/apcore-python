@@ -34,8 +34,6 @@ class TestCircularDependencyError:
     def test_supports_cause_and_trace_id(self) -> None:
         """Supports cause and trace_id kwargs."""
         cause = ValueError("test")
-        err = CircularDependencyError(
-            cycle_path=["X", "Y", "X"], cause=cause, trace_id="t-123"
-        )
+        err = CircularDependencyError(cycle_path=["X", "Y", "X"], cause=cause, trace_id="t-123")
         assert err.cause is cause
         assert err.trace_id == "t-123"

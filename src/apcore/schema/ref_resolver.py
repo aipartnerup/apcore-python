@@ -28,9 +28,7 @@ class RefResolver:
         self._max_depth: int = max_depth
         self._file_cache: dict[Path, dict[str, Any]] = {}
 
-    def resolve(
-        self, schema: dict[str, Any], current_file: Path | None = None
-    ) -> dict[str, Any]:
+    def resolve(self, schema: dict[str, Any], current_file: Path | None = None) -> dict[str, Any]:
         """Resolve all $ref references in a schema dictionary.
 
         Returns a new dict with all $ref nodes replaced by their resolved content.
@@ -93,9 +91,7 @@ class RefResolver:
         self._resolve_node(result, effective_file, visited_refs, depth + 1)
         return result
 
-    def _resolve_node(
-        self, node: Any, current_file: Path | None, visited_refs: set[str], depth: int
-    ) -> Any:
+    def _resolve_node(self, node: Any, current_file: Path | None, visited_refs: set[str], depth: int) -> Any:
         """Recursively walk a node, resolving any $ref found. Modifies in-place."""
         if isinstance(node, dict):
             if "$ref" in node:
@@ -115,9 +111,7 @@ class RefResolver:
                     return resolved
             else:
                 for key in list(node.keys()):
-                    result = self._resolve_node(
-                        node[key], current_file, visited_refs, depth
-                    )
+                    result = self._resolve_node(node[key], current_file, visited_refs, depth)
                     if result is not node[key]:
                         node[key] = result
         elif isinstance(node, list):
@@ -127,9 +121,7 @@ class RefResolver:
                     node[i] = result
         return node
 
-    def _parse_ref(
-        self, ref_string: str, current_file: Path | None
-    ) -> tuple[Path, str]:
+    def _parse_ref(self, ref_string: str, current_file: Path | None) -> tuple[Path, str]:
         """Parse a $ref string into (file_path, json_pointer)."""
         if ref_string.startswith("#"):
             pointer = ref_string[1:]
@@ -161,9 +153,7 @@ class RefResolver:
         pointer = "/" + "/".join(pointer_parts) if pointer_parts else ""
         return file_path.resolve(), pointer
 
-    def _resolve_json_pointer(
-        self, document: Any, pointer: str, ref_string: str
-    ) -> Any:
+    def _resolve_json_pointer(self, document: Any, pointer: str, ref_string: str) -> Any:
         """Navigate a document using an RFC 6901 JSON Pointer."""
         if not pointer:
             return document
@@ -178,9 +168,7 @@ class RefResolver:
             if isinstance(current, dict) and segment in current:
                 current = current[segment]
             else:
-                raise SchemaNotFoundError(
-                    schema_id=f"{ref_string} (segment '{segment}' not found)"
-                )
+                raise SchemaNotFoundError(schema_id=f"{ref_string} (segment '{segment}' not found)")
         return current
 
     def _load_file(self, file_path: Path) -> dict[str, Any]:

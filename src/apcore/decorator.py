@@ -67,9 +67,7 @@ def _generate_input_model(func: Any) -> type[BaseModel]:
 
     # Create the model, with extra="allow" if **kwargs was present
     if has_kwargs:
-        return create_model(
-            "InputModel", __config__=ConfigDict(extra="allow"), **field_dict
-        )
+        return create_model("InputModel", __config__=ConfigDict(extra="allow"), **field_dict)
     return create_model("InputModel", **field_dict)
 
 
@@ -160,12 +158,8 @@ class FunctionModule:
     ) -> None:
         self._func = func
         self.module_id = module_id
-        self.input_schema = (
-            input_schema if input_schema is not None else _generate_input_model(func)
-        )
-        self.output_schema = (
-            output_schema if output_schema is not None else _generate_output_model(func)
-        )
+        self.input_schema = input_schema if input_schema is not None else _generate_input_model(func)
+        self.output_schema = output_schema if output_schema is not None else _generate_output_model(func)
 
         has_context, context_param_name = _has_context_param(func)
 

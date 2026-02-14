@@ -82,16 +82,8 @@ def merge_module_metadata(module_class: type, meta: dict[str, Any]) -> dict[str,
         "name": meta.get("name") or code_name,
         "tags": meta.get("tags") if meta.get("tags") is not None else (code_tags or []),
         "version": meta.get("version") or code_version,
-        "annotations": (
-            meta.get("annotations")
-            if meta.get("annotations") is not None
-            else code_annotations
-        ),
-        "examples": (
-            meta.get("examples")
-            if meta.get("examples") is not None
-            else (code_examples or [])
-        ),
+        "annotations": (meta.get("annotations") if meta.get("annotations") is not None else code_annotations),
+        "examples": (meta.get("examples") if meta.get("examples") is not None else (code_examples or [])),
         "metadata": merged_metadata,
         "documentation": meta.get("documentation") or code_docs,
     }

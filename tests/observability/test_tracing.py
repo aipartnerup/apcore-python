@@ -27,9 +27,7 @@ class TestSpan:
 
     def test_span_created_with_required_fields(self):
         """Span can be created with trace_id, name, and start_time."""
-        span = Span(
-            trace_id="abc-123", name="apcore.module.execute", start_time=time.time()
-        )
+        span = Span(trace_id="abc-123", name="apcore.module.execute", start_time=time.time())
         assert span.trace_id == "abc-123"
         assert span.name == "apcore.module.execute"
         assert isinstance(span.start_time, float)
@@ -192,9 +190,7 @@ class TestOTLPExporter:
         )
         mock_otel_span.set_attribute.assert_any_call("apcore.trace_id", "abc123")
         mock_otel_span.set_attribute.assert_any_call("apcore.span_id", "def456")
-        mock_otel_span.set_attribute.assert_any_call(
-            "apcore.parent_span_id", "parent789"
-        )
+        mock_otel_span.set_attribute.assert_any_call("apcore.parent_span_id", "parent789")
         mock_otel_span.set_attribute.assert_any_call("module_id", "greet")
         mock_otel_span.set_attribute.assert_any_call("success", True)
         mock_otel_span.end.assert_called_once_with(end_time=1001_500_000_000)
@@ -264,9 +260,7 @@ class TestOTLPExporter:
             name="apcore.module.execute",
             start_time=100.0,
             end_time=101.0,
-            events=[
-                {"name": "exception", "type": "ValueError", "message": "bad input"}
-            ],
+            events=[{"name": "exception", "type": "ValueError", "message": "bad input"}],
         )
 
         exporter.export(span)
@@ -364,9 +358,7 @@ class TestSampling:
     def test_sampling_rate_1_always_samples(self):
         """sampling_rate=1.0 always samples."""
         exporter = InMemoryExporter()
-        mw = TracingMiddleware(
-            exporter=exporter, sampling_rate=1.0, sampling_strategy="proportional"
-        )
+        mw = TracingMiddleware(exporter=exporter, sampling_rate=1.0, sampling_strategy="proportional")
         ctx = Context.create()
         mw.before("mod.a", {"x": 1}, ctx)
         mw.after("mod.a", {"x": 1}, {"result": "ok"}, ctx)
@@ -375,9 +367,7 @@ class TestSampling:
     def test_sampling_rate_0_never_samples_but_creates_span(self):
         """sampling_rate=0.0 never samples (but still creates span)."""
         exporter = InMemoryExporter()
-        mw = TracingMiddleware(
-            exporter=exporter, sampling_rate=0.0, sampling_strategy="proportional"
-        )
+        mw = TracingMiddleware(exporter=exporter, sampling_rate=0.0, sampling_strategy="proportional")
         ctx = Context.create()
         mw.before("mod.a", {"x": 1}, ctx)
         # Span was created on the stack
@@ -404,9 +394,7 @@ class TestSampling:
     def test_full_strategy_always_exports(self):
         """'full' strategy always exports."""
         exporter = InMemoryExporter()
-        mw = TracingMiddleware(
-            exporter=exporter, sampling_rate=0.0, sampling_strategy="full"
-        )
+        mw = TracingMiddleware(exporter=exporter, sampling_rate=0.0, sampling_strategy="full")
         ctx = Context.create()
         mw.before("mod.a", {}, ctx)
         mw.after("mod.a", {}, {"r": 1}, ctx)
@@ -415,9 +403,7 @@ class TestSampling:
     def test_off_strategy_never_exports(self):
         """'off' strategy never exports."""
         exporter = InMemoryExporter()
-        mw = TracingMiddleware(
-            exporter=exporter, sampling_rate=1.0, sampling_strategy="off"
-        )
+        mw = TracingMiddleware(exporter=exporter, sampling_rate=1.0, sampling_strategy="off")
         ctx = Context.create()
         mw.before("mod.a", {}, ctx)
         mw.after("mod.a", {}, {"r": 1}, ctx)
@@ -426,9 +412,7 @@ class TestSampling:
     def test_proportional_strategy_exports_proportionally(self):
         """'proportional' strategy exports proportionally (statistical test)."""
         exporter = InMemoryExporter()
-        mw = TracingMiddleware(
-            exporter=exporter, sampling_rate=0.5, sampling_strategy="proportional"
-        )
+        mw = TracingMiddleware(exporter=exporter, sampling_rate=0.5, sampling_strategy="proportional")
         for _ in range(1000):
             ctx = Context.create()
             mw.before("mod.a", {}, ctx)
@@ -439,9 +423,7 @@ class TestSampling:
     def test_error_first_always_exports_errors(self):
         """'error_first' strategy always exports errors regardless of rate."""
         exporter = InMemoryExporter()
-        mw = TracingMiddleware(
-            exporter=exporter, sampling_rate=0.0, sampling_strategy="error_first"
-        )
+        mw = TracingMiddleware(exporter=exporter, sampling_rate=0.0, sampling_strategy="error_first")
         ctx = Context.create()
         mw.before("mod.a", {}, ctx)
         mw.on_error("mod.a", {}, RuntimeError("fail"), ctx)
@@ -450,9 +432,7 @@ class TestSampling:
     def test_error_first_uses_proportional_for_successes(self):
         """'error_first' strategy uses proportional for successes."""
         exporter = InMemoryExporter()
-        mw = TracingMiddleware(
-            exporter=exporter, sampling_rate=0.0, sampling_strategy="error_first"
-        )
+        mw = TracingMiddleware(exporter=exporter, sampling_rate=0.0, sampling_strategy="error_first")
         ctx = Context.create()
         mw.before("mod.a", {}, ctx)
         mw.after("mod.a", {}, {"r": 1}, ctx)
@@ -461,9 +441,7 @@ class TestSampling:
     def test_sampling_decision_inherited_from_parent(self):
         """Sampling decision inherited from parent context (nested calls)."""
         exporter = InMemoryExporter()
-        mw = TracingMiddleware(
-            exporter=exporter, sampling_rate=0.0, sampling_strategy="proportional"
-        )
+        mw = TracingMiddleware(exporter=exporter, sampling_rate=0.0, sampling_strategy="proportional")
         ctx = Context.create()
         # Pre-set the sampling decision as if parent decided to sample
         ctx.data["_tracing_sampled"] = True
@@ -639,9 +617,7 @@ class TestInMemoryExporterThreadSafety:
 class TestTracingMiddlewareEmptyStackGuard:
     """Tests for empty stack guard in after() and on_error()."""
 
-    def test_after_with_empty_stack_logs_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_after_with_empty_stack_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """after() with empty span stack should log warning and return None."""
         exporter = InMemoryExporter()
         mw = TracingMiddleware(exporter=exporter)
@@ -653,9 +629,7 @@ class TestTracingMiddlewareEmptyStackGuard:
         assert "empty span stack" in caplog.text
         assert len(exporter.get_spans()) == 0
 
-    def test_on_error_with_empty_stack_logs_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_on_error_with_empty_stack_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """on_error() with empty span stack should log warning and return None."""
         exporter = InMemoryExporter()
         mw = TracingMiddleware(exporter=exporter)
@@ -667,9 +641,7 @@ class TestTracingMiddlewareEmptyStackGuard:
         assert "empty span stack" in caplog.text
         assert len(exporter.get_spans()) == 0
 
-    def test_after_with_no_tracing_spans_key(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_after_with_no_tracing_spans_key(self, caplog: pytest.LogCaptureFixture) -> None:
         """after() with no _tracing_spans key should log warning and return None."""
         exporter = InMemoryExporter()
         mw = TracingMiddleware(exporter=exporter)

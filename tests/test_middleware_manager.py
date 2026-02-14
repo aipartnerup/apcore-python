@@ -33,9 +33,7 @@ class TrackingMiddleware(Middleware):
         self._after_return = after_return
         self._on_error_return = on_error_return
 
-    def before(
-        self, module_id: str, inputs: dict[str, Any], context: Context
-    ) -> dict[str, Any] | None:
+    def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
         self.before_calls.append((module_id, inputs))
         return self._before_return
 
@@ -59,9 +57,7 @@ class TrackingMiddleware(Middleware):
 class FailingMiddleware(Middleware):
     """Middleware that raises in before()."""
 
-    def before(
-        self, module_id: str, inputs: dict[str, Any], context: Context
-    ) -> dict[str, Any] | None:
+    def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
         raise RuntimeError("before failed")
 
 
@@ -145,9 +141,7 @@ class TestExecuteBefore:
             def __init__(self, name: str) -> None:
                 self._name = name
 
-            def before(
-                self, module_id: str, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any] | None:
+            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
                 order.append(self._name)
                 return None
 
@@ -381,9 +375,7 @@ class TestExecuteOnError:
 
         ctx = MagicMock(spec=Context)
         with caplog.at_level(logging.ERROR):
-            result = mgr.execute_on_error(
-                "mod", {}, RuntimeError("original"), ctx, executed
-            )
+            result = mgr.execute_on_error("mod", {}, RuntimeError("original"), ctx, executed)
         assert result is None
         # mw1 should still have been called (failure in mw2's on_error doesn't stop chain)
         assert len(mw1.on_error_calls) == 1

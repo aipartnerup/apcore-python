@@ -40,9 +40,7 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, type] = {
 _UNSUPPORTED_KEYS = {"oneOf", "anyOf", "allOf", "$ref", "format"}
 
 
-def _build_model_from_json_schema(
-    schema: dict, model_name: str = "DynamicModel"
-) -> type[BaseModel]:
+def _build_model_from_json_schema(schema: dict, model_name: str = "DynamicModel") -> type[BaseModel]:
     """Build a Pydantic model from a simple JSON Schema dict."""
     # Check for unsupported top-level features
     if _UNSUPPORTED_KEYS & schema.keys():
@@ -82,23 +80,17 @@ class BindingLoader:
         try:
             data = yaml.safe_load(content)
         except yaml.YAMLError as exc:
-            raise BindingFileInvalidError(
-                file_path=file_path, reason=f"YAML parse error: {exc}"
-            ) from exc
+            raise BindingFileInvalidError(file_path=file_path, reason=f"YAML parse error: {exc}") from exc
 
         if data is None:
             raise BindingFileInvalidError(file_path=file_path, reason="File is empty")
 
         if "bindings" not in data:
-            raise BindingFileInvalidError(
-                file_path=file_path, reason="Missing 'bindings' key"
-            )
+            raise BindingFileInvalidError(file_path=file_path, reason="Missing 'bindings' key")
 
         bindings = data["bindings"]
         if not isinstance(bindings, list):
-            raise BindingFileInvalidError(
-                file_path=file_path, reason="'bindings' must be a list"
-            )
+            raise BindingFileInvalidError(file_path=file_path, reason="'bindings' must be a list")
 
         results: list[FunctionModule] = []
         for entry in bindings:
@@ -127,9 +119,7 @@ class BindingLoader:
         """Load all binding files matching pattern in directory."""
         p = pathlib.Path(dir_path)
         if not p.is_dir():
-            raise BindingFileInvalidError(
-                file_path=dir_path, reason="Directory does not exist"
-            )
+            raise BindingFileInvalidError(file_path=dir_path, reason="Directory does not exist")
 
         results: list[FunctionModule] = []
         for f in sorted(p.glob(pattern)):
@@ -153,9 +143,7 @@ class BindingLoader:
             try:
                 cls = getattr(mod, class_name)
             except AttributeError as exc:
-                raise BindingCallableNotFoundError(
-                    callable_name=class_name, module_path=module_path
-                ) from exc
+                raise BindingCallableNotFoundError(callable_name=class_name, module_path=module_path) from exc
             try:
                 instance = cls()
             except TypeError as exc:
@@ -166,25 +154,19 @@ class BindingLoader:
             try:
                 result = getattr(instance, method_name)
             except AttributeError as exc:
-                raise BindingCallableNotFoundError(
-                    callable_name=callable_name, module_path=module_path
-                ) from exc
+                raise BindingCallableNotFoundError(callable_name=callable_name, module_path=module_path) from exc
         else:
             try:
                 result = getattr(mod, callable_name)
             except AttributeError as exc:
-                raise BindingCallableNotFoundError(
-                    callable_name=callable_name, module_path=module_path
-                ) from exc
+                raise BindingCallableNotFoundError(callable_name=callable_name, module_path=module_path) from exc
 
         if not callable(result):
             raise BindingNotCallableError(target=target_string)
 
         return result
 
-    def _create_module_from_binding(
-        self, binding: dict, binding_file_dir: str
-    ) -> FunctionModule:
+    def _create_module_from_binding(self, binding: dict, binding_file_dir: str) -> FunctionModule:
         """Create a FunctionModule from a single binding entry."""
         func = self.resolve_target(binding["target"])
         module_id = binding["module_id"]
@@ -199,12 +181,8 @@ class BindingLoader:
         elif "input_schema" in binding or "output_schema" in binding:
             input_schema_dict = binding.get("input_schema", {})
             output_schema_dict = binding.get("output_schema", {})
-            input_schema = _build_model_from_json_schema(
-                input_schema_dict, "InputModel"
-            )
-            output_schema = _build_model_from_json_schema(
-                output_schema_dict, "OutputModel"
-            )
+            input_schema = _build_model_from_json_schema(input_schema_dict, "InputModel")
+            output_schema = _build_model_from_json_schema(output_schema_dict, "OutputModel")
         elif "schema_ref" in binding:
             ref_path = pathlib.Path(binding_file_dir) / binding["schema_ref"]
             if not ref_path.exists():
@@ -221,12 +199,8 @@ class BindingLoader:
                 ) from exc
             if ref_data is None:
                 ref_data = {}
-            input_schema = _build_model_from_json_schema(
-                ref_data.get("input_schema", {}), "InputModel"
-            )
-            output_schema = _build_model_from_json_schema(
-                ref_data.get("output_schema", {}), "OutputModel"
-            )
+            input_schema = _build_model_from_json_schema(ref_data.get("input_schema", {}), "InputModel")
+            output_schema = _build_model_from_json_schema(ref_data.get("output_schema", {}), "OutputModel")
         else:
             # No schema mode specified, try auto_schema as default
             try:

@@ -39,10 +39,7 @@ class TestACLPatternMatching:
         """@system matches when context has an identity with type='system'."""
         acl = ACL(rules=[ACLRule(callers=["@system"], targets=["*"], effect="allow")])
         ctx = Context.create(identity=Identity(id="sys_1", type="system"))
-        assert (
-            acl.check(caller_id="internal.task", target_id="db.write", context=ctx)
-            is True
-        )
+        assert acl.check(caller_id="internal.task", target_id="db.write", context=ctx) is True
 
     # Test: @system pattern does NOT match when identity is None
     def test_system_pattern_no_match_when_identity_none(self) -> None:
@@ -52,10 +49,7 @@ class TestACLPatternMatching:
             default_effect="deny",
         )
         ctx = Context.create()
-        assert (
-            acl.check(caller_id="internal.task", target_id="db.write", context=ctx)
-            is False
-        )
+        assert acl.check(caller_id="internal.task", target_id="db.write", context=ctx) is False
 
     # Test: @system pattern does NOT match when identity.type != "system"
     def test_system_pattern_no_match_when_identity_not_system(self) -> None:
@@ -65,19 +59,12 @@ class TestACLPatternMatching:
             default_effect="deny",
         )
         ctx = Context.create(identity=Identity(id="u_123", type="user"))
-        assert (
-            acl.check(caller_id="internal.task", target_id="db.write", context=ctx)
-            is False
-        )
+        assert acl.check(caller_id="internal.task", target_id="db.write", context=ctx) is False
 
     # Test: exact pattern delegates to foundation match_pattern
     def test_exact_pattern_delegates_to_foundation(self) -> None:
         """Exact caller/target patterns use foundation match_pattern for matching."""
-        acl = ACL(
-            rules=[
-                ACLRule(callers=["api.handler"], targets=["db.read"], effect="allow")
-            ]
-        )
+        acl = ACL(rules=[ACLRule(callers=["api.handler"], targets=["db.read"], effect="allow")])
         assert acl.check(caller_id="api.handler", target_id="db.read") is True
 
     # Test: wildcard "*" delegates to foundation match_pattern
@@ -89,9 +76,7 @@ class TestACLPatternMatching:
     # Test: prefix "executor.*" delegates to foundation match_pattern
     def test_prefix_wildcard_delegates_to_foundation(self) -> None:
         """Prefix wildcard patterns delegate to foundation match_pattern."""
-        acl = ACL(
-            rules=[ACLRule(callers=["executor.*"], targets=["*"], effect="allow")]
-        )
+        acl = ACL(rules=[ACLRule(callers=["executor.*"], targets=["*"], effect="allow")])
         assert acl.check(caller_id="executor.email", target_id="some.target") is True
         assert acl.check(caller_id="api.handler", target_id="some.target") is False
 
@@ -383,9 +368,7 @@ class TestConditionalRules:
             ],
             default_effect="deny",
         )
-        ctx = Context.create(
-            identity=Identity(id="u_1", type="user", roles=["admin", "reader"])
-        )
+        ctx = Context.create(identity=Identity(id="u_1", type="user", roles=["admin", "reader"]))
         assert acl.check(caller_id="caller", target_id="target", context=ctx) is True
 
     # Test: roles condition fails when no intersection
@@ -551,9 +534,7 @@ class TestACLWithContext:
     def test_check_with_none_caller_uses_external(self) -> None:
         """When caller_id is None, effective caller becomes '@external'."""
         acl = ACL(
-            rules=[
-                ACLRule(callers=["@external"], targets=["public.*"], effect="allow")
-            ],
+            rules=[ACLRule(callers=["@external"], targets=["public.*"], effect="allow")],
             default_effect="deny",
         )
         assert acl.check(caller_id=None, target_id="public.api") is True
@@ -573,19 +554,10 @@ class TestACLWithContext:
             ],
             default_effect="deny",
         )
-        ctx_admin = Context.create(
-            identity=Identity(id="u_1", type="user", roles=["admin"])
-        )
-        ctx_reader = Context.create(
-            identity=Identity(id="u_2", type="user", roles=["reader"])
-        )
-        assert (
-            acl.check(caller_id="caller", target_id="target", context=ctx_admin) is True
-        )
-        assert (
-            acl.check(caller_id="caller", target_id="target", context=ctx_reader)
-            is False
-        )
+        ctx_admin = Context.create(identity=Identity(id="u_1", type="user", roles=["admin"]))
+        ctx_reader = Context.create(identity=Identity(id="u_2", type="user", roles=["reader"]))
+        assert acl.check(caller_id="caller", target_id="target", context=ctx_admin) is True
+        assert acl.check(caller_id="caller", target_id="target", context=ctx_reader) is False
 
 
 # === Thread Safety ===
@@ -629,9 +601,7 @@ class TestACLThreadSafety:
         def adder() -> None:
             try:
                 for i in range(50):
-                    acl.add_rule(
-                        ACLRule(callers=[f"caller.{i}"], targets=["*"], effect="allow")
-                    )
+                    acl.add_rule(ACLRule(callers=[f"caller.{i}"], targets=["*"], effect="allow"))
             except Exception as e:
                 errors.append(e)
 

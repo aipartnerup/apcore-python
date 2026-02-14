@@ -61,29 +61,21 @@ class SchemaLoader:
         try:
             data = yaml.safe_load(file_path.read_text())
         except yaml.YAMLError as e:
-            raise SchemaParseError(
-                message=f"Invalid YAML in schema for '{module_id}': {e}"
-            ) from e
+            raise SchemaParseError(message=f"Invalid YAML in schema for '{module_id}': {e}") from e
 
         if data is None or not isinstance(data, dict):
-            raise SchemaParseError(
-                message=f"Schema file for '{module_id}' is empty or not a mapping"
-            )
+            raise SchemaParseError(message=f"Schema file for '{module_id}' is empty or not a mapping")
 
         for field_name in ("input_schema", "output_schema", "description"):
             if field_name not in data:
-                raise SchemaParseError(
-                    message=f"Missing required field: {field_name} in schema for '{module_id}'"
-                )
+                raise SchemaParseError(message=f"Missing required field: {field_name} in schema for '{module_id}'")
 
         definitions = dict(data.get("definitions", {}))
         definitions.update(data.get("$defs", {}))
 
         description = data["description"]
         if len(description) > 200:
-            logger.warning(
-                f"Schema description for '{module_id}' exceeds 200 characters"
-            )
+            logger.warning(f"Schema description for '{module_id}' exceeds 200 characters")
 
         sd = SchemaDefinition(
             module_id=data.get("module_id", module_id),
@@ -99,21 +91,15 @@ class SchemaLoader:
         self._schema_cache[module_id] = sd
         return sd
 
-    def resolve(
-        self, schema_def: SchemaDefinition
-    ) -> tuple[ResolvedSchema, ResolvedSchema]:
+    def resolve(self, schema_def: SchemaDefinition) -> tuple[ResolvedSchema, ResolvedSchema]:
         """Resolve all $ref references in a SchemaDefinition."""
         # Pass current_file=None so local #/ refs resolve within the schema dict itself,
         # not against the whole YAML file. Cross-file refs use schemas_dir as base.
         resolved_input = self._resolver.resolve(schema_def.input_schema)
         resolved_output = self._resolver.resolve(schema_def.output_schema)
 
-        input_model = self.generate_model(
-            resolved_input, f"{schema_def.module_id}_Input"
-        )
-        output_model = self.generate_model(
-            resolved_output, f"{schema_def.module_id}_Output"
-        )
+        input_model = self.generate_model(resolved_input, f"{schema_def.module_id}_Input")
+        output_model = self.generate_model(resolved_output, f"{schema_def.module_id}_Output")
 
         input_rs = ResolvedSchema(
             json_schema=resolved_input,
@@ -129,18 +115,14 @@ class SchemaLoader:
         )
         return input_rs, output_rs
 
-    def generate_model(
-        self, json_schema: dict[str, Any], model_name: str
-    ) -> type[BaseModel]:
+    def generate_model(self, json_schema: dict[str, Any], model_name: str) -> type[BaseModel]:
         """Dynamically generate a Pydantic BaseModel from a JSON Schema dict."""
         properties = json_schema.get("properties", {})
         required = set(json_schema.get("required", []))
 
         field_definitions: dict[str, Any] = {}
         for prop_name, prop_schema in properties.items():
-            python_type, field_info = self._schema_to_field_info(
-                prop_schema, prop_name, model_name
-            )
+            python_type, field_info = self._schema_to_field_info(prop_schema, prop_name, model_name)
             is_required = prop_name in required
 
             if not is_required:
@@ -148,21 +130,14 @@ class SchemaLoader:
                 python_type = python_type | None  # type: ignore[operator]
                 # Set default to None if no explicit default
                 if field_info.default is PydanticUndefined:
-                    is_arr = (
-                        isinstance(prop_schema.get("type"), str)
-                        and prop_schema.get("type") == "array"
-                    )
-                    field_info = self._clone_field_with_default(
-                        prop_schema, None, is_array=is_arr
-                    )
+                    is_arr = isinstance(prop_schema.get("type"), str) and prop_schema.get("type") == "array"
+                    field_info = self._clone_field_with_default(prop_schema, None, is_array=is_arr)
 
             field_definitions[prop_name] = (python_type, field_info)
 
         return create_model(model_name, **field_definitions)  # type: ignore[call-overload]
 
-    def _schema_to_field_info(
-        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str
-    ) -> tuple[Any, Any]:
+    def _schema_to_field_info(self, prop_schema: dict[str, Any], prop_name: str, parent_name: str) -> tuple[Any, Any]:
         """Convert a JSON Schema property to (python_type, FieldInfo)."""
         if not prop_schema:
             return dict[str, Any], Field(default=...)
@@ -199,9 +174,7 @@ class SchemaLoader:
             return Union[tuple(types)], Field(default=...)  # type: ignore[valid-type]
 
         if "allOf" in prop_schema:
-            return self._handle_all_of(
-                prop_schema["allOf"], prop_name, parent_name
-            ), Field(default=...)
+            return self._handle_all_of(prop_schema["allOf"], prop_name, parent_name), Field(default=...)
 
         # Type-based dispatch
         schema_type = prop_schema.get("type")
@@ -222,9 +195,7 @@ class SchemaLoader:
             return base_type, self._build_field(prop_schema)
 
         if schema_type == "object":
-            return self._handle_object(
-                prop_schema, prop_name, parent_name
-            ), self._build_field(prop_schema)
+            return self._handle_object(prop_schema, prop_name, parent_name), self._build_field(prop_schema)
 
         if schema_type == "array":
             return self._handle_array(prop_schema, prop_name, parent_name)
@@ -233,9 +204,7 @@ class SchemaLoader:
         python_type = _TYPE_MAP.get(schema_type, Any)
         return python_type, self._build_field(prop_schema)
 
-    def _schema_to_type(
-        self, schema: dict[str, Any], name: str, parent_name: str
-    ) -> Any:
+    def _schema_to_type(self, schema: dict[str, Any], name: str, parent_name: str) -> Any:
         """Convert a sub-schema to a Python type (for Union branches)."""
         schema_type = schema.get("type")
         if schema_type == "object" and "properties" in schema:
@@ -244,9 +213,7 @@ class SchemaLoader:
             return _TYPE_MAP.get(schema_type, Any)
         return Any
 
-    def _handle_object(
-        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str
-    ) -> Any:
+    def _handle_object(self, prop_schema: dict[str, Any], prop_name: str, parent_name: str) -> Any:
         """Handle object type schemas."""
         if "properties" in prop_schema:
             return self.generate_model(prop_schema, f"{parent_name}_{prop_name}")
@@ -258,9 +225,7 @@ class SchemaLoader:
             return dict[str, Any]
         return dict[str, Any]
 
-    def _handle_array(
-        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str
-    ) -> tuple[Any, Any]:
+    def _handle_array(self, prop_schema: dict[str, Any], prop_name: str, parent_name: str) -> tuple[Any, Any]:
         """Handle array type schemas."""
         items = prop_schema.get("items")
         if items:
@@ -274,18 +239,14 @@ class SchemaLoader:
 
         return base_type, self._build_field(prop_schema, is_array=True)
 
-    def _handle_all_of(
-        self, sub_schemas: list[dict[str, Any]], prop_name: str, parent_name: str
-    ) -> Any:
+    def _handle_all_of(self, sub_schemas: list[dict[str, Any]], prop_name: str, parent_name: str) -> Any:
         """Merge allOf sub-schemas into a single model."""
         merged_properties: dict[str, Any] = {}
         merged_required: list[str] = []
 
         for sub in sub_schemas:
             if sub.get("type") != "object" and "properties" not in sub:
-                raise SchemaParseError(
-                    message=f"allOf with non-object sub-schema not supported in '{prop_name}'"
-                )
+                raise SchemaParseError(message=f"allOf with non-object sub-schema not supported in '{prop_name}'")
             for name, prop in sub.get("properties", {}).items():
                 if name in merged_properties:
                     existing_type = merged_properties[name].get("type")
@@ -350,9 +311,7 @@ class SchemaLoader:
 
         return Field(**kwargs)
 
-    def _clone_field_with_default(
-        self, prop_schema: dict[str, Any], default: Any, is_array: bool = False
-    ) -> Any:
+    def _clone_field_with_default(self, prop_schema: dict[str, Any], default: Any, is_array: bool = False) -> Any:
         """Build a new Field with the given default, preserving all constraints from schema."""
         schema_with_default = dict(prop_schema)
         schema_with_default["default"] = default
@@ -376,17 +335,13 @@ class SchemaLoader:
                 result = self._load_and_resolve(module_id)
             except SchemaNotFoundError:
                 if native_input_schema and native_output_schema:
-                    result = self._wrap_native(
-                        module_id, native_input_schema, native_output_schema
-                    )
+                    result = self._wrap_native(module_id, native_input_schema, native_output_schema)
                 else:
                     raise
 
         elif strategy == SchemaStrategy.NATIVE_FIRST:
             if native_input_schema and native_output_schema:
-                result = self._wrap_native(
-                    module_id, native_input_schema, native_output_schema
-                )
+                result = self._wrap_native(module_id, native_input_schema, native_output_schema)
             else:
                 result = self._load_and_resolve(module_id)
 
@@ -399,9 +354,7 @@ class SchemaLoader:
         self._model_cache[module_id] = result
         return result
 
-    def _load_and_resolve(
-        self, module_id: str
-    ) -> tuple[ResolvedSchema, ResolvedSchema]:
+    def _load_and_resolve(self, module_id: str) -> tuple[ResolvedSchema, ResolvedSchema]:
         """Load and resolve a schema, using model cache."""
         if module_id in self._model_cache:
             return self._model_cache[module_id]

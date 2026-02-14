@@ -325,6 +325,4 @@ class TestPublicAPIAll:
         _MISSING = object()
         for name in apcore.__all__:
             obj = getattr(apcore, name, _MISSING)
-            assert (
-                obj is not _MISSING
-            ), f"Name '{name}' listed in __all__ but not found on module"
+            assert obj is not _MISSING, f"Name '{name}' listed in __all__ but not found on module"

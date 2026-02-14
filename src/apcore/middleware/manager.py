@@ -19,9 +19,7 @@ _logger = logging.getLogger(__name__)
 class MiddlewareChainError(Exception):
     """Raised when a middleware's before() fails. Carries context for error recovery."""
 
-    def __init__(
-        self, original: Exception, executed_middlewares: list[Middleware]
-    ) -> None:
+    def __init__(self, original: Exception, executed_middlewares: list[Middleware]) -> None:
         super().__init__(str(original))
         self.original = original
         self.executed_middlewares = executed_middlewares
@@ -79,9 +77,7 @@ class MiddlewareManager:
             try:
                 result = mw.before(module_id, current_inputs, context)
             except Exception as e:
-                raise MiddlewareChainError(
-                    original=e, executed_middlewares=executed_middlewares
-                ) from e
+                raise MiddlewareChainError(original=e, executed_middlewares=executed_middlewares) from e
             if result is not None:
                 current_inputs = result
 

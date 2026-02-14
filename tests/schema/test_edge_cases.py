@@ -133,9 +133,7 @@ class TestTypeEdgeCases:
         loader = SchemaLoader(config=config)
         model = loader.generate_model(schema, "FormatTest")
         # Non-conforming values should still pass (format not enforced)
-        instance = model.model_validate(
-            {"created_at": "not-a-date", "email": "not-an-email"}
-        )
+        instance = model.model_validate({"created_at": "not-a-date", "email": "not-an-email"})
         assert instance is not None
 
 

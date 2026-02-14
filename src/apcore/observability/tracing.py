@@ -191,13 +191,9 @@ class TracingMiddleware(Middleware):
         sampling_strategy: str = "full",
     ) -> None:
         if not (0.0 <= sampling_rate <= 1.0):
-            raise ValueError(
-                f"sampling_rate must be between 0.0 and 1.0, got {sampling_rate}"
-            )
+            raise ValueError(f"sampling_rate must be between 0.0 and 1.0, got {sampling_rate}")
         if sampling_strategy not in _VALID_STRATEGIES:
-            raise ValueError(
-                f"sampling_strategy must be one of {_VALID_STRATEGIES}, got {sampling_strategy!r}"
-            )
+            raise ValueError(f"sampling_strategy must be one of {_VALID_STRATEGIES}, got {sampling_strategy!r}")
         self._exporter = exporter
         self._sampling_rate = sampling_rate
         self._sampling_strategy = sampling_strategy
@@ -218,9 +214,7 @@ class TracingMiddleware(Middleware):
         context.data["_tracing_sampled"] = decision
         return decision
 
-    def before(
-        self, module_id: str, inputs: dict[str, Any], context: Any
-    ) -> dict[str, Any] | None:
+    def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
         """Create a span, push to stack, make/inherit sampling decision."""
         self._should_sample(context)
 
@@ -267,9 +261,7 @@ class TracingMiddleware(Middleware):
             self._exporter.export(span)
         return None
 
-    def on_error(
-        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any
-    ) -> dict[str, Any] | None:
+    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
         """Pop span, finalize with error status, always export for error_first. Return None."""
         spans_stack = context.data.get("_tracing_spans", [])
         if not spans_stack:
@@ -285,9 +277,7 @@ class TracingMiddleware(Middleware):
         span.attributes["success"] = False
         span.attributes["error_code"] = getattr(error, "code", type(error).__name__)
 
-        should_export = self._sampling_strategy == "error_first" or context.data.get(
-            "_tracing_sampled"
-        )
+        should_export = self._sampling_strategy == "error_first" or context.data.get("_tracing_sampled")
         if should_export:
             self._exporter.export(span)
         return None
