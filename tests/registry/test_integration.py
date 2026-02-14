@@ -28,7 +28,7 @@ def _write_module_file(
 ) -> Path:
     """Write a valid module .py file to a directory."""
     tags_str = repr(tags or [])
-    content = f'''from pydantic import BaseModel
+    content = f"""from pydantic import BaseModel
 
 class TestInput(BaseModel):
     value: str
@@ -44,7 +44,7 @@ class {class_name}:
 
     def execute(self, inputs, context=None):
         return {{"result": inputs["value"]}}
-'''
+"""
     file_path = directory / filename
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(content)
@@ -179,10 +179,14 @@ class TestEndToEnd:
 
         class TestMod:
             input_schema = type("I", (BaseModel,), {"__annotations__": {"value": str}})
-            output_schema = type("O", (BaseModel,), {"__annotations__": {"result": str}})
+            output_schema = type(
+                "O", (BaseModel,), {"__annotations__": {"result": str}}
+            )
             description = "test"
 
-            def execute(self, inputs: dict[str, Any], context: Any = None) -> dict[str, Any]:
+            def execute(
+                self, inputs: dict[str, Any], context: Any = None
+            ) -> dict[str, Any]:
                 return {"result": "ok"}
 
         register_mock = MagicMock()
@@ -230,10 +234,12 @@ class TestEndToEnd:
         _write_module_file(root_a, "process.py", "ProcessModuleA", "Process A")
         _write_module_file(root_b, "process.py", "ProcessModuleB", "Process B")
 
-        reg = Registry(extensions_dirs=[
-            {"root": str(root_a), "namespace": "alpha"},
-            {"root": str(root_b), "namespace": "beta"},
-        ])
+        reg = Registry(
+            extensions_dirs=[
+                {"root": str(root_a), "namespace": "alpha"},
+                {"root": str(root_b), "namespace": "beta"},
+            ]
+        )
         count = reg.discover()
         assert count == 2
         assert reg.has("alpha.process")
@@ -246,11 +252,17 @@ class TestEndToEnd:
 
         ext = tmp_path / "extensions"
         ext.mkdir()
-        _write_module_file(ext, "mymod.py", "MyModule", "Code description", tags=["code-tag"])
-        _write_meta_yaml(ext, "mymod", {
-            "description": "YAML description",
-            "tags": ["yaml-tag"],
-        })
+        _write_module_file(
+            ext, "mymod.py", "MyModule", "Code description", tags=["code-tag"]
+        )
+        _write_meta_yaml(
+            ext,
+            "mymod",
+            {
+                "description": "YAML description",
+                "tags": ["yaml-tag"],
+            },
+        )
 
         reg = Registry(extensions_dir=str(ext))
         reg.discover()
@@ -279,7 +291,9 @@ class TestEndToEnd:
         assert not reg.has("broken_mod")
         assert not reg.has("empty_mod")
 
-    def test_conftest_fixtures_smoke(self, registry: Any, sample_module_class: type) -> None:
+    def test_conftest_fixtures_smoke(
+        self, registry: Any, sample_module_class: type
+    ) -> None:
         """Smoke test: conftest fixtures work correctly."""
         from apcore.registry.registry import Registry
 

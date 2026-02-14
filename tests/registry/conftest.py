@@ -103,16 +103,22 @@ def tmp_extensions_dir(tmp_path: Path) -> Path:
     ext.mkdir()
 
     (ext / "hello.py").write_text(
-        _MODULE_TEMPLATE.format(class_name="HelloModule", description="Hello module", tags='["hello"]')
+        _MODULE_TEMPLATE.format(
+            class_name="HelloModule", description="Hello module", tags='["hello"]'
+        )
     )
     (ext / "greet.py").write_text(
-        _MODULE_TEMPLATE.format(class_name="GreetModule", description="Greet module", tags='["greet"]')
+        _MODULE_TEMPLATE.format(
+            class_name="GreetModule", description="Greet module", tags='["greet"]'
+        )
     )
 
     sub = ext / "sub"
     sub.mkdir()
     (sub / "nested.py").write_text(
-        _MODULE_TEMPLATE.format(class_name="NestedModule", description="Nested module", tags='["nested"]')
+        _MODULE_TEMPLATE.format(
+            class_name="NestedModule", description="Nested module", tags='["nested"]'
+        )
     )
 
     return ext

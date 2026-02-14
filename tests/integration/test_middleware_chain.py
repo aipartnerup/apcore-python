@@ -88,7 +88,9 @@ class TestMiddlewareChain:
                 log.append("second.on_error")
                 return {"recovered": "second"}
 
-        executor = Executor(registry=int_registry, middlewares=[FirstRecovery(), SecondRecovery()])
+        executor = Executor(
+            registry=int_registry, middlewares=[FirstRecovery(), SecondRecovery()]
+        )
         result = executor.call("failing", {})
         # SecondRecovery fires first (reverse order), returns recovery.
         assert result == {"recovered": "second"}

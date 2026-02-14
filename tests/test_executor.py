@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -116,7 +117,9 @@ class TestExecutorInit:
 
     def test_init_with_config(self) -> None:
         """Executor reads settings from config."""
-        config = Config(data={"executor": {"default_timeout": 5000, "max_call_depth": 10}})
+        config = Config(
+            data={"executor": {"default_timeout": 5000, "max_call_depth": 10}}
+        )
         reg = Registry()
         ex = Executor(registry=reg, config=config)
         assert ex._default_timeout == 5000
@@ -277,7 +280,9 @@ class TestCallFlow:
         before_calls: list[str] = []
 
         class TrackBefore(Middleware):
-            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
+            def before(
+                self, module_id: str, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any] | None:
                 before_calls.append(module_id)
                 return None
 
@@ -290,7 +295,9 @@ class TestCallFlow:
         mod = MockModule()
 
         class ModifyBefore(Middleware):
-            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
+            def before(
+                self, module_id: str, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any] | None:
                 return {**inputs, "name": "Modified"}
 
         ex = _make_executor(module=mod, middlewares=[ModifyBefore()])
@@ -319,7 +326,11 @@ class TestCallFlow:
 
         class TrackAfter(Middleware):
             def after(
-                self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                output: dict[str, Any],
+                context: Context,
             ) -> dict[str, Any] | None:
                 after_calls.append(module_id)
                 return None
@@ -349,7 +360,11 @@ class TestCallErrorHandling:
 
         class ErrorHandler(Middleware):
             def on_error(
-                self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                error: Exception,
+                context: Context,
             ) -> dict[str, Any] | None:
                 on_error_calls.append(str(error))
                 return None
@@ -365,7 +380,11 @@ class TestCallErrorHandling:
 
         class RecoveryHandler(Middleware):
             def on_error(
-                self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                error: Exception,
+                context: Context,
             ) -> dict[str, Any] | None:
                 return {"greeting": "recovered"}
 
@@ -379,7 +398,11 @@ class TestCallErrorHandling:
 
         class NoRecovery(Middleware):
             def on_error(
-                self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                error: Exception,
+                context: Context,
             ) -> dict[str, Any] | None:
                 return None
 
@@ -393,11 +416,17 @@ class TestCallErrorHandling:
         on_error_calls: list[str] = []
 
         class FailBefore(Middleware):
-            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
+            def before(
+                self, module_id: str, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any] | None:
                 raise RuntimeError("before failed")
 
             def on_error(
-                self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                error: Exception,
+                context: Context,
             ) -> dict[str, Any] | None:
                 on_error_calls.append("handled")
                 return None
@@ -517,7 +546,9 @@ class TestTimeout:
             input_schema = None
             output_schema = None
 
-            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+            def execute(
+                self, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any]:
                 time.sleep(2)
                 return {"result": "slow"}
 
@@ -533,7 +564,9 @@ class TestTimeout:
             input_schema = None
             output_schema = None
 
-            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+            def execute(
+                self, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any]:
                 return {"result": "quick"}
 
         config = Config(data={"executor": {"default_timeout": 0}})
@@ -550,10 +583,58 @@ class TestTimeout:
             input_schema = None
             output_schema = None
 
-            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+            def execute(
+                self, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any]:
                 return {"result": "quick"}
 
         config = Config(data={"executor": {"default_timeout": -100}})
         ex = _make_executor(module=QuickModule(), config=config)
         with pytest.raises(InvalidInputError):
+            ex.call("test.module", {})
+
+
+# === Thread Safety Tests ===
+
+
+class TestAsyncCacheThreadSafety:
+    """Tests for thread-safe async cache access."""
+
+    def test_concurrent_is_async_module_no_error(self) -> None:
+        """Concurrent _is_async_module() calls should not raise."""
+        mod = MockModule()
+        ex = _make_executor(module=mod)
+        errors: list[Exception] = []
+
+        def checker() -> None:
+            try:
+                for _ in range(100):
+                    ex._is_async_module("test.module", mod)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=checker) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+
+    def test_daemon_thread_in_execute_with_timeout(self) -> None:
+        """Timeout threads should be daemonic so they don't block shutdown."""
+
+        class SlowModule:
+            input_schema = None
+            output_schema = None
+
+            def execute(
+                self, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any]:
+                time.sleep(5)
+                return {"result": "slow"}
+
+        config = Config(data={"executor": {"default_timeout": 50}})
+        ex = _make_executor(module=SlowModule(), config=config)
+        with pytest.raises(ModuleTimeoutError):
             ex.call("test.module", {})

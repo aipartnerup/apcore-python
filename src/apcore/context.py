@@ -49,7 +49,13 @@ class Context:
         )
 
     def child(self, target_module_id: str) -> Context:
-        """Create a child Context for calling a target module."""
+        """Create a child Context for calling a target module.
+
+        The ``data`` dict is intentionally shared (not copied) between parent
+        and child contexts.  Middleware such as TracingMiddleware and
+        MetricsMiddleware rely on this shared reference to maintain span and
+        timing stacks across nested module-to-module calls.
+        """
         return Context(
             trace_id=self.trace_id,
             caller_id=self.call_chain[-1] if self.call_chain else None,

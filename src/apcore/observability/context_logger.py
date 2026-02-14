@@ -52,7 +52,9 @@ class ContextLogger:
         logger._caller_id = context.caller_id
         return logger
 
-    def _emit(self, level_name: str, message: str, extra: dict[str, Any] | None) -> None:
+    def _emit(
+        self, level_name: str, message: str, extra: dict[str, Any] | None
+    ) -> None:
         level_value = _LEVELS.get(level_name, 20)
         if level_value < self._level_value:
             return
@@ -85,7 +87,9 @@ class ContextLogger:
             mod = self._module_id or "none"
             extras_str = ""
             if redacted_extra:
-                extras_str = " " + " ".join(f"{k}={v}" for k, v in redacted_extra.items())
+                extras_str = " " + " ".join(
+                    f"{k}={v}" for k, v in redacted_extra.items()
+                )
             self._output.write(
                 f"{ts} [{lvl}] [trace={trace}] [module={mod}] {message}{extras_str}\n"
             )
@@ -121,11 +125,15 @@ class ObsLoggingMiddleware(Middleware):
         log_inputs: bool = True,
         log_outputs: bool = True,
     ) -> None:
-        self._logger = logger if logger is not None else ContextLogger(name="apcore.obs_logging")
+        self._logger = (
+            logger if logger is not None else ContextLogger(name="apcore.obs_logging")
+        )
         self._log_inputs = log_inputs
         self._log_outputs = log_outputs
 
-    def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
+    def before(
+        self, module_id: str, inputs: dict[str, Any], context: Any
+    ) -> dict[str, Any] | None:
         context.data.setdefault("_obs_logging_starts", []).append(time.time())
         extra: dict[str, Any] = {
             "module_id": module_id,
@@ -136,7 +144,13 @@ class ObsLoggingMiddleware(Middleware):
         self._logger.info("Module call started", extra=extra)
         return None
 
-    def after(self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Any) -> dict[str, Any] | None:
+    def after(
+        self,
+        module_id: str,
+        inputs: dict[str, Any],
+        output: dict[str, Any],
+        context: Any,
+    ) -> dict[str, Any] | None:
         start_time = context.data["_obs_logging_starts"].pop()
         duration_ms = (time.time() - start_time) * 1000
         extra: dict[str, Any] = {
@@ -148,7 +162,9 @@ class ObsLoggingMiddleware(Middleware):
         self._logger.info("Module call completed", extra=extra)
         return None
 
-    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
+    def on_error(
+        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any
+    ) -> dict[str, Any] | None:
         start_time = context.data["_obs_logging_starts"].pop()
         duration_ms = (time.time() - start_time) * 1000
         self._logger.error(

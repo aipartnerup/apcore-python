@@ -9,7 +9,11 @@ from typing import Any, Callable
 import yaml
 from pydantic import BaseModel, ConfigDict, create_model
 
-from apcore.decorator import FunctionModule, _generate_input_model, _generate_output_model
+from apcore.decorator import (
+    FunctionModule,
+    _generate_input_model,
+    _generate_output_model,
+)
 from apcore.errors import (
     BindingCallableNotFoundError,
     BindingFileInvalidError,
@@ -65,9 +69,7 @@ def _build_model_from_json_schema(
 class BindingLoader:
     """Loads YAML binding files and creates FunctionModule instances."""
 
-    def load_bindings(
-        self, file_path: str, registry: Registry
-    ) -> list[FunctionModule]:
+    def load_bindings(self, file_path: str, registry: Registry) -> list[FunctionModule]:
         """Load binding file and register all modules."""
         path = pathlib.Path(file_path)
         binding_file_dir = str(path.parent)
@@ -75,9 +77,7 @@ class BindingLoader:
         try:
             content = path.read_text()
         except OSError as exc:
-            raise BindingFileInvalidError(
-                file_path=file_path, reason=str(exc)
-            ) from exc
+            raise BindingFileInvalidError(file_path=file_path, reason=str(exc)) from exc
 
         try:
             data = yaml.safe_load(content)
@@ -87,9 +87,7 @@ class BindingLoader:
             ) from exc
 
         if data is None:
-            raise BindingFileInvalidError(
-                file_path=file_path, reason="File is empty"
-            )
+            raise BindingFileInvalidError(file_path=file_path, reason="File is empty")
 
         if "bindings" not in data:
             raise BindingFileInvalidError(
@@ -197,9 +195,7 @@ class BindingLoader:
                 input_schema = _generate_input_model(func)
                 output_schema = _generate_output_model(func)
             except (FuncMissingTypeHintError, FuncMissingReturnTypeError) as exc:
-                raise BindingSchemaMissingError(
-                    target=binding["target"]
-                ) from exc
+                raise BindingSchemaMissingError(target=binding["target"]) from exc
         elif "input_schema" in binding or "output_schema" in binding:
             input_schema_dict = binding.get("input_schema", {})
             output_schema_dict = binding.get("output_schema", {})
@@ -237,9 +233,7 @@ class BindingLoader:
                 input_schema = _generate_input_model(func)
                 output_schema = _generate_output_model(func)
             except (FuncMissingTypeHintError, FuncMissingReturnTypeError) as exc:
-                raise BindingSchemaMissingError(
-                    target=binding["target"]
-                ) from exc
+                raise BindingSchemaMissingError(target=binding["target"]) from exc
 
         return FunctionModule(
             func=func,

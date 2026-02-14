@@ -12,7 +12,7 @@ from apcore.registry.entry_point import resolve_entry_point, snake_to_pascal
 
 # --- Module file content templates ---
 
-VALID_MODULE = '''
+VALID_MODULE = """
 from pydantic import BaseModel
 
 class InputModel(BaseModel):
@@ -28,9 +28,9 @@ class MyTestModule:
 
     def execute(self, inputs, context=None):
         return {"result": inputs["value"]}
-'''
+"""
 
-TWO_MODULES = '''
+TWO_MODULES = """
 from pydantic import BaseModel
 
 class InputA(BaseModel):
@@ -58,17 +58,17 @@ class ModuleB:
     description = "Module B"
     def execute(self, inputs, context=None):
         return {}
-'''
+"""
 
-NO_MODULE = '''
+NO_MODULE = """
 class PlainClass:
     pass
 
 class AnotherPlain:
     x = 10
-'''
+"""
 
-MODULE_PLUS_PLAIN = '''
+MODULE_PLUS_PLAIN = """
 from pydantic import BaseModel
 
 class InputModel(BaseModel):
@@ -86,7 +86,7 @@ class MyModule:
 
 class PlainHelper:
     pass
-'''
+"""
 
 
 # === resolve_entry_point() auto-infer ===
@@ -123,12 +123,12 @@ class TestResolveEntryPointAutoInfer:
 
     def test_imported_class_filtered_by_module_check(self, tmp_path: Path) -> None:
         """Classes imported from elsewhere are filtered out by __module__ check."""
-        content = '''
+        content = """
 from pydantic import BaseModel
 # BaseModel is imported, has class-level attributes but __module__ != this file
 class Utility:
     pass
-'''
+"""
         f = tmp_path / "noimport.py"
         f.write_text(content)
         with pytest.raises(ModuleLoadError, match="No Module subclass"):

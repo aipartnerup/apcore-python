@@ -6,7 +6,11 @@ import copy
 from typing import Any
 
 from apcore.module import ModuleAnnotations, ModuleExample
-from apcore.schema.strict import _apply_llm_descriptions, _strip_extensions, to_strict_schema
+from apcore.schema.strict import (
+    _apply_llm_descriptions,
+    _strip_extensions,
+    to_strict_schema,
+)
 from apcore.schema.types import ExportProfile, SchemaDefinition
 
 __all__ = ["SchemaExporter"]

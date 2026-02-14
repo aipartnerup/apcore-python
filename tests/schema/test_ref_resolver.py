@@ -33,12 +33,18 @@ class TestLocalRef:
                 "addr": {"$ref": "#/definitions/Address"},
             },
             "definitions": {
-                "Address": {"type": "object", "properties": {"street": {"type": "string"}}},
+                "Address": {
+                    "type": "object",
+                    "properties": {"street": {"type": "string"}},
+                },
             },
         }
         resolver = RefResolver(tmp_path)
         result = resolver.resolve(schema)
-        assert result["properties"]["addr"] == {"type": "object", "properties": {"street": {"type": "string"}}}
+        assert result["properties"]["addr"] == {
+            "type": "object",
+            "properties": {"street": {"type": "string"}},
+        }
 
     def test_resolve_local_ref_nested_pointer(self, tmp_path: Path) -> None:
         schema = {
@@ -69,19 +75,37 @@ class TestRelativeFileRef:
         common_dir = tmp_path / "common"
         write_yaml(
             common_dir / "error.schema.yaml",
-            {"definitions": {"ErrorDetail": {"type": "object", "properties": {"code": {"type": "string"}}}}},
+            {
+                "definitions": {
+                    "ErrorDetail": {
+                        "type": "object",
+                        "properties": {"code": {"type": "string"}},
+                    }
+                }
+            },
         )
         main_file = write_yaml(
             tmp_path / "main.schema.yaml",
-            {"properties": {"err": {"$ref": "./common/error.schema.yaml#/definitions/ErrorDetail"}}},
+            {
+                "properties": {
+                    "err": {
+                        "$ref": "./common/error.schema.yaml#/definitions/ErrorDetail"
+                    }
+                }
+            },
         )
         resolver = RefResolver(tmp_path)
         schema = yaml.safe_load(main_file.read_text())
         result = resolver.resolve(schema, current_file=main_file)
-        assert result["properties"]["err"] == {"type": "object", "properties": {"code": {"type": "string"}}}
+        assert result["properties"]["err"] == {
+            "type": "object",
+            "properties": {"code": {"type": "string"}},
+        }
 
     def test_resolve_relative_file_no_pointer(self, tmp_path: Path) -> None:
-        write_yaml(tmp_path / "other.schema.yaml", {"type": "object", "description": "Other"})
+        write_yaml(
+            tmp_path / "other.schema.yaml", {"type": "object", "description": "Other"}
+        )
         main_file = write_yaml(
             tmp_path / "main.schema.yaml",
             {"properties": {"x": {"$ref": "./other.schema.yaml"}}},
@@ -109,12 +133,22 @@ class TestCanonicalRef:
     def test_resolve_canonical_ref(self, tmp_path: Path) -> None:
         write_yaml(
             tmp_path / "common" / "types" / "error.schema.yaml",
-            {"ErrorDetail": {"type": "object", "properties": {"msg": {"type": "string"}}}},
+            {
+                "ErrorDetail": {
+                    "type": "object",
+                    "properties": {"msg": {"type": "string"}},
+                }
+            },
         )
-        schema = {"properties": {"err": {"$ref": "apcore://common.types.error/ErrorDetail"}}}
+        schema = {
+            "properties": {"err": {"$ref": "apcore://common.types.error/ErrorDetail"}}
+        }
         resolver = RefResolver(tmp_path)
         result = resolver.resolve(schema)
-        assert result["properties"]["err"] == {"type": "object", "properties": {"msg": {"type": "string"}}}
+        assert result["properties"]["err"] == {
+            "type": "object",
+            "properties": {"msg": {"type": "string"}},
+        }
 
     def test_canonical_dots_to_path(self, tmp_path: Path) -> None:
         write_yaml(
@@ -133,7 +167,9 @@ class TestCanonicalRef:
 class TestNestedRef:
     def test_three_level_chain(self, tmp_path: Path) -> None:
         write_yaml(tmp_path / "c.schema.yaml", {"Final": {"type": "boolean"}})
-        write_yaml(tmp_path / "b.schema.yaml", {"Mid": {"$ref": "./c.schema.yaml#/Final"}})
+        write_yaml(
+            tmp_path / "b.schema.yaml", {"Mid": {"$ref": "./c.schema.yaml#/Final"}}
+        )
         file_a = write_yaml(
             tmp_path / "a.schema.yaml",
             {"properties": {"val": {"$ref": "./b.schema.yaml#/Mid"}}},
@@ -175,7 +211,10 @@ class TestCircularRef:
             resolver.resolve(schema, current_file=file_a)
 
     def test_self_ref(self, tmp_path: Path) -> None:
-        schema = {"definitions": {"Self": {"$ref": "#/definitions/Self"}}, "x": {"$ref": "#/definitions/Self"}}
+        schema = {
+            "definitions": {"Self": {"$ref": "#/definitions/Self"}},
+            "x": {"$ref": "#/definitions/Self"},
+        }
         resolver = RefResolver(tmp_path)
         with pytest.raises(SchemaCircularRefError):
             resolver.resolve(schema)
@@ -211,7 +250,9 @@ class TestSiblingKeys:
     def test_sibling_description_merged(self, tmp_path: Path) -> None:
         schema = {
             "definitions": {"Foo": {"type": "string"}},
-            "properties": {"x": {"$ref": "#/definitions/Foo", "description": "Override"}},
+            "properties": {
+                "x": {"$ref": "#/definitions/Foo", "description": "Override"}
+            },
         }
         resolver = RefResolver(tmp_path)
         result = resolver.resolve(schema)
@@ -221,7 +262,9 @@ class TestSiblingKeys:
     def test_sibling_overrides_target(self, tmp_path: Path) -> None:
         schema = {
             "definitions": {"Foo": {"type": "string", "description": "Original"}},
-            "properties": {"x": {"$ref": "#/definitions/Foo", "description": "Override"}},
+            "properties": {
+                "x": {"$ref": "#/definitions/Foo", "description": "Override"}
+            },
         }
         resolver = RefResolver(tmp_path)
         result = resolver.resolve(schema)
@@ -269,7 +312,9 @@ class TestJsonPointer:
         assert result["properties"]["y"] == {"type": "integer"}
 
     def test_empty_pointer_returns_document(self, tmp_path: Path) -> None:
-        write_yaml(tmp_path / "doc.schema.yaml", {"type": "object", "description": "Whole doc"})
+        write_yaml(
+            tmp_path / "doc.schema.yaml", {"type": "object", "description": "Whole doc"}
+        )
         file_main = write_yaml(
             tmp_path / "main.schema.yaml",
             {"x": {"$ref": "./doc.schema.yaml"}},
@@ -280,7 +325,10 @@ class TestJsonPointer:
         assert result["x"] == {"type": "object", "description": "Whole doc"}
 
     def test_pointer_not_found(self, tmp_path: Path) -> None:
-        schema = {"definitions": {"Foo": {"type": "string"}}, "x": {"$ref": "#/definitions/Bar"}}
+        schema = {
+            "definitions": {"Foo": {"type": "string"}},
+            "x": {"$ref": "#/definitions/Bar"},
+        }
         resolver = RefResolver(tmp_path)
         with pytest.raises(SchemaNotFoundError):
             resolver.resolve(schema)

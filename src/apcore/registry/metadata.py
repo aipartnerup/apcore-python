@@ -13,7 +13,12 @@ from apcore.registry.types import DependencyInfo
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["load_metadata", "parse_dependencies", "merge_module_metadata", "load_id_map"]
+__all__ = [
+    "load_metadata",
+    "parse_dependencies",
+    "merge_module_metadata",
+    "load_id_map",
+]
 
 
 def load_metadata(meta_path: Path) -> dict[str, Any]:
@@ -48,11 +53,13 @@ def parse_dependencies(deps_raw: list[dict[str, Any]]) -> list[DependencyInfo]:
         if not module_id:
             logger.warning("Dependency entry missing 'module_id', skipping: %s", dep)
             continue
-        result.append(DependencyInfo(
-            module_id=module_id,
-            version=dep.get("version"),
-            optional=dep.get("optional", False),
-        ))
+        result.append(
+            DependencyInfo(
+                module_id=module_id,
+                version=dep.get("version"),
+                optional=dep.get("optional", False),
+            )
+        )
     return result
 
 
@@ -75,8 +82,16 @@ def merge_module_metadata(module_class: type, meta: dict[str, Any]) -> dict[str,
         "name": meta.get("name") or code_name,
         "tags": meta.get("tags") if meta.get("tags") is not None else (code_tags or []),
         "version": meta.get("version") or code_version,
-        "annotations": meta.get("annotations") if meta.get("annotations") is not None else code_annotations,
-        "examples": meta.get("examples") if meta.get("examples") is not None else (code_examples or []),
+        "annotations": (
+            meta.get("annotations")
+            if meta.get("annotations") is not None
+            else code_annotations
+        ),
+        "examples": (
+            meta.get("examples")
+            if meta.get("examples") is not None
+            else (code_examples or [])
+        ),
         "metadata": merged_metadata,
         "documentation": meta.get("documentation") or code_docs,
     }

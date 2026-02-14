@@ -117,14 +117,20 @@ class TestMetricsCollectorPrometheus:
     def test_export_prometheus_format(self):
         """Output string follows Prometheus text exposition conventions."""
         c = MetricsCollector()
-        c.increment("apcore_module_calls_total", {"module_id": "greet", "status": "success"}, 10)
+        c.increment(
+            "apcore_module_calls_total", {"module_id": "greet", "status": "success"}, 10
+        )
         output = c.export_prometheus()
-        assert 'apcore_module_calls_total{module_id="greet",status="success"} 10' in output
+        assert (
+            'apcore_module_calls_total{module_id="greet",status="success"} 10' in output
+        )
 
     def test_export_prometheus_type_help(self):
         """Each metric family starts with # HELP and # TYPE lines."""
         c = MetricsCollector()
-        c.increment("apcore_module_calls_total", {"module_id": "greet", "status": "success"})
+        c.increment(
+            "apcore_module_calls_total", {"module_id": "greet", "status": "success"}
+        )
         output = c.export_prometheus()
         assert "# HELP apcore_module_calls_total Total module calls" in output
         assert "# TYPE apcore_module_calls_total counter" in output
@@ -159,7 +165,9 @@ class TestMetricsCollectorConfiguration:
         lk = (("x", "1"),)
         # Only 3 bucket entries + inf
         bucket_keys = [k for k in snap["histograms"]["buckets"] if k[0] == "test"]
-        assert len(bucket_keys) == 3  # 5.0, 10.0, +Inf (not 1.0 since 3.0 > 1.0... wait, keys always exist)
+        assert (
+            len(bucket_keys) == 3
+        )  # 5.0, 10.0, +Inf (not 1.0 since 3.0 > 1.0... wait, keys always exist)
         # Actually the keys only exist if incremented. Let's check values.
         assert snap["histograms"]["buckets"].get(("test", lk, 1.0), 0) == 0
         assert snap["histograms"]["buckets"][("test", lk, 5.0)] == 1
@@ -178,7 +186,9 @@ class TestMetricsCollectorThreadSafety:
         c = MetricsCollector()
         threads = []
         for _ in range(100):
-            t = threading.Thread(target=lambda: [c.increment("counter", {"t": "1"}) for _ in range(100)])
+            t = threading.Thread(
+                target=lambda: [c.increment("counter", {"t": "1"}) for _ in range(100)]
+            )
             threads.append(t)
         for t in threads:
             t.start()
@@ -199,7 +209,10 @@ class TestMetricsCollectorConvenienceMethods:
         c = MetricsCollector()
         c.increment_calls("greet", "success")
         snap = c.snapshot()
-        key = ("apcore_module_calls_total", (("module_id", "greet"), ("status", "success")))
+        key = (
+            "apcore_module_calls_total",
+            (("module_id", "greet"), ("status", "success")),
+        )
         assert snap["counters"][key] == 1
 
     def test_increment_errors(self):
@@ -207,7 +220,10 @@ class TestMetricsCollectorConvenienceMethods:
         c = MetricsCollector()
         c.increment_errors("greet", "RuntimeError")
         snap = c.snapshot()
-        key = ("apcore_module_errors_total", (("error_code", "RuntimeError"), ("module_id", "greet")))
+        key = (
+            "apcore_module_errors_total",
+            (("error_code", "RuntimeError"), ("module_id", "greet")),
+        )
         assert snap["counters"][key] == 1
 
     def test_observe_duration(self):
@@ -248,7 +264,10 @@ class TestMetricsMiddlewareAfter:
         mw.after("mod.a", {}, {"result": "ok"}, ctx)
         assert len(ctx.data["_metrics_starts"]) == 0
         snap = c.snapshot()
-        calls_key = ("apcore_module_calls_total", (("module_id", "mod.a"), ("status", "success")))
+        calls_key = (
+            "apcore_module_calls_total",
+            (("module_id", "mod.a"), ("status", "success")),
+        )
         assert snap["counters"][calls_key] == 1
         dur_key = ("apcore_module_duration_seconds", (("module_id", "mod.a"),))
         assert snap["histograms"]["counts"][dur_key] == 1
@@ -265,9 +284,15 @@ class TestMetricsMiddlewareOnError:
         mw.before("mod.a", {}, ctx)
         mw.on_error("mod.a", {}, RuntimeError("fail"), ctx)
         snap = c.snapshot()
-        calls_key = ("apcore_module_calls_total", (("module_id", "mod.a"), ("status", "error")))
+        calls_key = (
+            "apcore_module_calls_total",
+            (("module_id", "mod.a"), ("status", "error")),
+        )
         assert snap["counters"][calls_key] == 1
-        errors_key = ("apcore_module_errors_total", (("error_code", "RuntimeError"), ("module_id", "mod.a")))
+        errors_key = (
+            "apcore_module_errors_total",
+            (("error_code", "RuntimeError"), ("module_id", "mod.a")),
+        )
         assert snap["counters"][errors_key] == 1
 
     def test_on_error_module_error_code(self):
@@ -279,7 +304,10 @@ class TestMetricsMiddlewareOnError:
         err = ModuleError(code="ACL_DENIED", message="denied")
         mw.on_error("mod.a", {}, err, ctx)
         snap = c.snapshot()
-        errors_key = ("apcore_module_errors_total", (("error_code", "ACL_DENIED"), ("module_id", "mod.a")))
+        errors_key = (
+            "apcore_module_errors_total",
+            (("error_code", "ACL_DENIED"), ("module_id", "mod.a")),
+        )
         assert snap["counters"][errors_key] == 1
 
     def test_on_error_generic_exception_code(self):
@@ -290,7 +318,10 @@ class TestMetricsMiddlewareOnError:
         mw.before("mod.a", {}, ctx)
         mw.on_error("mod.a", {}, ValueError("bad"), ctx)
         snap = c.snapshot()
-        errors_key = ("apcore_module_errors_total", (("error_code", "ValueError"), ("module_id", "mod.a")))
+        errors_key = (
+            "apcore_module_errors_total",
+            (("error_code", "ValueError"), ("module_id", "mod.a")),
+        )
         assert snap["counters"][errors_key] == 1
 
     def test_on_error_returns_none(self):
@@ -320,8 +351,14 @@ class TestMetricsMiddlewareNested:
         assert len(ctx.data["_metrics_starts"]) == 0
         snap = c.snapshot()
         # Both modules should have success calls
-        key_a = ("apcore_module_calls_total", (("module_id", "mod.a"), ("status", "success")))
-        key_b = ("apcore_module_calls_total", (("module_id", "mod.b"), ("status", "success")))
+        key_a = (
+            "apcore_module_calls_total",
+            (("module_id", "mod.a"), ("status", "success")),
+        )
+        key_b = (
+            "apcore_module_calls_total",
+            (("module_id", "mod.b"), ("status", "success")),
+        )
         assert snap["counters"][key_a] == 1
         assert snap["counters"][key_b] == 1
 
@@ -337,7 +374,10 @@ class TestMetricsMiddlewareIntegration:
         mw.before("greet", {"name": "Alice"}, ctx)
         mw.after("greet", {"name": "Alice"}, {"message": "Hello"}, ctx)
         snap = c.snapshot()
-        calls_key = ("apcore_module_calls_total", (("module_id", "greet"), ("status", "success")))
+        calls_key = (
+            "apcore_module_calls_total",
+            (("module_id", "greet"), ("status", "success")),
+        )
         assert snap["counters"][calls_key] == 1
         dur_key = ("apcore_module_duration_seconds", (("module_id", "greet"),))
         assert snap["histograms"]["sums"][dur_key] >= 0

@@ -50,7 +50,9 @@ class TestMiddlewareBase:
         """Subclass overriding only before() leaves other methods as no-ops."""
 
         class MyMiddleware(Middleware):
-            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
+            def before(
+                self, module_id: str, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any] | None:
                 return {"modified": True}
 
         mw = MyMiddleware()
@@ -63,16 +65,26 @@ class TestMiddlewareBase:
         """Subclass can override all three methods with custom behavior."""
 
         class FullMiddleware(Middleware):
-            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
+            def before(
+                self, module_id: str, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any] | None:
                 return {"before": True}
 
             def after(
-                self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                output: dict[str, Any],
+                context: Context,
             ) -> dict[str, Any] | None:
                 return {"after": True}
 
             def on_error(
-                self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                error: Exception,
+                context: Context,
             ) -> dict[str, Any] | None:
                 return {"error_handled": True}
 

@@ -80,7 +80,10 @@ class TestSchemaDefinition:
         sd = SchemaDefinition(
             module_id="db.query",
             description="Query DB",
-            input_schema={"type": "object", "properties": {"table": {"type": "string"}}},
+            input_schema={
+                "type": "object",
+                "properties": {"table": {"type": "string"}},
+            },
             output_schema={"type": "object"},
             error_schema={"type": "object"},
             definitions={"Address": {"type": "object"}},
@@ -169,8 +172,20 @@ class TestSchemaValidationResult:
 
     def test_to_error_multiple_errors(self) -> None:
         details = [
-            SchemaValidationErrorDetail(path="/name", message="required", constraint="required", expected="string", actual=None),
-            SchemaValidationErrorDetail(path="/age", message="wrong type", constraint="type", expected="integer", actual="abc"),
+            SchemaValidationErrorDetail(
+                path="/name",
+                message="required",
+                constraint="required",
+                expected="string",
+                actual=None,
+            ),
+            SchemaValidationErrorDetail(
+                path="/age",
+                message="wrong type",
+                constraint="type",
+                expected="integer",
+                actual="abc",
+            ),
         ]
         result = SchemaValidationResult(valid=False, errors=details)
         err = result.to_error()

@@ -46,6 +46,7 @@ class TestValidateModule:
 
     def test_plain_class_returns_error(self) -> None:
         """Plain class with no module interface returns errors."""
+
         class NotAModule:
             pass
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -32,12 +33,18 @@ class TrackingMiddleware(Middleware):
         self._after_return = after_return
         self._on_error_return = on_error_return
 
-    def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
+    def before(
+        self, module_id: str, inputs: dict[str, Any], context: Context
+    ) -> dict[str, Any] | None:
         self.before_calls.append((module_id, inputs))
         return self._before_return
 
     def after(
-        self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Context
+        self,
+        module_id: str,
+        inputs: dict[str, Any],
+        output: dict[str, Any],
+        context: Context,
     ) -> dict[str, Any] | None:
         self.after_calls.append((module_id, inputs, output))
         return self._after_return
@@ -52,7 +59,9 @@ class TrackingMiddleware(Middleware):
 class FailingMiddleware(Middleware):
     """Middleware that raises in before()."""
 
-    def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
+    def before(
+        self, module_id: str, inputs: dict[str, Any], context: Context
+    ) -> dict[str, Any] | None:
         raise RuntimeError("before failed")
 
 
@@ -60,7 +69,11 @@ class FailingAfterMiddleware(Middleware):
     """Middleware that raises in after()."""
 
     def after(
-        self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Context
+        self,
+        module_id: str,
+        inputs: dict[str, Any],
+        output: dict[str, Any],
+        context: Context,
     ) -> dict[str, Any] | None:
         raise RuntimeError("after failed")
 
@@ -132,7 +145,9 @@ class TestExecuteBefore:
             def __init__(self, name: str) -> None:
                 self._name = name
 
-            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
+            def before(
+                self, module_id: str, inputs: dict[str, Any], context: Context
+            ) -> dict[str, Any] | None:
                 order.append(self._name)
                 return None
 
@@ -230,7 +245,11 @@ class TestExecuteAfter:
                 self._name = name
 
             def after(
-                self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                output: dict[str, Any],
+                context: Context,
             ) -> dict[str, Any] | None:
                 order.append(self._name)
                 return None
@@ -306,7 +325,11 @@ class TestExecuteOnError:
                 self._name = name
 
             def on_error(
-                self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                error: Exception,
+                context: Context,
             ) -> dict[str, Any] | None:
                 order.append(self._name)
                 return None
@@ -358,7 +381,9 @@ class TestExecuteOnError:
 
         ctx = MagicMock(spec=Context)
         with caplog.at_level(logging.ERROR):
-            result = mgr.execute_on_error("mod", {}, RuntimeError("original"), ctx, executed)
+            result = mgr.execute_on_error(
+                "mod", {}, RuntimeError("original"), ctx, executed
+            )
         assert result is None
         # mw1 should still have been called (failure in mw2's on_error doesn't stop chain)
         assert len(mw1.on_error_calls) == 1
@@ -380,3 +405,73 @@ class TestExecuteOnError:
         ctx = MagicMock(spec=Context)
         result = mgr.execute_on_error("mod", {}, RuntimeError(), ctx, [])
         assert result is None
+
+
+# === Thread Safety Tests ===
+
+
+class TestMiddlewareManagerThreadSafety:
+    """Tests for thread-safe add/remove/snapshot operations."""
+
+    def test_concurrent_add_no_lost_middlewares(self) -> None:
+        """Concurrent add() calls should not lose any middlewares."""
+        mgr = MiddlewareManager()
+        num_threads = 10
+        adds_per_thread = 50
+
+        def adder() -> None:
+            for _ in range(adds_per_thread):
+                mgr.add(Middleware())
+
+        threads = [threading.Thread(target=adder) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(mgr.snapshot()) == num_threads * adds_per_thread
+
+    def test_snapshot_returns_consistent_copy(self) -> None:
+        """snapshot() returns a list that is not affected by later mutations."""
+        mgr = MiddlewareManager()
+        mw1 = Middleware()
+        mw2 = Middleware()
+        mgr.add(mw1)
+        mgr.add(mw2)
+
+        snap = mgr.snapshot()
+        assert len(snap) == 2
+
+        mgr.remove(mw1)
+        # snapshot is a copy, still has 2 items
+        assert len(snap) == 2
+        # but the manager now has 1
+        assert len(mgr.snapshot()) == 1
+
+    def test_concurrent_add_and_snapshot(self) -> None:
+        """Concurrent add() and snapshot() should not raise."""
+        mgr = MiddlewareManager()
+        errors: list[Exception] = []
+
+        def adder() -> None:
+            try:
+                for _ in range(100):
+                    mgr.add(Middleware())
+            except Exception as e:
+                errors.append(e)
+
+        def reader() -> None:
+            try:
+                for _ in range(100):
+                    mgr.snapshot()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=adder) for _ in range(5)]
+        threads += [threading.Thread(target=reader) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []

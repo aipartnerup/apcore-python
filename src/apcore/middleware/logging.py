@@ -52,7 +52,13 @@ class LoggingMiddleware(Middleware):
 
         return None
 
-    def after(self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Context) -> None:
+    def after(
+        self,
+        module_id: str,
+        inputs: dict[str, Any],
+        output: dict[str, Any],
+        context: Context,
+    ) -> None:
         """Log module completion with duration and output."""
         start_time = context.data.get("_logging_mw_start", time.time())
         duration_ms = (time.time() - start_time) * 1000
@@ -70,7 +76,9 @@ class LoggingMiddleware(Middleware):
 
         return None
 
-    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context) -> None:
+    def on_error(
+        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
+    ) -> None:
         """Log module error with redacted inputs and traceback."""
         if self._log_errors:
             redacted = getattr(context, "redacted_inputs", inputs)

@@ -143,7 +143,10 @@ class SchemaValidationError(ModuleError):
     """Raised when schema validation fails."""
 
     def __init__(
-        self, message: str = "Schema validation failed", errors: list[dict[str, Any]] | None = None, **kwargs: Any
+        self,
+        message: str = "Schema validation failed",
+        errors: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             code="SCHEMA_VALIDATION_ERROR",
@@ -187,7 +190,9 @@ class SchemaCircularRefError(ModuleError):
 class CallDepthExceededError(ModuleError):
     """Raised when call chain exceeds maximum depth."""
 
-    def __init__(self, depth: int, max_depth: int, call_chain: list[str], **kwargs: Any) -> None:
+    def __init__(
+        self, depth: int, max_depth: int, call_chain: list[str], **kwargs: Any
+    ) -> None:
         super().__init__(
             code="CALL_DEPTH_EXCEEDED",
             message=f"Call depth {depth} exceeds maximum {max_depth}",
@@ -226,11 +231,23 @@ class CircularCallError(ModuleError):
 class CallFrequencyExceededError(ModuleError):
     """Raised when a module is called too many times."""
 
-    def __init__(self, module_id: str, count: int, max_repeat: int, call_chain: list[str], **kwargs: Any) -> None:
+    def __init__(
+        self,
+        module_id: str,
+        count: int,
+        max_repeat: int,
+        call_chain: list[str],
+        **kwargs: Any,
+    ) -> None:
         super().__init__(
             code="CALL_FREQUENCY_EXCEEDED",
             message=f"Module {module_id} called {count} times, max is {max_repeat}",
-            details={"module_id": module_id, "count": count, "max_repeat": max_repeat, "call_chain": call_chain},
+            details={
+                "module_id": module_id,
+                "count": count,
+                "max_repeat": max_repeat,
+                "call_chain": call_chain,
+            },
             **kwargs,
         )
 
@@ -260,7 +277,9 @@ class InvalidInputError(ModuleError):
 class FuncMissingTypeHintError(ModuleError):
     """Raised when a function parameter has no type annotation or a forward reference cannot be resolved."""
 
-    def __init__(self, *, function_name: str, parameter_name: str, **kwargs: Any) -> None:
+    def __init__(
+        self, *, function_name: str, parameter_name: str, **kwargs: Any
+    ) -> None:
         super().__init__(
             code="FUNC_MISSING_TYPE_HINT",
             message=(

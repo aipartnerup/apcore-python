@@ -69,7 +69,11 @@ def scan_extensions(
                         continue
                     real = entry_path.resolve()
                     if real in visited_real_paths:
-                        logger.warning("Symlink cycle detected at %s -> %s, skipping", entry_path, real)
+                        logger.warning(
+                            "Symlink cycle detected at %s -> %s, skipping",
+                            entry_path,
+                            real,
+                        )
                         continue
                     visited_real_paths.add(real)
                 _scan_dir(entry_path, depth + 1)
@@ -86,15 +90,21 @@ def scan_extensions(
                 if canonical_id in seen_ids:
                     logger.error(
                         "Duplicate module ID '%s' at %s, already found at %s. Skipping.",
-                        canonical_id, entry_path, seen_ids[canonical_id],
+                        canonical_id,
+                        entry_path,
+                        seen_ids[canonical_id],
                     )
                     continue
 
                 lower_id = canonical_id.lower()
-                if lower_id in seen_ids_lower and seen_ids_lower[lower_id] != canonical_id:
+                if (
+                    lower_id in seen_ids_lower
+                    and seen_ids_lower[lower_id] != canonical_id
+                ):
                     logger.warning(
                         "Case collision: '%s' and '%s' differ only by case",
-                        canonical_id, seen_ids_lower[lower_id],
+                        canonical_id,
+                        seen_ids_lower[lower_id],
                     )
 
                 meta_path = entry_path.with_name(entry_path.stem + "_meta.yaml")
@@ -135,13 +145,17 @@ def scan_multi_root(
         resolved.append((root_path, namespace))
 
     for root_path, namespace in resolved:
-        modules = scan_extensions(root_path, max_depth=max_depth, follow_symlinks=follow_symlinks)
+        modules = scan_extensions(
+            root_path, max_depth=max_depth, follow_symlinks=follow_symlinks
+        )
         for m in modules:
-            all_results.append(DiscoveredModule(
-                file_path=m.file_path,
-                canonical_id=f"{namespace}.{m.canonical_id}",
-                meta_path=m.meta_path,
-                namespace=namespace,
-            ))
+            all_results.append(
+                DiscoveredModule(
+                    file_path=m.file_path,
+                    canonical_id=f"{namespace}.{m.canonical_id}",
+                    meta_path=m.meta_path,
+                    namespace=namespace,
+                )
+            )
 
     return all_results

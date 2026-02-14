@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import json
+import logging
 import os
 import random
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -47,23 +50,34 @@ class StdoutExporter:
         print(json.dumps(data, default=str), file=sys.stdout)
 
 
-class InMemoryExporter:
-    """Collects spans in memory for testing."""
+_tracing_logger = logging.getLogger(__name__)
 
-    def __init__(self) -> None:
-        self._spans: list[Span] = []
+
+class InMemoryExporter:
+    """Collects spans in memory for testing.
+
+    Thread-safe and bounded: uses a deque with a configurable max size
+    to prevent unbounded memory growth.
+    """
+
+    def __init__(self, max_spans: int = 10_000) -> None:
+        self._spans: collections.deque[Span] = collections.deque(maxlen=max_spans)
+        self._lock = threading.Lock()
 
     def export(self, span: Span) -> None:
-        """Add span to internal collection."""
-        self._spans.append(span)
+        """Add span to internal collection (thread-safe, bounded)."""
+        with self._lock:
+            self._spans.append(span)
 
     def get_spans(self) -> list[Span]:
         """Return all collected spans."""
-        return list(self._spans)
+        with self._lock:
+            return list(self._spans)
 
     def clear(self) -> None:
         """Remove all collected spans."""
-        self._spans.clear()
+        with self._lock:
+            self._spans.clear()
 
 
 class OTLPExporter:
@@ -177,9 +191,13 @@ class TracingMiddleware(Middleware):
         sampling_strategy: str = "full",
     ) -> None:
         if not (0.0 <= sampling_rate <= 1.0):
-            raise ValueError(f"sampling_rate must be between 0.0 and 1.0, got {sampling_rate}")
+            raise ValueError(
+                f"sampling_rate must be between 0.0 and 1.0, got {sampling_rate}"
+            )
         if sampling_strategy not in _VALID_STRATEGIES:
-            raise ValueError(f"sampling_strategy must be one of {_VALID_STRATEGIES}, got {sampling_strategy!r}")
+            raise ValueError(
+                f"sampling_strategy must be one of {_VALID_STRATEGIES}, got {sampling_strategy!r}"
+            )
         self._exporter = exporter
         self._sampling_rate = sampling_rate
         self._sampling_strategy = sampling_strategy
@@ -200,7 +218,9 @@ class TracingMiddleware(Middleware):
         context.data["_tracing_sampled"] = decision
         return decision
 
-    def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
+    def before(
+        self, module_id: str, inputs: dict[str, Any], context: Any
+    ) -> dict[str, Any] | None:
         """Create a span, push to stack, make/inherit sampling decision."""
         self._should_sample(context)
 
@@ -223,10 +243,21 @@ class TracingMiddleware(Middleware):
         return None
 
     def after(
-        self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Any
+        self,
+        module_id: str,
+        inputs: dict[str, Any],
+        output: dict[str, Any],
+        context: Any,
     ) -> dict[str, Any] | None:
         """Pop span, finalize with success status, export if sampled."""
-        span = context.data["_tracing_spans"].pop()
+        spans_stack = context.data.get("_tracing_spans", [])
+        if not spans_stack:
+            _tracing_logger.warning(
+                "TracingMiddleware.after() called with empty span stack for %s",
+                module_id,
+            )
+            return None
+        span = spans_stack.pop()
         span.end_time = time.time()
         span.status = "ok"
         span.attributes["duration_ms"] = (span.end_time - span.start_time) * 1000
@@ -236,16 +267,27 @@ class TracingMiddleware(Middleware):
             self._exporter.export(span)
         return None
 
-    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
+    def on_error(
+        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any
+    ) -> dict[str, Any] | None:
         """Pop span, finalize with error status, always export for error_first. Return None."""
-        span = context.data["_tracing_spans"].pop()
+        spans_stack = context.data.get("_tracing_spans", [])
+        if not spans_stack:
+            _tracing_logger.warning(
+                "TracingMiddleware.on_error() called with empty span stack for %s",
+                module_id,
+            )
+            return None
+        span = spans_stack.pop()
         span.end_time = time.time()
         span.status = "error"
         span.attributes["duration_ms"] = (span.end_time - span.start_time) * 1000
         span.attributes["success"] = False
         span.attributes["error_code"] = getattr(error, "code", type(error).__name__)
 
-        should_export = self._sampling_strategy == "error_first" or context.data.get("_tracing_sampled")
+        should_export = self._sampling_strategy == "error_first" or context.data.get(
+            "_tracing_sampled"
+        )
         if should_export:
             self._exporter.export(span)
         return None

@@ -20,13 +20,22 @@ class TestModuleDescriptor:
             description="Sends an email",
             documentation=None,
             input_schema={"type": "object", "properties": {"to": {"type": "string"}}},
-            output_schema={"type": "object", "properties": {"sent": {"type": "boolean"}}},
+            output_schema={
+                "type": "object",
+                "properties": {"sent": {"type": "boolean"}},
+            },
         )
         assert desc.module_id == "email.send"
         assert desc.name == "Send Email"
         assert desc.description == "Sends an email"
-        assert desc.input_schema == {"type": "object", "properties": {"to": {"type": "string"}}}
-        assert desc.output_schema == {"type": "object", "properties": {"sent": {"type": "boolean"}}}
+        assert desc.input_schema == {
+            "type": "object",
+            "properties": {"to": {"type": "string"}},
+        }
+        assert desc.output_schema == {
+            "type": "object",
+            "properties": {"sent": {"type": "boolean"}},
+        }
 
     def test_defaults_for_optional_fields(self) -> None:
         """Optional fields have correct default values."""
@@ -103,12 +112,20 @@ class TestModuleDescriptor:
     def test_mutable_defaults_are_independent(self) -> None:
         """Each instance gets its own list/dict for mutable defaults."""
         desc1 = ModuleDescriptor(
-            module_id="a", name=None, description="A", documentation=None,
-            input_schema={}, output_schema={},
+            module_id="a",
+            name=None,
+            description="A",
+            documentation=None,
+            input_schema={},
+            output_schema={},
         )
         desc2 = ModuleDescriptor(
-            module_id="b", name=None, description="B", documentation=None,
-            input_schema={}, output_schema={},
+            module_id="b",
+            name=None,
+            description="B",
+            documentation=None,
+            input_schema={},
+            output_schema={},
         )
         desc1.tags.append("x")
         assert desc2.tags == []

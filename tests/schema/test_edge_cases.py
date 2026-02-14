@@ -72,19 +72,21 @@ class TestTypeEdgeCases:
         input_rs, _ = schema_loader.resolve(sd)
         model = input_rs.model
         # Validate a deeply nested data dict
-        instance = model.model_validate({
-            "config": {
-                "database": {
-                    "connection": {
-                        "host": "localhost",
-                        "port": 5432,
-                        "pool": {"min_size": 1, "max_size": 10},
+        instance = model.model_validate(
+            {
+                "config": {
+                    "database": {
+                        "connection": {
+                            "host": "localhost",
+                            "port": 5432,
+                            "pool": {"min_size": 1, "max_size": 10},
+                        },
+                        "name": "testdb",
                     },
-                    "name": "testdb",
-                },
-                "cache_ttl": 300,
+                    "cache_ttl": 300,
+                }
             }
-        })
+        )
         assert instance is not None
 
     def test_nullable_type_array(self) -> None:
@@ -131,7 +133,9 @@ class TestTypeEdgeCases:
         loader = SchemaLoader(config=config)
         model = loader.generate_model(schema, "FormatTest")
         # Non-conforming values should still pass (format not enforced)
-        instance = model.model_validate({"created_at": "not-a-date", "email": "not-an-email"})
+        instance = model.model_validate(
+            {"created_at": "not-a-date", "email": "not-an-email"}
+        )
         assert instance is not None
 
 
@@ -256,10 +260,24 @@ class TestPublicApi:
             merge_metadata,
             to_strict_schema,
         )
+
         # Just verify they're all not None
-        assert all([
-            ExportProfile, LLMExtensions, RefResolver, ResolvedSchema,
-            SchemaDefinition, SchemaExporter, SchemaLoader, SchemaStrategy,
-            SchemaValidationErrorDetail, SchemaValidationResult, SchemaValidator,
-            merge_annotations, merge_examples, merge_metadata, to_strict_schema,
-        ])
+        assert all(
+            [
+                ExportProfile,
+                LLMExtensions,
+                RefResolver,
+                ResolvedSchema,
+                SchemaDefinition,
+                SchemaExporter,
+                SchemaLoader,
+                SchemaStrategy,
+                SchemaValidationErrorDetail,
+                SchemaValidationResult,
+                SchemaValidator,
+                merge_annotations,
+                merge_examples,
+                merge_metadata,
+                to_strict_schema,
+            ]
+        )

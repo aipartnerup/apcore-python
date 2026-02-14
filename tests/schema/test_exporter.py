@@ -23,12 +23,17 @@ def _make_schema_def(
         or {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "Recipient", "x-llm-description": "Full recipient email"},
+                "to": {
+                    "type": "string",
+                    "description": "Recipient",
+                    "x-llm-description": "Full recipient email",
+                },
                 "cc": {"type": "array", "items": {"type": "string"}, "default": []},
             },
             "required": ["to"],
         },
-        output_schema=output_schema or {"type": "object", "properties": {"status": {"type": "string"}}},
+        output_schema=output_schema
+        or {"type": "object", "properties": {"status": {"type": "string"}}},
         definitions=definitions or {},
     )
 
@@ -37,7 +42,9 @@ def _make_annotations(**kwargs: Any) -> ModuleAnnotations:
     return ModuleAnnotations(**kwargs)
 
 
-def _make_example(title: str = "Example 1", inputs: dict[str, Any] | None = None) -> ModuleExample:
+def _make_example(
+    title: str = "Example 1", inputs: dict[str, Any] | None = None
+) -> ModuleExample:
     return ModuleExample(title=title, inputs=inputs or {"to": "user@example.com"})
 
 
@@ -59,7 +66,13 @@ class TestExportGeneric:
         sd = _make_schema_def()
         exporter = SchemaExporter()
         result = exporter.export_generic(sd)
-        assert set(result.keys()) == {"module_id", "description", "input_schema", "output_schema", "definitions"}
+        assert set(result.keys()) == {
+            "module_id",
+            "description",
+            "input_schema",
+            "output_schema",
+            "definitions",
+        }
 
 
 # ===== export_mcp() =====
@@ -80,7 +93,9 @@ class TestExportMcp:
 
     def test_annotations_mapped(self) -> None:
         sd = _make_schema_def()
-        ann = _make_annotations(readonly=True, destructive=True, idempotent=True, open_world=False)
+        ann = _make_annotations(
+            readonly=True, destructive=True, idempotent=True, open_world=False
+        )
         exporter = SchemaExporter()
         result = exporter.export_mcp(sd, annotations=ann)
         assert result["annotations"]["readOnlyHint"] is True
@@ -118,19 +133,27 @@ class TestExportOpenai:
         sd = _make_schema_def()
         exporter = SchemaExporter()
         result = exporter.export_openai(sd)
-        assert result["function"]["parameters"]["properties"]["to"]["description"] == "Full recipient email"
+        assert (
+            result["function"]["parameters"]["properties"]["to"]["description"]
+            == "Full recipient email"
+        )
 
     def test_x_fields_stripped(self) -> None:
         sd = _make_schema_def()
         exporter = SchemaExporter()
         result = exporter.export_openai(sd)
-        assert "x-llm-description" not in result["function"]["parameters"]["properties"]["to"]
+        assert (
+            "x-llm-description"
+            not in result["function"]["parameters"]["properties"]["to"]
+        )
 
     def test_defaults_stripped(self) -> None:
         sd = _make_schema_def()
         exporter = SchemaExporter()
         result = exporter.export_openai(sd)
-        assert "default" not in result["function"]["parameters"]["properties"].get("cc", {})
+        assert "default" not in result["function"]["parameters"]["properties"].get(
+            "cc", {}
+        )
 
     def test_id_dots_to_underscores(self) -> None:
         sd = _make_schema_def()
@@ -169,7 +192,10 @@ class TestExportAnthropic:
         sd = _make_schema_def()
         exporter = SchemaExporter()
         result = exporter.export_anthropic(sd)
-        assert result["input_schema"]["properties"]["to"]["description"] == "Full recipient email"
+        assert (
+            result["input_schema"]["properties"]["to"]["description"]
+            == "Full recipient email"
+        )
 
     def test_id_dots_to_underscores(self) -> None:
         sd = _make_schema_def()

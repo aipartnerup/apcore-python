@@ -204,10 +204,12 @@ class TestScanMultiRoot:
         root_b.mkdir()
         (root_a / "mod.py").write_text("")
         (root_b / "mod.py").write_text("")
-        result = scan_multi_root([
-            {"root": str(root_a), "namespace": "ns_a"},
-            {"root": str(root_b), "namespace": "ns_b"},
-        ])
+        result = scan_multi_root(
+            [
+                {"root": str(root_a), "namespace": "ns_a"},
+                {"root": str(root_b), "namespace": "ns_b"},
+            ]
+        )
         ids = {m.canonical_id for m in result}
         assert ids == {"ns_a.mod", "ns_b.mod"}
 
@@ -223,10 +225,12 @@ class TestScanMultiRoot:
     def test_duplicate_namespaces_raises(self) -> None:
         """Duplicate namespaces raise ConfigError."""
         with pytest.raises(ConfigError):
-            scan_multi_root([
-                {"root": "/tmp/a", "namespace": "same"},
-                {"root": "/tmp/b", "namespace": "same"},
-            ])
+            scan_multi_root(
+                [
+                    {"root": "/tmp/a", "namespace": "same"},
+                    {"root": "/tmp/b", "namespace": "same"},
+                ]
+            )
 
     def test_explicit_namespace_used(self, tmp_path: Path) -> None:
         """Explicit namespace in config dict is used."""

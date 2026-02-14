@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,10 @@ class TestACLPatternMatching:
         """@system matches when context has an identity with type='system'."""
         acl = ACL(rules=[ACLRule(callers=["@system"], targets=["*"], effect="allow")])
         ctx = Context.create(identity=Identity(id="sys_1", type="system"))
-        assert acl.check(caller_id="internal.task", target_id="db.write", context=ctx) is True
+        assert (
+            acl.check(caller_id="internal.task", target_id="db.write", context=ctx)
+            is True
+        )
 
     # Test: @system pattern does NOT match when identity is None
     def test_system_pattern_no_match_when_identity_none(self) -> None:
@@ -48,7 +52,10 @@ class TestACLPatternMatching:
             default_effect="deny",
         )
         ctx = Context.create()
-        assert acl.check(caller_id="internal.task", target_id="db.write", context=ctx) is False
+        assert (
+            acl.check(caller_id="internal.task", target_id="db.write", context=ctx)
+            is False
+        )
 
     # Test: @system pattern does NOT match when identity.type != "system"
     def test_system_pattern_no_match_when_identity_not_system(self) -> None:
@@ -58,12 +65,19 @@ class TestACLPatternMatching:
             default_effect="deny",
         )
         ctx = Context.create(identity=Identity(id="u_123", type="user"))
-        assert acl.check(caller_id="internal.task", target_id="db.write", context=ctx) is False
+        assert (
+            acl.check(caller_id="internal.task", target_id="db.write", context=ctx)
+            is False
+        )
 
     # Test: exact pattern delegates to foundation match_pattern
     def test_exact_pattern_delegates_to_foundation(self) -> None:
         """Exact caller/target patterns use foundation match_pattern for matching."""
-        acl = ACL(rules=[ACLRule(callers=["api.handler"], targets=["db.read"], effect="allow")])
+        acl = ACL(
+            rules=[
+                ACLRule(callers=["api.handler"], targets=["db.read"], effect="allow")
+            ]
+        )
         assert acl.check(caller_id="api.handler", target_id="db.read") is True
 
     # Test: wildcard "*" delegates to foundation match_pattern
@@ -75,7 +89,9 @@ class TestACLPatternMatching:
     # Test: prefix "executor.*" delegates to foundation match_pattern
     def test_prefix_wildcard_delegates_to_foundation(self) -> None:
         """Prefix wildcard patterns delegate to foundation match_pattern."""
-        acl = ACL(rules=[ACLRule(callers=["executor.*"], targets=["*"], effect="allow")])
+        acl = ACL(
+            rules=[ACLRule(callers=["executor.*"], targets=["*"], effect="allow")]
+        )
         assert acl.check(caller_id="executor.email", target_id="some.target") is True
         assert acl.check(caller_id="api.handler", target_id="some.target") is False
 
@@ -151,7 +167,8 @@ class TestACLLoad:
     # Test: load valid YAML with rules
     def test_load_valid_yaml(self, tmp_path: Path) -> None:
         """Load a valid YAML ACL configuration file."""
-        yaml_content = textwrap.dedent("""\
+        yaml_content = textwrap.dedent(
+            """\
             version: "1.0"
             default_effect: deny
             rules:
@@ -162,7 +179,8 @@ class TestACLLoad:
               - callers: ["*"]
                 targets: ["admin.*"]
                 effect: deny
-        """)
+        """
+        )
         yaml_file = tmp_path / "acl.yaml"
         yaml_file.write_text(yaml_content)
 
@@ -203,12 +221,14 @@ class TestACLLoad:
     # Test: load YAML with rule missing "callers" raises ACLRuleError
     def test_load_yaml_rule_missing_callers(self, tmp_path: Path) -> None:
         """A rule without 'callers' key raises ACLRuleError."""
-        yaml_content = textwrap.dedent("""\
+        yaml_content = textwrap.dedent(
+            """\
             version: "1.0"
             rules:
               - targets: ["*"]
                 effect: allow
-        """)
+        """
+        )
         yaml_file = tmp_path / "no_callers.yaml"
         yaml_file.write_text(yaml_content)
         with pytest.raises(ACLRuleError):
@@ -217,12 +237,14 @@ class TestACLLoad:
     # Test: load YAML with rule missing "targets" raises ACLRuleError
     def test_load_yaml_rule_missing_targets(self, tmp_path: Path) -> None:
         """A rule without 'targets' key raises ACLRuleError."""
-        yaml_content = textwrap.dedent("""\
+        yaml_content = textwrap.dedent(
+            """\
             version: "1.0"
             rules:
               - callers: ["*"]
                 effect: allow
-        """)
+        """
+        )
         yaml_file = tmp_path / "no_targets.yaml"
         yaml_file.write_text(yaml_content)
         with pytest.raises(ACLRuleError):
@@ -231,12 +253,14 @@ class TestACLLoad:
     # Test: load YAML with rule missing "effect" raises ACLRuleError
     def test_load_yaml_rule_missing_effect(self, tmp_path: Path) -> None:
         """A rule without 'effect' key raises ACLRuleError."""
-        yaml_content = textwrap.dedent("""\
+        yaml_content = textwrap.dedent(
+            """\
             version: "1.0"
             rules:
               - callers: ["*"]
                 targets: ["*"]
-        """)
+        """
+        )
         yaml_file = tmp_path / "no_effect.yaml"
         yaml_file.write_text(yaml_content)
         with pytest.raises(ACLRuleError):
@@ -245,13 +269,15 @@ class TestACLLoad:
     # Test: load YAML with invalid effect (not allow/deny) raises ACLRuleError
     def test_load_yaml_invalid_effect(self, tmp_path: Path) -> None:
         """A rule with effect other than 'allow'/'deny' raises ACLRuleError."""
-        yaml_content = textwrap.dedent("""\
+        yaml_content = textwrap.dedent(
+            """\
             version: "1.0"
             rules:
               - callers: ["*"]
                 targets: ["*"]
                 effect: maybe
-        """)
+        """
+        )
         yaml_file = tmp_path / "bad_effect.yaml"
         yaml_file.write_text(yaml_content)
         with pytest.raises(ACLRuleError):
@@ -260,13 +286,15 @@ class TestACLLoad:
     # Test: load YAML with callers as string (not list) raises ACLRuleError
     def test_load_yaml_callers_not_list(self, tmp_path: Path) -> None:
         """A rule with 'callers' as a string instead of list raises ACLRuleError."""
-        yaml_content = textwrap.dedent("""\
+        yaml_content = textwrap.dedent(
+            """\
             version: "1.0"
             rules:
               - callers: "api.*"
                 targets: ["*"]
                 effect: allow
-        """)
+        """
+        )
         yaml_file = tmp_path / "callers_string.yaml"
         yaml_file.write_text(yaml_content)
         with pytest.raises(ACLRuleError):
@@ -275,7 +303,8 @@ class TestACLLoad:
     # Test: load YAML with optional description and conditions
     def test_load_yaml_with_description_and_conditions(self, tmp_path: Path) -> None:
         """Rules with optional description and conditions fields are parsed correctly."""
-        yaml_content = textwrap.dedent("""\
+        yaml_content = textwrap.dedent(
+            """\
             version: "1.0"
             default_effect: deny
             rules:
@@ -286,7 +315,8 @@ class TestACLLoad:
                 conditions:
                   identity_types: ["service"]
                   max_call_depth: 5
-        """)
+        """
+        )
         yaml_file = tmp_path / "with_conditions.yaml"
         yaml_file.write_text(yaml_content)
 
@@ -353,7 +383,9 @@ class TestConditionalRules:
             ],
             default_effect="deny",
         )
-        ctx = Context.create(identity=Identity(id="u_1", type="user", roles=["admin", "reader"]))
+        ctx = Context.create(
+            identity=Identity(id="u_1", type="user", roles=["admin", "reader"])
+        )
         assert acl.check(caller_id="caller", target_id="target", context=ctx) is True
 
     # Test: roles condition fails when no intersection
@@ -476,14 +508,16 @@ class TestACLRuntimeModification:
     # Test: reload() re-reads from YAML file
     def test_reload_rereads_yaml(self, tmp_path: Path) -> None:
         """reload() re-reads the YAML file and updates rules."""
-        yaml_content_v1 = textwrap.dedent("""\
+        yaml_content_v1 = textwrap.dedent(
+            """\
             version: "1.0"
             default_effect: deny
             rules:
               - callers: ["*"]
                 targets: ["*"]
                 effect: deny
-        """)
+        """
+        )
         yaml_file = tmp_path / "acl.yaml"
         yaml_file.write_text(yaml_content_v1)
 
@@ -491,14 +525,16 @@ class TestACLRuntimeModification:
         assert acl.check(caller_id="api.handler", target_id="db.read") is False
 
         # Update the file
-        yaml_content_v2 = textwrap.dedent("""\
+        yaml_content_v2 = textwrap.dedent(
+            """\
             version: "1.0"
             default_effect: allow
             rules:
               - callers: ["*"]
                 targets: ["*"]
                 effect: allow
-        """)
+        """
+        )
         yaml_file.write_text(yaml_content_v2)
 
         acl.reload()
@@ -515,7 +551,9 @@ class TestACLWithContext:
     def test_check_with_none_caller_uses_external(self) -> None:
         """When caller_id is None, effective caller becomes '@external'."""
         acl = ACL(
-            rules=[ACLRule(callers=["@external"], targets=["public.*"], effect="allow")],
+            rules=[
+                ACLRule(callers=["@external"], targets=["public.*"], effect="allow")
+            ],
             default_effect="deny",
         )
         assert acl.check(caller_id=None, target_id="public.api") is True
@@ -535,7 +573,80 @@ class TestACLWithContext:
             ],
             default_effect="deny",
         )
-        ctx_admin = Context.create(identity=Identity(id="u_1", type="user", roles=["admin"]))
-        ctx_reader = Context.create(identity=Identity(id="u_2", type="user", roles=["reader"]))
-        assert acl.check(caller_id="caller", target_id="target", context=ctx_admin) is True
-        assert acl.check(caller_id="caller", target_id="target", context=ctx_reader) is False
+        ctx_admin = Context.create(
+            identity=Identity(id="u_1", type="user", roles=["admin"])
+        )
+        ctx_reader = Context.create(
+            identity=Identity(id="u_2", type="user", roles=["reader"])
+        )
+        assert (
+            acl.check(caller_id="caller", target_id="target", context=ctx_admin) is True
+        )
+        assert (
+            acl.check(caller_id="caller", target_id="target", context=ctx_reader)
+            is False
+        )
+
+
+# === Thread Safety ===
+
+
+class TestACLThreadSafety:
+    """Tests for ACL internal thread safety."""
+
+    def test_concurrent_check_no_error(self) -> None:
+        """Concurrent check() calls should not raise."""
+        acl = ACL(
+            rules=[
+                ACLRule(callers=["api.*"], targets=["db.*"], effect="allow"),
+                ACLRule(callers=["*"], targets=["admin.*"], effect="deny"),
+            ],
+            default_effect="deny",
+        )
+        errors: list[Exception] = []
+
+        def checker() -> None:
+            try:
+                for _ in range(200):
+                    acl.check(caller_id="api.handler", target_id="db.read")
+                    acl.check(caller_id="random", target_id="admin.panel")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=checker) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+
+    def test_concurrent_add_rule_and_check(self) -> None:
+        """Concurrent add_rule() and check() should not raise or corrupt state."""
+        acl = ACL(rules=[], default_effect="deny")
+        errors: list[Exception] = []
+
+        def adder() -> None:
+            try:
+                for i in range(50):
+                    acl.add_rule(
+                        ACLRule(callers=[f"caller.{i}"], targets=["*"], effect="allow")
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        def checker() -> None:
+            try:
+                for _ in range(200):
+                    acl.check(caller_id="caller.0", target_id="target")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=adder) for _ in range(3)]
+        threads += [threading.Thread(target=checker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []

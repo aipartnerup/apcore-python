@@ -162,7 +162,10 @@ class TestRedactSensitiveEdgeCases:
 
     def test_empty_data_returns_empty(self) -> None:
         """Empty data returns empty dict."""
-        schema = {"type": "object", "properties": {"x": {"type": "string", "x-sensitive": True}}}
+        schema = {
+            "type": "object",
+            "properties": {"x": {"type": "string", "x-sensitive": True}},
+        }
         result = redact_sensitive({}, schema)
         assert result == {}
 

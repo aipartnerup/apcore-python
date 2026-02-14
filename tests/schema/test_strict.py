@@ -5,7 +5,11 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from apcore.schema.strict import _apply_llm_descriptions, _strip_extensions, to_strict_schema
+from apcore.schema.strict import (
+    _apply_llm_descriptions,
+    _strip_extensions,
+    to_strict_schema,
+)
 
 
 # === to_strict_schema() ===
@@ -25,7 +29,11 @@ class TestToStrictSchema:
         schema: dict[str, Any] = {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "x-llm-description": "Full name", "x-examples": ["Alice"]},
+                "name": {
+                    "type": "string",
+                    "x-llm-description": "Full name",
+                    "x-examples": ["Alice"],
+                },
             },
             "required": ["name"],
         }
@@ -163,7 +171,10 @@ class TestToStrictSchema:
 
 class TestApplyLlmDescriptions:
     def test_replaces_description(self) -> None:
-        node: dict[str, Any] = {"description": "short", "x-llm-description": "long detailed"}
+        node: dict[str, Any] = {
+            "description": "short",
+            "x-llm-description": "long detailed",
+        }
         _apply_llm_descriptions(node)
         assert node["description"] == "long detailed"
         assert "x-llm-description" in node  # stripping happens separately
@@ -204,12 +215,18 @@ class TestStripExtensions:
         assert node == {"type": "integer"}
 
     def test_recursive_into_nested(self) -> None:
-        node: dict[str, Any] = {"properties": {"a": {"x-sensitive": True, "type": "string"}}}
+        node: dict[str, Any] = {
+            "properties": {"a": {"x-sensitive": True, "type": "string"}}
+        }
         _strip_extensions(node)
         assert node == {"properties": {"a": {"type": "string"}}}
 
     def test_non_x_keys_preserved(self) -> None:
-        node: dict[str, Any] = {"type": "object", "description": "test", "properties": {}}
+        node: dict[str, Any] = {
+            "type": "object",
+            "description": "test",
+            "properties": {},
+        }
         _strip_extensions(node)
         assert "type" in node
         assert "description" in node

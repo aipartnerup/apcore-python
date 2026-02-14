@@ -41,7 +41,9 @@ _logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def redact_sensitive(data: dict[str, Any], schema_dict: dict[str, Any]) -> dict[str, Any]:
+def redact_sensitive(
+    data: dict[str, Any], schema_dict: dict[str, Any]
+) -> dict[str, Any]:
     """Redact fields marked with x-sensitive in the schema.
 
     Implements Algorithm A13 from PROTOCOL_SPEC section 9.5.
@@ -81,12 +83,20 @@ def _redact_fields(data: dict[str, Any], schema_dict: dict[str, Any]) -> None:
             continue
 
         # Nested object: recurse
-        if field_schema.get("type") == "object" and "properties" in field_schema and isinstance(value, dict):
+        if (
+            field_schema.get("type") == "object"
+            and "properties" in field_schema
+            and isinstance(value, dict)
+        ):
             _redact_fields(value, field_schema)
             continue
 
         # Array: redact items
-        if field_schema.get("type") == "array" and "items" in field_schema and isinstance(value, list):
+        if (
+            field_schema.get("type") == "array"
+            and "items" in field_schema
+            and isinstance(value, list)
+        ):
             items_schema = field_schema["items"]
             if items_schema.get("x-sensitive") is True:
                 for i, item in enumerate(value):
@@ -159,6 +169,7 @@ class Executor:
             self._max_module_repeat = 3
 
         self._async_cache: dict[str, bool] = {}
+        self._async_cache_lock = threading.Lock()
 
     @property
     def registry(self) -> Registry:
@@ -168,7 +179,7 @@ class Executor:
     @property
     def middlewares(self) -> list[Middleware]:
         """Return a copy of the current middleware list."""
-        return list(self._middleware_manager._middlewares)
+        return self._middleware_manager.snapshot()
 
     def use(self, middleware: Middleware) -> Executor:
         """Add class-based middleware and return self for chaining."""
@@ -235,7 +246,11 @@ class Executor:
                 module.input_schema.model_validate(inputs)
             except pydantic.ValidationError as e:
                 errors = [
-                    {"field": ".".join(str(loc) for loc in err["loc"]), "code": err["type"], "message": err["msg"]}
+                    {
+                        "field": ".".join(str(loc) for loc in err["loc"]),
+                        "code": err["type"],
+                        "message": err["msg"],
+                    }
                     for err in e.errors()
                 ]
                 raise SchemaValidationError(
@@ -243,14 +258,18 @@ class Executor:
                     errors=errors,
                 ) from e
 
-            ctx.redacted_inputs = redact_sensitive(inputs, module.input_schema.model_json_schema())
+            ctx.redacted_inputs = redact_sensitive(
+                inputs, module.input_schema.model_json_schema()
+            )
 
         executed_middlewares: list[Middleware] = []
 
         try:
             # Step 6 -- Middleware Before
             try:
-                inputs, executed_middlewares = self._middleware_manager.execute_before(module_id, inputs, ctx)
+                inputs, executed_middlewares = self._middleware_manager.execute_before(
+                    module_id, inputs, ctx
+                )
             except MiddlewareChainError as mce:
                 executed_middlewares = mce.executed_middlewares
                 recovery = self._middleware_manager.execute_on_error(
@@ -283,12 +302,16 @@ class Executor:
                     ) from e
 
             # Step 9 -- Middleware After
-            output = self._middleware_manager.execute_after(module_id, inputs, output, ctx)
+            output = self._middleware_manager.execute_after(
+                module_id, inputs, output, ctx
+            )
 
         except Exception as exc:
             # Error handling for steps 6-9
             if executed_middlewares:
-                recovery = self._middleware_manager.execute_on_error(module_id, inputs, exc, ctx, executed_middlewares)
+                recovery = self._middleware_manager.execute_on_error(
+                    module_id, inputs, exc, ctx, executed_middlewares
+                )
                 if recovery is not None:
                     return recovery
             raise
@@ -325,7 +348,11 @@ class Executor:
             return ValidationResult(valid=True, errors=[])
         except pydantic.ValidationError as e:
             errors = [
-                {"field": ".".join(str(loc) for loc in err["loc"]), "code": err["type"], "message": err["msg"]}
+                {
+                    "field": ".".join(str(loc) for loc in err["loc"]),
+                    "code": err["type"],
+                    "message": err["msg"],
+                }
                 for err in e.errors()
             ]
             return ValidationResult(valid=False, errors=errors)
@@ -367,11 +394,12 @@ class Executor:
 
     def _is_async_module(self, module_id: str, module: Any) -> bool:
         """Check if a module's execute method is async, with caching."""
-        if module_id in self._async_cache:
-            return self._async_cache[module_id]
-        is_async = inspect.iscoroutinefunction(module.execute)
-        self._async_cache[module_id] = is_async
-        return is_async
+        with self._async_cache_lock:
+            if module_id in self._async_cache:
+                return self._async_cache[module_id]
+            is_async = inspect.iscoroutinefunction(module.execute)
+            self._async_cache[module_id] = is_async
+            return is_async
 
     def _execute_with_timeout(
         self, module: Any, module_id: str, inputs: dict[str, Any], ctx: Context
@@ -384,7 +412,9 @@ class Executor:
 
         # Async module in sync context: bridge to async
         if self._is_async_module(module_id, module):
-            return self._run_async_in_sync(module.execute(inputs, ctx), module_id, timeout_ms)
+            return self._run_async_in_sync(
+                module.execute(inputs, ctx), module_id, timeout_ms
+            )
 
         if timeout_ms == 0:
             _logger.warning("Timeout disabled for module %s", module_id)
@@ -399,7 +429,7 @@ class Executor:
             except Exception as e:
                 exception_holder["error"] = e
 
-        thread = threading.Thread(target=run_module)
+        thread = threading.Thread(target=run_module, daemon=True)
         thread.start()
         thread.join(timeout=timeout_ms / 1000.0)
 
@@ -433,7 +463,9 @@ class Executor:
         else:
             return self._run_in_new_thread(coro, module_id, timeout_s)
 
-    def _run_in_new_thread(self, coro: Any, module_id: str, timeout_s: float | None) -> Any:
+    def _run_in_new_thread(
+        self, coro: Any, module_id: str, timeout_s: float | None
+    ) -> Any:
         """Run coroutine in a new thread with its own event loop."""
         result_holder: dict[str, Any] = {}
         exception_holder: dict[str, Exception] = {}
@@ -443,7 +475,9 @@ class Executor:
             asyncio.set_event_loop(loop)
             try:
                 if timeout_s is not None:
-                    result_holder["output"] = loop.run_until_complete(asyncio.wait_for(coro, timeout=timeout_s))
+                    result_holder["output"] = loop.run_until_complete(
+                        asyncio.wait_for(coro, timeout=timeout_s)
+                    )
                 else:
                     result_holder["output"] = loop.run_until_complete(coro)
             except asyncio.TimeoutError:
@@ -455,7 +489,7 @@ class Executor:
             finally:
                 loop.close()
 
-        thread = threading.Thread(target=thread_target)
+        thread = threading.Thread(target=thread_target, daemon=True)
         thread.start()
         thread.join()
 
@@ -509,20 +543,26 @@ class Executor:
                 module.input_schema.model_validate(inputs)
             except pydantic.ValidationError as e:
                 errors = [
-                    {"field": ".".join(str(loc) for loc in err["loc"]), "code": err["type"], "message": err["msg"]}
+                    {
+                        "field": ".".join(str(loc) for loc in err["loc"]),
+                        "code": err["type"],
+                        "message": err["msg"],
+                    }
                     for err in e.errors()
                 ]
                 raise SchemaValidationError(
                     message="Input validation failed",
                     errors=errors,
                 ) from e
-            ctx.redacted_inputs = redact_sensitive(inputs, module.input_schema.model_json_schema())
+            ctx.redacted_inputs = redact_sensitive(
+                inputs, module.input_schema.model_json_schema()
+            )
 
         executed_middlewares: list[Middleware] = []
 
         try:
             # Step 6 -- Middleware Before (async-aware)
-            for mw in self._middleware_manager._middlewares:
+            for mw in self._middleware_manager.snapshot():
                 if inspect.iscoroutinefunction(mw.before):
                     result = await mw.before(module_id, inputs, ctx)
                 else:
@@ -553,7 +593,7 @@ class Executor:
                     ) from e
 
             # Step 9 -- Middleware After (async-aware, reverse order)
-            for mw in reversed(self._middleware_manager._middlewares):
+            for mw in reversed(self._middleware_manager.snapshot()):
                 if inspect.iscoroutinefunction(mw.after):
                     after_result = await mw.after(module_id, inputs, output, ctx)
                 else:
@@ -564,7 +604,9 @@ class Executor:
         except Exception as exc:
             # Error handling for steps 6-9
             if executed_middlewares:
-                recovery = await self._execute_on_error_async(module_id, inputs, exc, ctx, executed_middlewares)
+                recovery = await self._execute_on_error_async(
+                    module_id, inputs, exc, ctx, executed_middlewares
+                )
                 if recovery is not None:
                     return recovery
             raise
@@ -572,7 +614,9 @@ class Executor:
         # Step 10 -- Return
         return output
 
-    async def _execute_async(self, module: Any, module_id: str, inputs: dict[str, Any], ctx: Context) -> dict[str, Any]:
+    async def _execute_async(
+        self, module: Any, module_id: str, inputs: dict[str, Any], ctx: Context
+    ) -> dict[str, Any]:
         """Execute module asynchronously with timeout."""
         timeout_ms = self._default_timeout
 

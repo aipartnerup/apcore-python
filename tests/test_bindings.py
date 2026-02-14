@@ -90,14 +90,20 @@ class TestYamlParsing:
     def test_missing_module_id_raises(self, loader, registry, tmp_path):
         """Missing module_id in binding entry raises BindingFileInvalidError."""
         f = tmp_path / "bad.yaml"
-        f.write_text("bindings:\n" "  - target: binding_helpers:typed_function\n" "    auto_schema: true\n")
+        f.write_text(
+            "bindings:\n"
+            "  - target: binding_helpers:typed_function\n"
+            "    auto_schema: true\n"
+        )
         with pytest.raises(BindingFileInvalidError):
             loader.load_bindings(str(f), registry)
 
     def test_missing_target_raises(self, loader, registry, tmp_path):
         """Missing target in binding entry raises BindingFileInvalidError."""
         f = tmp_path / "bad.yaml"
-        f.write_text("bindings:\n" "  - module_id: test.func\n" "    auto_schema: true\n")
+        f.write_text(
+            "bindings:\n" "  - module_id: test.func\n" "    auto_schema: true\n"
+        )
         with pytest.raises(BindingFileInvalidError):
             loader.load_bindings(str(f), registry)
 
@@ -303,7 +309,9 @@ class TestSchemaMode:
         assert fm.input_schema.model_fields["name"].is_required()
         assert not fm.input_schema.model_fields["age"].is_required()
 
-    def test_inline_schema_unsupported_features_permissive(self, loader, registry, tmp_path):
+    def test_inline_schema_unsupported_features_permissive(
+        self, loader, registry, tmp_path
+    ):
         """Unsupported features (oneOf) create permissive model."""
         f = tmp_path / "test.binding.yaml"
         f.write_text(
@@ -466,12 +474,18 @@ class TestBindingLoaderExecutorIntegration:
         """BindingLoader loads a binding, registers it, Executor.call() returns correct output."""
         # Create a Python module in tmp_path
         mod_file = tmp_path / "sample_mod.py"
-        mod_file.write_text("def greet(name: str) -> dict:\n" "    return {'greeting': f'Hello, {name}!'}\n")
+        mod_file.write_text(
+            "def greet(name: str) -> dict:\n"
+            "    return {'greeting': f'Hello, {name}!'}\n"
+        )
 
         # Create a YAML binding file
         binding_file = tmp_path / "sample.binding.yaml"
         binding_file.write_text(
-            "bindings:\n" "  - module_id: sample.greet\n" "    target: sample_mod:greet\n" "    auto_schema: true\n"
+            "bindings:\n"
+            "  - module_id: sample.greet\n"
+            "    target: sample_mod:greet\n"
+            "    auto_schema: true\n"
         )
 
         # Temporarily add tmp_path to sys.path

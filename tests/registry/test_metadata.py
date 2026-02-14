@@ -8,7 +8,12 @@ import pytest
 import yaml
 
 from apcore.errors import ConfigError, ConfigNotFoundError
-from apcore.registry.metadata import load_id_map, load_metadata, merge_module_metadata, parse_dependencies
+from apcore.registry.metadata import (
+    load_id_map,
+    load_metadata,
+    merge_module_metadata,
+    parse_dependencies,
+)
 
 
 # === load_metadata() ===
@@ -18,13 +23,17 @@ class TestLoadMetadata:
     def test_valid_yaml_all_fields(self, tmp_path: Path) -> None:
         """Valid YAML with all fields returns parsed dict."""
         meta = tmp_path / "mod_meta.yaml"
-        meta.write_text(yaml.dump({
-            "description": "Test module",
-            "tags": ["tag1", "tag2"],
-            "version": "2.0.0",
-            "dependencies": [{"module_id": "foo.bar"}],
-            "entry_point": "mod:MyModule",
-        }))
+        meta.write_text(
+            yaml.dump(
+                {
+                    "description": "Test module",
+                    "tags": ["tag1", "tag2"],
+                    "version": "2.0.0",
+                    "dependencies": [{"module_id": "foo.bar"}],
+                    "entry_point": "mod:MyModule",
+                }
+            )
+        )
         result = load_metadata(meta)
         assert result["description"] == "Test module"
         assert result["tags"] == ["tag1", "tag2"]
@@ -63,7 +72,9 @@ class TestLoadMetadata:
 class TestParseDependencies:
     def test_list_of_dicts(self) -> None:
         """List of dicts returns DependencyInfo objects."""
-        result = parse_dependencies([{"module_id": "foo.bar"}, {"module_id": "baz.qux"}])
+        result = parse_dependencies(
+            [{"module_id": "foo.bar"}, {"module_id": "baz.qux"}]
+        )
         assert len(result) == 2
         assert result[0].module_id == "foo.bar"
         assert result[0].optional is False
@@ -147,12 +158,20 @@ class TestLoadIdMap:
     def test_valid_id_map(self, tmp_path: Path) -> None:
         """Valid ID map returns dict keyed by file path."""
         f = tmp_path / "id_map.yaml"
-        f.write_text(yaml.dump({
-            "mappings": [
-                {"file": "extensions/email/send.py", "id": "email.send", "class": "SendModule"},
-                {"file": "extensions/legacy/old.py", "id": "legacy.old"},
-            ]
-        }))
+        f.write_text(
+            yaml.dump(
+                {
+                    "mappings": [
+                        {
+                            "file": "extensions/email/send.py",
+                            "id": "email.send",
+                            "class": "SendModule",
+                        },
+                        {"file": "extensions/legacy/old.py", "id": "legacy.old"},
+                    ]
+                }
+            )
+        )
         result = load_id_map(f)
         assert len(result) == 2
         assert result["extensions/email/send.py"]["id"] == "email.send"
@@ -161,9 +180,9 @@ class TestLoadIdMap:
     def test_class_override_present(self, tmp_path: Path) -> None:
         """Entry with class has class field in result."""
         f = tmp_path / "id_map.yaml"
-        f.write_text(yaml.dump({
-            "mappings": [{"file": "mod.py", "id": "m", "class": "MyClass"}]
-        }))
+        f.write_text(
+            yaml.dump({"mappings": [{"file": "mod.py", "id": "m", "class": "MyClass"}]})
+        )
         result = load_id_map(f)
         assert result["mod.py"]["class"] == "MyClass"
 
@@ -182,8 +201,6 @@ class TestLoadIdMap:
     def test_no_class_field(self, tmp_path: Path) -> None:
         """Entry without class field has class as None."""
         f = tmp_path / "id_map.yaml"
-        f.write_text(yaml.dump({
-            "mappings": [{"file": "mod.py", "id": "my.mod"}]
-        }))
+        f.write_text(yaml.dump({"mappings": [{"file": "mod.py", "id": "my.mod"}]}))
         result = load_id_map(f)
         assert result["mod.py"]["class"] is None

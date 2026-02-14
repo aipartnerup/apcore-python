@@ -20,11 +20,13 @@ def binding_setup(tmp_path):
     target_dir.mkdir()
     (target_dir / "__init__.py").write_text("")
     (target_dir / "math_ops.py").write_text(
-        textwrap.dedent("""\
+        textwrap.dedent(
+            """\
         def multiply(a: int, b: int) -> dict:
             \"\"\"Multiply two numbers.\"\"\"
             return {"product": a * b}
-    """)
+    """
+        )
     )
 
     binding_data = {

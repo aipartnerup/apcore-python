@@ -246,7 +246,9 @@ class TestUnregister:
         reg.unregister("test.module")
         assert mod.unload_called is True
 
-    def test_unregister_on_unload_failure_still_unregisters(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_unregister_on_unload_failure_still_unregisters(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """on_unload() failure is logged, but module is still removed."""
         reg = Registry()
         mod = _ModuleWithFailingOnUnload()
@@ -481,7 +483,9 @@ class TestDiscover:
         assert reg.has("hello")
         assert reg.has("world")
 
-    def test_discover_empty_dir(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    def test_discover_empty_dir(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """discover() with empty dir returns 0."""
         ext = tmp_path / "extensions"
         ext.mkdir()
@@ -509,7 +513,9 @@ class TestDiscover:
         ext.mkdir()
         _write_module_file(ext / "mymod.py", "MyModModule", "Code description")
         meta = ext / "mymod_meta.yaml"
-        meta.write_text(yaml.dump({"description": "YAML description", "tags": ["yaml_tag"]}))
+        meta.write_text(
+            yaml.dump({"description": "YAML description", "tags": ["yaml_tag"]})
+        )
         reg = Registry(extensions_dir=str(ext))
         reg.discover()
         # Check that the merged metadata reflects YAML overrides
@@ -521,7 +527,8 @@ class TestDiscover:
         """discover() calls on_load() for each module."""
         ext = tmp_path / "extensions"
         ext.mkdir()
-        (ext / "loadable.py").write_text("""
+        (ext / "loadable.py").write_text(
+            """
 from pydantic import BaseModel
 
 class Input(BaseModel):
@@ -543,17 +550,21 @@ class LoadableModule:
     def on_load(self):
         global _load_called
         _load_called = True
-""")
+"""
+        )
         reg = Registry(extensions_dir=str(ext))
         reg.discover()
         assert reg.has("loadable")
 
-    def test_discover_on_load_failure_skips(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    def test_discover_on_load_failure_skips(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """discover() skips module whose on_load() fails."""
         ext = tmp_path / "extensions"
         ext.mkdir()
         _write_module_file(ext / "good.py", "GoodModule", "Good")
-        (ext / "bad_load.py").write_text("""
+        (ext / "bad_load.py").write_text(
+            """
 from pydantic import BaseModel
 
 class Input(BaseModel):
@@ -572,7 +583,8 @@ class BadLoadModule:
 
     def on_load(self):
         raise RuntimeError("on_load exploded")
-""")
+"""
+        )
         reg = Registry(extensions_dir=str(ext))
         with caplog.at_level(logging.ERROR):
             count = reg.discover()
@@ -747,3 +759,64 @@ class TestThreadSafety:
         reg.unregister("mod.05")
         # Original snapshot is still 10 items
         assert len(snapshot) == 10
+
+    def test_concurrent_has_and_register(self) -> None:
+        """Concurrent has() and register() should not raise."""
+        reg = Registry()
+        errors: list[Exception] = []
+
+        def registerer() -> None:
+            try:
+                for i in range(50):
+                    mid = f"thread.mod.{threading.current_thread().name}.{i}"
+                    reg.register(mid, _ValidModule())
+            except Exception as e:
+                errors.append(e)
+
+        def reader() -> None:
+            try:
+                for _ in range(200):
+                    reg.has("thread.mod.0")
+                    reg.count  # noqa: B018
+                    reg.module_ids
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=registerer, name=f"w-{i}") for i in range(3)]
+        threads += [threading.Thread(target=reader) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+
+    def test_concurrent_iter_and_unregister(self) -> None:
+        """iter() snapshot is safe during concurrent unregister()."""
+        reg = Registry()
+        for i in range(20):
+            reg.register(f"mod.{i:02d}", _ValidModule())
+        errors: list[Exception] = []
+
+        def iterator() -> None:
+            try:
+                for _ in range(50):
+                    list(reg.iter())
+            except Exception as e:
+                errors.append(e)
+
+        def unregisterer() -> None:
+            try:
+                for i in range(20):
+                    reg.unregister(f"mod.{i:02d}")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=iterator) for _ in range(5)]
+        threads.append(threading.Thread(target=unregisterer))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []

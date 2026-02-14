@@ -90,7 +90,14 @@ class TestMergeExamples:
         assert result == []
 
     def test_yaml_dict_converted_to_module_example(self) -> None:
-        yaml = [{"title": "Full", "inputs": {"a": 1}, "output": {"b": 2}, "description": "desc"}]
+        yaml = [
+            {
+                "title": "Full",
+                "inputs": {"a": 1},
+                "output": {"b": 2},
+                "description": "desc",
+            }
+        ]
         result = merge_examples(yaml, None)
         assert isinstance(result[0], ModuleExample)
         assert result[0].title == "Full"

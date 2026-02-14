@@ -23,7 +23,15 @@ def write_yaml(path: Path, data: dict[str, Any]) -> Path:
 
 
 def make_loader(schemas_dir: Path) -> SchemaLoader:
-    config = Config({"schema": {"root": str(schemas_dir), "strategy": "yaml_first", "max_ref_depth": 32}})
+    config = Config(
+        {
+            "schema": {
+                "root": str(schemas_dir),
+                "strategy": "yaml_first",
+                "max_ref_depth": 32,
+            }
+        }
+    )
     return SchemaLoader(config, schemas_dir=schemas_dir)
 
 
@@ -33,8 +41,15 @@ def write_simple_schema(schemas_dir: Path, name: str = "simple") -> Path:
         {
             "module_id": name,
             "description": f"A {name} schema",
-            "input_schema": {"type": "object", "properties": {"table": {"type": "string"}}, "required": ["table"]},
-            "output_schema": {"type": "object", "properties": {"rows": {"type": "array", "items": {"type": "string"}}}},
+            "input_schema": {
+                "type": "object",
+                "properties": {"table": {"type": "string"}},
+                "required": ["table"],
+            },
+            "output_schema": {
+                "type": "object",
+                "properties": {"rows": {"type": "array", "items": {"type": "string"}}},
+            },
         },
     )
 
@@ -78,7 +93,10 @@ class TestLoad:
             loader.load("bad")
 
     def test_missing_required_field_raises(self, tmp_path: Path) -> None:
-        write_yaml(tmp_path / "incomplete.schema.yaml", {"module_id": "incomplete", "description": "No input"})
+        write_yaml(
+            tmp_path / "incomplete.schema.yaml",
+            {"module_id": "incomplete", "description": "No input"},
+        )
         loader = make_loader(tmp_path)
         with pytest.raises(SchemaParseError, match="input_schema"):
             loader.load("incomplete")
@@ -101,7 +119,9 @@ class TestLoad:
                     "Foo": {"type": "object", "properties": {"x": {"type": "string"}}},
                     "Bar": {"type": "integer"},
                 },
-                "$defs": {"Foo": {"type": "object", "properties": {"z": {"type": "boolean"}}}},
+                "$defs": {
+                    "Foo": {"type": "object", "properties": {"z": {"type": "boolean"}}}
+                },
             },
         )
         loader = make_loader(tmp_path)
@@ -109,7 +129,9 @@ class TestLoad:
         assert "Bar" in sd.definitions
         assert sd.definitions["Foo"]["properties"]["z"]["type"] == "boolean"
 
-    def test_long_description_logs_warning(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    def test_long_description_logs_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         write_yaml(
             tmp_path / "long.schema.yaml",
             {
@@ -155,7 +177,12 @@ class TestResolve:
                 "input_schema": {
                     "type": "object",
                     "properties": {"addr": {"$ref": "#/definitions/Address"}},
-                    "definitions": {"Address": {"type": "object", "properties": {"city": {"type": "string"}}}},
+                    "definitions": {
+                        "Address": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        }
+                    },
                 },
                 "output_schema": {"type": "object"},
             },
@@ -186,7 +213,12 @@ class TestGenerateModel:
     def test_string_field(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}, "TestStr"
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+            "TestStr",
         )
         obj = Model(name="hello")
         assert obj.name == "hello"
@@ -194,7 +226,12 @@ class TestGenerateModel:
     def test_integer_field(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"count": {"type": "integer"}}, "required": ["count"]}, "TestInt"
+            {
+                "type": "object",
+                "properties": {"count": {"type": "integer"}},
+                "required": ["count"],
+            },
+            "TestInt",
         )
         obj = Model(count=42)
         assert obj.count == 42
@@ -202,7 +239,12 @@ class TestGenerateModel:
     def test_number_field(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"ratio": {"type": "number"}}, "required": ["ratio"]}, "TestNum"
+            {
+                "type": "object",
+                "properties": {"ratio": {"type": "number"}},
+                "required": ["ratio"],
+            },
+            "TestNum",
         )
         obj = Model(ratio=3.14)
         assert obj.ratio == 3.14
@@ -210,7 +252,12 @@ class TestGenerateModel:
     def test_boolean_field(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"active": {"type": "boolean"}}, "required": ["active"]}, "TestBool"
+            {
+                "type": "object",
+                "properties": {"active": {"type": "boolean"}},
+                "required": ["active"],
+            },
+            "TestBool",
         )
         obj = Model(active=True)
         assert obj.active is True
@@ -221,7 +268,11 @@ class TestGenerateModel:
             {
                 "type": "object",
                 "properties": {
-                    "address": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+                    "address": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    }
                 },
                 "required": ["address"],
             },
@@ -246,7 +297,12 @@ class TestGenerateModel:
     def test_array_without_items(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"data": {"type": "array"}}, "required": ["data"]}, "TestArrAny"
+            {
+                "type": "object",
+                "properties": {"data": {"type": "array"}},
+                "required": ["data"],
+            },
+            "TestArrAny",
         )
         obj = Model(data=[1, "x", True])
         assert len(obj.data) == 3
@@ -256,7 +312,12 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {"meta": {"type": "object", "additionalProperties": {"type": "string"}}},
+                "properties": {
+                    "meta": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                    }
+                },
                 "required": ["meta"],
             },
             "TestAdditional",
@@ -267,7 +328,8 @@ class TestGenerateModel:
     def test_empty_schema(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"payload": {}}, "required": ["payload"]}, "TestEmpty"
+            {"type": "object", "properties": {"payload": {}}, "required": ["payload"]},
+            "TestEmpty",
         )
         obj = Model(payload={"any": "thing"})
         assert obj.payload == {"any": "thing"}
@@ -275,7 +337,12 @@ class TestGenerateModel:
     def test_nullable_type(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"name": {"type": ["string", "null"]}}, "required": ["name"]}, "TestNull"
+            {
+                "type": "object",
+                "properties": {"name": {"type": ["string", "null"]}},
+                "required": ["name"],
+            },
+            "TestNull",
         )
         assert Model(name=None).name is None
         assert Model(name="hello").name == "hello"
@@ -285,7 +352,9 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {"status": {"type": "string", "enum": ["active", "inactive"]}},
+                "properties": {
+                    "status": {"type": "string", "enum": ["active", "inactive"]}
+                },
                 "required": ["status"],
             },
             "TestEnum",
@@ -297,7 +366,12 @@ class TestGenerateModel:
     def test_const_type(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"version": {"const": "1.0"}}, "required": ["version"]}, "TestConst"
+            {
+                "type": "object",
+                "properties": {"version": {"const": "1.0"}},
+                "required": ["version"],
+            },
+            "TestConst",
         )
         assert Model(version="1.0").version == "1.0"
         with pytest.raises(Exception):
@@ -306,21 +380,33 @@ class TestGenerateModel:
     def test_required_field_no_default(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}, "TestReq"
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+            "TestReq",
         )
         with pytest.raises(Exception):
             Model()
 
     def test_optional_field_default_none(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
-        Model = loader.generate_model({"type": "object", "properties": {"nickname": {"type": "string"}}}, "TestOpt")
+        Model = loader.generate_model(
+            {"type": "object", "properties": {"nickname": {"type": "string"}}},
+            "TestOpt",
+        )
         obj = Model()
         assert obj.nickname is None
 
     def test_default_value(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"retries": {"type": "integer", "default": 3}}}, "TestDefault"
+            {
+                "type": "object",
+                "properties": {"retries": {"type": "integer", "default": 3}},
+            },
+            "TestDefault",
         )
         obj = Model()
         assert obj.retries == 3
@@ -330,7 +416,9 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {"age": {"type": "integer", "minimum": 0, "maximum": 150}},
+                "properties": {
+                    "age": {"type": "integer", "minimum": 0, "maximum": 150}
+                },
                 "required": ["age"],
             },
             "TestMinMax",
@@ -346,7 +434,9 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {"code": {"type": "string", "minLength": 3, "maxLength": 10}},
+                "properties": {
+                    "code": {"type": "string", "minLength": 3, "maxLength": 10}
+                },
                 "required": ["code"],
             },
             "TestStrLen",
@@ -360,7 +450,11 @@ class TestGenerateModel:
     def test_constraints_pattern(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"id": {"type": "string", "pattern": "^[A-Z]{3}$"}}, "required": ["id"]},
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string", "pattern": "^[A-Z]{3}$"}},
+                "required": ["id"],
+            },
             "TestPattern",
         )
         assert Model(id="ABC").id == "ABC"
@@ -372,7 +466,13 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {"ids": {"type": "array", "items": {"type": "integer"}, "uniqueItems": True}},
+                "properties": {
+                    "ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "uniqueItems": True,
+                    }
+                },
                 "required": ["ids"],
             },
             "TestUnique",
@@ -384,7 +484,11 @@ class TestGenerateModel:
     def test_multiple_of(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"qty": {"type": "integer", "multipleOf": 5}}, "required": ["qty"]},
+            {
+                "type": "object",
+                "properties": {"qty": {"type": "integer", "multipleOf": 5}},
+                "required": ["qty"],
+            },
             "TestMultiple",
         )
         assert Model(qty=10).qty == 10
@@ -396,7 +500,9 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {"value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
+                "properties": {
+                    "value": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+                },
                 "required": ["value"],
             },
             "TestOneOf",
@@ -409,7 +515,9 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {"value": {"anyOf": [{"type": "string"}, {"type": "integer"}]}},
+                "properties": {
+                    "value": {"anyOf": [{"type": "string"}, {"type": "integer"}]}
+                },
                 "required": ["value"],
             },
             "TestAnyOf",
@@ -425,8 +533,16 @@ class TestGenerateModel:
                 "properties": {
                     "person": {
                         "allOf": [
-                            {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
-                            {"type": "object", "properties": {"age": {"type": "integer"}}, "required": ["age"]},
+                            {
+                                "type": "object",
+                                "properties": {"name": {"type": "string"}},
+                                "required": ["name"],
+                            },
+                            {
+                                "type": "object",
+                                "properties": {"age": {"type": "integer"}},
+                                "required": ["age"],
+                            },
                         ]
                     }
                 },
@@ -447,8 +563,14 @@ class TestGenerateModel:
                     "properties": {
                         "x": {
                             "allOf": [
-                                {"type": "object", "properties": {"val": {"type": "string"}}},
-                                {"type": "object", "properties": {"val": {"type": "integer"}}},
+                                {
+                                    "type": "object",
+                                    "properties": {"val": {"type": "string"}},
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {"val": {"type": "integer"}},
+                                },
                             ]
                         }
                     },
@@ -461,7 +583,12 @@ class TestGenerateModel:
         loader = self._make_loader(tmp_path)
         with pytest.raises(SchemaParseError, match="not"):
             loader.generate_model(
-                {"type": "object", "properties": {"x": {"not": {"type": "string"}}}, "required": ["x"]}, "TestNot"
+                {
+                    "type": "object",
+                    "properties": {"x": {"not": {"type": "string"}}},
+                    "required": ["x"],
+                },
+                "TestNot",
             )
 
     def test_if_then_else_raises(self, tmp_path: Path) -> None:
@@ -471,7 +598,11 @@ class TestGenerateModel:
                 {
                     "type": "object",
                     "properties": {
-                        "x": {"if": {"type": "string"}, "then": {"minLength": 1}, "else": {"type": "integer"}}
+                        "x": {
+                            "if": {"type": "string"},
+                            "then": {"minLength": 1},
+                            "else": {"type": "integer"},
+                        }
                     },
                     "required": ["x"],
                 },
@@ -483,7 +614,13 @@ class TestGenerateModel:
         Model = loader.generate_model(
             {
                 "type": "object",
-                "properties": {"name": {"type": "string", "x-llm-description": "AI desc", "x-sensitive": True}},
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "x-llm-description": "AI desc",
+                        "x-sensitive": True,
+                    }
+                },
                 "required": ["name"],
             },
             "TestExt",
@@ -496,7 +633,11 @@ class TestGenerateModel:
     def test_format_not_enforced(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
         Model = loader.generate_model(
-            {"type": "object", "properties": {"email": {"type": "string", "format": "email"}}, "required": ["email"]},
+            {
+                "type": "object",
+                "properties": {"email": {"type": "string", "format": "email"}},
+                "required": ["email"],
+            },
             "TestFormat",
         )
         obj = Model(email="not-an-email")
@@ -524,7 +665,9 @@ class TestGetSchema:
         config = Config({"schema": {"root": str(tmp_path), "strategy": "yaml_first"}})
         loader = SchemaLoader(config, schemas_dir=tmp_path)
         input_rs, output_rs = loader.get_schema(
-            "missing.module", native_input_schema=InputModel, native_output_schema=OutputModel
+            "missing.module",
+            native_input_schema=InputModel,
+            native_output_schema=OutputModel,
         )
         assert input_rs.model is InputModel
         assert output_rs.model is OutputModel
@@ -546,7 +689,9 @@ class TestGetSchema:
 
         config = Config({"schema": {"root": str(tmp_path), "strategy": "native_first"}})
         loader = SchemaLoader(config, schemas_dir=tmp_path)
-        input_rs, _ = loader.get_schema("simple", native_input_schema=InputModel, native_output_schema=OutputModel)
+        input_rs, _ = loader.get_schema(
+            "simple", native_input_schema=InputModel, native_output_schema=OutputModel
+        )
         assert input_rs.model is InputModel
 
     def test_native_first_fallback_to_yaml(self, tmp_path: Path) -> None:
@@ -567,7 +712,9 @@ class TestGetSchema:
 
         config = Config({"schema": {"root": str(tmp_path), "strategy": "yaml_only"}})
         loader = SchemaLoader(config, schemas_dir=tmp_path)
-        input_rs, _ = loader.get_schema("simple", native_input_schema=InputModel, native_output_schema=OutputModel)
+        input_rs, _ = loader.get_schema(
+            "simple", native_input_schema=InputModel, native_output_schema=OutputModel
+        )
         assert input_rs.model is not InputModel
 
     def test_yaml_only_not_found_raises(self, tmp_path: Path) -> None:
@@ -592,7 +739,9 @@ class TestGetSchema:
 
         config = Config({"schema": {"root": str(tmp_path), "strategy": "native_first"}})
         loader = SchemaLoader(config, schemas_dir=tmp_path)
-        input_rs, _ = loader.get_schema("test", native_input_schema=ValidatedInput, native_output_schema=OutputModel)
+        input_rs, _ = loader.get_schema(
+            "test", native_input_schema=ValidatedInput, native_output_schema=OutputModel
+        )
         assert input_rs.model is ValidatedInput
 
 

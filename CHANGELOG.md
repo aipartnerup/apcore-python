@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-02-14
+
+### Fixed
+
+#### Thread Safety
+- **MiddlewareManager** - Added internal locking and snapshot pattern; `add()`, `remove()`, `execute_before()`, `execute_after()` are now thread-safe
+- **Executor** - Added lock to async module cache; use `snapshot()` for middleware iteration in `call_async()` and `middlewares` property
+- **ACL** - Internally synchronized; `check()`, `add_rule()`, `remove_rule()`, `reload()` are now safe for concurrent use
+- **Registry** - Extended existing `RLock` to cover all read paths (`get`, `has`, `count`, `module_ids`, `list`, `iter`, `get_definition`, `on`, `_trigger_event`, `clear_cache`)
+
+#### Memory Leak
+- **InMemoryExporter** - Replaced unbounded `list` with `collections.deque(maxlen=10_000)` and added `threading.Lock` for thread-safe access
+
+#### Robustness
+- **TracingMiddleware** - Added empty span stack guard in `after()` and `on_error()` to log a warning instead of raising `IndexError`
+- **Executor** - Set `daemon=True` on timeout and async bridge threads to prevent blocking process exit
+
+### Changed
+
+- **Context.child()** - Added docstring clarifying that `data` is intentionally shared between parent and child for middleware state propagation
+
 ## [0.1.0] - 2026-02-13
 
 ### Added
@@ -60,4 +81,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.1.1]: https://github.com/aipartnerup/apcore-python/releases/tag/v0.1.1
 [0.1.0]: https://github.com/aipartnerup/apcore-python/releases/tag/v0.1.0

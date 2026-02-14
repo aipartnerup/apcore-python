@@ -98,7 +98,12 @@ class TestSendEmailModule:
         ctx = Context.create()
         child = ctx.child("send_email")
         result = instance.execute(
-            {"to": "test@example.com", "subject": "Hi", "body": "Hello", "api_key": "sk-test"},
+            {
+                "to": "test@example.com",
+                "subject": "Hi",
+                "body": "Hello",
+                "api_key": "sk-test",
+            },
             child,
         )
         assert result["status"] == "sent"
@@ -154,7 +159,9 @@ class TestFormatDateBinding:
     """Test: binding.yaml is valid YAML with required fields."""
 
     def test_binding_yaml_is_valid(self):
-        binding_path = PROJECT_ROOT / "examples" / "bindings" / "format_date" / "binding.yaml"
+        binding_path = (
+            PROJECT_ROOT / "examples" / "bindings" / "format_date" / "binding.yaml"
+        )
         data = yaml.safe_load(binding_path.read_text())
         assert "bindings" in data
         assert isinstance(data["bindings"], list)

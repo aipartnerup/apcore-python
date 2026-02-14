@@ -34,10 +34,16 @@ def get_schema(registry: Registry, module_id: str) -> dict[str, Any] | None:
     output_schema_dict = module.output_schema.model_json_schema()
 
     annotations = getattr(module, "annotations", None)
-    annotations_dict = dataclasses.asdict(annotations) if isinstance(annotations, ModuleAnnotations) else None
+    annotations_dict = (
+        dataclasses.asdict(annotations)
+        if isinstance(annotations, ModuleAnnotations)
+        else None
+    )
 
     examples_raw = getattr(module, "examples", []) or []
-    examples_list = [dataclasses.asdict(ex) for ex in examples_raw if isinstance(ex, ModuleExample)]
+    examples_list = [
+        dataclasses.asdict(ex) for ex in examples_raw if isinstance(ex, ModuleExample)
+    ]
 
     return {
         "module_id": module_id,

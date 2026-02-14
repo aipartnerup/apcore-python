@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,9 +42,8 @@ class ACL:
     Implements PROTOCOL_SPEC section 6 for module access control.
 
     Thread safety:
-        - check() is read-only and fully thread-safe for concurrent calls.
-        - add_rule(), remove_rule(), and reload() mutate the rules list and
-          require external locking if called concurrently with check().
+        Internally synchronized. All public methods (check, add_rule,
+        remove_rule, reload) are safe to call concurrently.
     """
 
     def __init__(self, rules: list[ACLRule], default_effect: str = "deny") -> None:
@@ -58,6 +58,7 @@ class ACL:
         self._yaml_path: str | None = None
         self.debug: bool = False
         self._logger: logging.Logger = logging.getLogger("apcore.acl")
+        self._lock = threading.Lock()
 
     @classmethod
     def load(cls, yaml_path: str) -> ACL:
@@ -83,21 +84,27 @@ class ACL:
                 raise ACLRuleError(f"Invalid YAML in {yaml_path}: {e}") from e
 
         if not isinstance(data, dict):
-            raise ACLRuleError(f"ACL config must be a mapping, got {type(data).__name__}")
+            raise ACLRuleError(
+                f"ACL config must be a mapping, got {type(data).__name__}"
+            )
 
         if "rules" not in data:
             raise ACLRuleError("ACL config missing required 'rules' key")
 
         raw_rules = data["rules"]
         if not isinstance(raw_rules, list):
-            raise ACLRuleError(f"'rules' must be a list, got {type(raw_rules).__name__}")
+            raise ACLRuleError(
+                f"'rules' must be a list, got {type(raw_rules).__name__}"
+            )
 
         default_effect: str = data.get("default_effect", "deny")
         rules: list[ACLRule] = []
 
         for i, raw_rule in enumerate(raw_rules):
             if not isinstance(raw_rule, dict):
-                raise ACLRuleError(f"Rule {i} must be a mapping, got {type(raw_rule).__name__}")
+                raise ACLRuleError(
+                    f"Rule {i} must be a mapping, got {type(raw_rule).__name__}"
+                )
 
             for key in ("callers", "targets", "effect"):
                 if key not in raw_rule:
@@ -105,15 +112,21 @@ class ACL:
 
             effect = raw_rule["effect"]
             if effect not in ("allow", "deny"):
-                raise ACLRuleError(f"Rule {i} has invalid effect '{effect}', must be 'allow' or 'deny'")
+                raise ACLRuleError(
+                    f"Rule {i} has invalid effect '{effect}', must be 'allow' or 'deny'"
+                )
 
             callers = raw_rule["callers"]
             if not isinstance(callers, list):
-                raise ACLRuleError(f"Rule {i} 'callers' must be a list, got {type(callers).__name__}")
+                raise ACLRuleError(
+                    f"Rule {i} 'callers' must be a list, got {type(callers).__name__}"
+                )
 
             targets = raw_rule["targets"]
             if not isinstance(targets, list):
-                raise ACLRuleError(f"Rule {i} 'targets' must be a list, got {type(targets).__name__}")
+                raise ACLRuleError(
+                    f"Rule {i} 'targets' must be a list, got {type(targets).__name__}"
+                )
 
             rules.append(
                 ACLRule(
@@ -147,7 +160,11 @@ class ACL:
         """
         effective_caller = "@external" if caller_id is None else caller_id
 
-        for rule in self._rules:
+        with self._lock:
+            rules = list(self._rules)
+            default_effect = self._default_effect
+
+        for rule in rules:
             if self._matches_rule(rule, effective_caller, target_id, context):
                 decision = rule.effect == "allow"
                 self._logger.debug(
@@ -159,7 +176,7 @@ class ACL:
                 )
                 return decision
 
-        default_decision = self._default_effect == "allow"
+        default_decision = default_effect == "allow"
         self._logger.debug(
             "ACL check: caller=%s target=%s decision=%s rule=default",
             caller_id,
@@ -168,7 +185,9 @@ class ACL:
         )
         return default_decision
 
-    def _match_pattern(self, pattern: str, value: str, context: Context | None = None) -> bool:
+    def _match_pattern(
+        self, pattern: str, value: str, context: Context | None = None
+    ) -> bool:
         """Match a single pattern against a value, with special pattern handling.
 
         Handles @external and @system patterns locally, delegates all
@@ -177,7 +196,11 @@ class ACL:
         if pattern == "@external":
             return value == "@external"
         if pattern == "@system":
-            return context is not None and context.identity is not None and context.identity.type == "system"
+            return (
+                context is not None
+                and context.identity is not None
+                and context.identity.type == "system"
+            )
         return match_pattern(pattern, value)
 
     def _matches_rule(
@@ -194,11 +217,15 @@ class ACL:
         2. At least one target pattern matches the target (OR logic).
         3. If conditions are present, they must all be satisfied.
         """
-        caller_match = any(self._match_pattern(p, caller, context) for p in rule.callers)
+        caller_match = any(
+            self._match_pattern(p, caller, context) for p in rule.callers
+        )
         if not caller_match:
             return False
 
-        target_match = any(self._match_pattern(p, target, context) for p in rule.targets)
+        target_match = any(
+            self._match_pattern(p, target, context) for p in rule.targets
+        )
         if not target_match:
             return False
 
@@ -208,7 +235,9 @@ class ACL:
 
         return True
 
-    def _check_conditions(self, conditions: dict[str, Any], context: Context | None) -> bool:
+    def _check_conditions(
+        self, conditions: dict[str, Any], context: Context | None
+    ) -> bool:
         """Evaluate conditional rule parameters against the execution context.
 
         Returns False if any condition is not satisfied.
@@ -217,7 +246,10 @@ class ACL:
             return False
 
         if "identity_types" in conditions:
-            if context.identity is None or context.identity.type not in conditions["identity_types"]:
+            if (
+                context.identity is None
+                or context.identity.type not in conditions["identity_types"]
+            ):
                 return False
 
         if "roles" in conditions:
@@ -238,7 +270,8 @@ class ACL:
         Args:
             rule: The ACLRule to add.
         """
-        self._rules.insert(0, rule)
+        with self._lock:
+            self._rules.insert(0, rule)
 
     def remove_rule(self, callers: list[str], targets: list[str]) -> bool:
         """Remove the first rule matching the given callers and targets.
@@ -250,11 +283,12 @@ class ACL:
         Returns:
             True if a rule was found and removed, False otherwise.
         """
-        for i, rule in enumerate(self._rules):
-            if rule.callers == callers and rule.targets == targets:
-                self._rules.pop(i)
-                return True
-        return False
+        with self._lock:
+            for i, rule in enumerate(self._rules):
+                if rule.callers == callers and rule.targets == targets:
+                    self._rules.pop(i)
+                    return True
+            return False
 
     def reload(self) -> None:
         """Re-read the ACL from the original YAML file.
@@ -262,8 +296,11 @@ class ACL:
         Only works if the ACL was created via ACL.load().
         Raises ACLRuleError if no YAML path was stored.
         """
-        if self._yaml_path is None:
+        with self._lock:
+            yaml_path = self._yaml_path
+        if yaml_path is None:
             raise ACLRuleError("Cannot reload: ACL was not loaded from a YAML file")
-        reloaded = ACL.load(self._yaml_path)
-        self._rules = reloaded._rules
-        self._default_effect = reloaded._default_effect
+        reloaded = ACL.load(yaml_path)
+        with self._lock:
+            self._rules = reloaded._rules
+            self._default_effect = reloaded._default_effect
