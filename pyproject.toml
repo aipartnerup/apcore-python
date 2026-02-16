@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apcore"
-version = "0.2.1"
+version = "0.2.2"
 description = "Schema-driven module development framework for AI-perceivable interfaces"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -44,7 +44,7 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
-    "apdev[dev]>=0.1.2",
+    "apdev[dev]>=0.1.6",
 ]
 
 [dependency-groups]

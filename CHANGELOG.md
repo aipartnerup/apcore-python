@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [0.2.2] - 2026-02-16
+
+### Removed
+
+#### Planning & Documentation
+- **planning/features/** - Moved all feature specifications to `apcore/docs/features/` for better organization with documentation
+- **planning/implementation/** - Restructured implementation planning to consolidate with overall project architecture
+
+### Changed
+
+#### Planning & Documentation Structure
+- **Implementation planning** - Reorganized implementation plans to streamline project structure and improve maintainability
+
+
+
 ## [0.2.1] - 2026-02-14
 
 ### Added
