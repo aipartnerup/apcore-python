@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.2.3] - 2026-02-20
+
+### Added
+
+#### Public API
+- **ContextFactory Protocol** - New `ContextFactory` protocol for creating Context from framework-specific requests (e.g., Django, FastAPI)
+- **ErrorCodes** - New `ErrorCodes` class with all framework error code constants; replaces hardcoded error strings
+- **Registry constants** - Exported `REGISTRY_EVENTS` dict and `MODULE_ID_PATTERN` regex for consistent module ID validation
+- **Executor.from_registry()** - Convenience factory method for creating an Executor from a Registry with optional middlewares, ACL, and config
+
+### Changed
+
+#### Core Improvements
+- **Module ID validation** - Strengthened to enforce lowercase letters, digits, underscores, and dots only; no hyphens allowed. Pattern: `^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$`
+- **Registry events** - Replaced hardcoded event strings with `REGISTRY_EVENTS` constant dict
+- **Test fixtures** - Updated registry test module IDs to comply with new module ID pattern
+
+#### Configuration
+- **.code-forge.json** - Updated directory mappings: `base` from `planning/` to `./`; `input` from `features/` to `../apcore/docs/features`
+
+### Improved
+- Better type hints and protocol definitions for framework integration
+- Consistent error handling with standardized error codes
+
+
 ## [0.2.2] - 2026-02-16
 
 ### Removed
