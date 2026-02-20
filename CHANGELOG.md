@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.4.0] - 2026-02-20
+
+### Added
+
+#### Streaming Support
+- **Executor.stream()** - New async generator method for streaming module execution
+  - Implements same 6-step pipeline as `call_async()` (context, safety, lookup, ACL, input validation, middleware before)
+  - Falls back to `call_async()` yielding single chunk for non-streaming modules
+  - For streaming modules, iterates `module.stream()` and yields each chunk
+  - Accumulates chunks via shallow merge for output validation and after-middleware
+  - Full error handling with middleware recovery
+- **ModuleAnnotations.streaming** - New `streaming: bool = False` field to indicate if a module supports streaming execution
+- **Test coverage** - Added 5 comprehensive tests in `test_executor_stream.py`:
+  - Fallback behavior for non-streaming modules
+  - Multi-chunk streaming
+  - Module not found error handling
+  - Before/after middleware integration
+  - Disjoint key accumulation via shallow merge
+
+
+## [0.3.0] - 2026-02-20
+
+### Added
+
+#### Public API Extensions
+- **ErrorCodes** - New `ErrorCodes` class with all framework error code constants; replaces hardcoded error strings
+- **ContextFactory Protocol** - New `ContextFactory` protocol for creating Context from framework-specific requests (e.g., Django, FastAPI)
+- **Registry constants** - Exported `REGISTRY_EVENTS` dict and `MODULE_ID_PATTERN` regex for consistent module ID validation
+- **Executor.from_registry()** - Convenience factory method for creating an Executor from a Registry with optional middlewares, ACL, and config
+
+#### Schema System
+- **Comprehensive schema system** - Full implementation with loading, validation, and export capabilities
+  - Schema loading from JSON/YAML files
+  - Runtime schema validation
+  - Schema export functionality
+
+### Fixed
+- **ErrorCodes class** - Prevent attribute deletion to ensure error code constants remain immutable
+- **Planning documentation** - Updated progress bar style in overview.md
+
+
 ## [0.2.3] - 2026-02-20
 
 ### Added

@@ -756,7 +756,11 @@ class Executor:
             # Error handling with middleware recovery
             if executed_middlewares:
                 recovery = await self._execute_on_error_async(
-                    module_id, effective_inputs, exc, ctx, executed_middlewares,
+                    module_id,
+                    effective_inputs,
+                    exc,
+                    ctx,
+                    executed_middlewares,
                 )
                 if recovery is not None:
                     yield recovery

@@ -47,9 +47,7 @@ class StreamingModule:
     def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
         return {"value": inputs["count"]}
 
-    async def stream(
-        self, inputs: dict[str, Any], context: Context
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
         for i in range(1, inputs["count"] + 1):
             yield {"value": i}
 
@@ -64,9 +62,7 @@ class DisjointKeyModule:
     def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
         return {"a": "val_a", "b": "val_b"}
 
-    async def stream(
-        self, inputs: dict[str, Any], context: Context
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
         yield {"a": "val_a"}
         yield {"b": "val_b"}
 
@@ -138,9 +134,7 @@ class TestExecutorStream:
                 log.append("after")
                 return None
 
-        ex = _make_executor(
-            module=mod, module_id="counter", middlewares=[TrackingMiddleware()]
-        )
+        ex = _make_executor(module=mod, module_id="counter", middlewares=[TrackingMiddleware()])
 
         chunks: list[dict[str, Any]] = []
         async for chunk in ex.stream("counter", {"count": 2}):
@@ -166,9 +160,7 @@ class TestExecutorStream:
                 after_output = dict(output)
                 return None
 
-        ex = _make_executor(
-            module=mod, module_id="disjoint", middlewares=[CaptureAfter()]
-        )
+        ex = _make_executor(module=mod, module_id="disjoint", middlewares=[CaptureAfter()])
 
         chunks: list[dict[str, Any]] = []
         async for chunk in ex.stream("disjoint", {}):
