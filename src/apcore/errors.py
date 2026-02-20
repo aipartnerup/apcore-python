@@ -435,3 +435,6 @@ class ErrorCodes:
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("ErrorCodes is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("ErrorCodes is immutable")

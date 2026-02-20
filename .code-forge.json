@@ -6,8 +6,8 @@
     "skills_collection": "https://github.com/tercel/claude-code-skills"
   },
   "directories": {
-    "base": "planning/",
-    "input": "features/",
+    "base": "./",
+    "input": "../apcore/docs/features",
     "output": "implementation/"
   },
   "git": {
