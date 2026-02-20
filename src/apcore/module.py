@@ -19,6 +19,7 @@ class ModuleAnnotations:
         idempotent: Whether repeated calls produce the same result.
         requires_approval: Whether human approval is needed before execution.
         open_world: Whether the module interacts with external systems.
+        streaming: Whether the module supports streaming execution.
     """
 
     readonly: bool = False
@@ -26,6 +27,7 @@ class ModuleAnnotations:
     idempotent: bool = False
     requires_approval: bool = False
     open_world: bool = True
+    streaming: bool = False
 
 
 @dataclass

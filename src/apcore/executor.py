@@ -7,6 +7,7 @@ import copy
 import inspect
 import logging
 import threading
+from collections.abc import AsyncIterator
 from typing import Any, Callable
 
 import pydantic
@@ -606,6 +607,161 @@ class Executor:
 
         # Step 10 -- Return
         return output
+
+    async def stream(
+        self,
+        module_id: str,
+        inputs: dict[str, Any] | None = None,
+        context: Context | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Async generator that streams module output chunks.
+
+        Steps 1-6 are identical to call_async(). If the module has no stream()
+        method, falls back to call_async() and yields a single chunk. If the
+        module has stream(), iterates it, yields each chunk, and accumulates
+        results via shallow merge. After all chunks, validates accumulated
+        output and runs after-middleware.
+
+        Args:
+            module_id: The module to execute.
+            inputs: Input data dict. None is treated as {}.
+            context: Optional execution context. Auto-created if None.
+
+        Yields:
+            Dict chunks from the module's stream() or a single call_async() result.
+        """
+        effective_inputs: dict[str, Any] = dict(inputs) if inputs is not None else {}
+
+        # Step 1 -- Context
+        if context is None:
+            ctx = Context.create(executor=self)
+            ctx = ctx.child(module_id)
+        else:
+            ctx = context.child(module_id)
+
+        # Step 2 -- Safety Checks
+        self._check_safety(module_id, ctx)
+
+        # Step 3 -- Lookup
+        module = self._registry.get(module_id)
+        if module is None:
+            raise ModuleNotFoundError(module_id=module_id)
+
+        # Step 4 -- ACL
+        if self._acl is not None:
+            allowed = self._acl.check(ctx.caller_id, module_id, ctx)
+            if not allowed:
+                raise ACLDeniedError(caller_id=ctx.caller_id, target_id=module_id)
+
+        # Step 5 -- Input Validation and Redaction
+        if hasattr(module, "input_schema") and module.input_schema is not None:
+            try:
+                module.input_schema.model_validate(effective_inputs)
+            except pydantic.ValidationError as e:
+                errors = [
+                    {
+                        "field": ".".join(str(loc) for loc in err["loc"]),
+                        "code": err["type"],
+                        "message": err["msg"],
+                    }
+                    for err in e.errors()
+                ]
+                raise SchemaValidationError(
+                    message="Input validation failed",
+                    errors=errors,
+                ) from e
+            ctx.redacted_inputs = redact_sensitive(effective_inputs, module.input_schema.model_json_schema())
+
+        executed_middlewares: list[Middleware] = []
+
+        try:
+            # Step 6 -- Middleware Before (async-aware, inline dispatch)
+            for mw in self._middleware_manager.snapshot():
+                if inspect.iscoroutinefunction(mw.before):
+                    result = await mw.before(module_id, effective_inputs, ctx)
+                else:
+                    result = mw.before(module_id, effective_inputs, ctx)
+                executed_middlewares.append(mw)
+                if result is not None:
+                    effective_inputs = result
+
+            # Step 7 -- Stream or fallback
+            if not hasattr(module, "stream") or module.stream is None:
+                # Fallback: delegate to _execute_async, yield single chunk
+                output = await self._execute_async(module, module_id, effective_inputs, ctx)
+
+                # Step 8 -- Output Validation
+                if hasattr(module, "output_schema") and module.output_schema is not None:
+                    try:
+                        module.output_schema.model_validate(output)
+                    except pydantic.ValidationError as e:
+                        errors = [
+                            {
+                                "field": ".".join(str(loc) for loc in err["loc"]),
+                                "code": err["type"],
+                                "message": err["msg"],
+                            }
+                            for err in e.errors()
+                        ]
+                        raise SchemaValidationError(
+                            message="Output validation failed",
+                            errors=errors,
+                        ) from e
+
+                # Step 9 -- Middleware After (async-aware, reverse order)
+                for mw in reversed(self._middleware_manager.snapshot()):
+                    if inspect.iscoroutinefunction(mw.after):
+                        after_result = await mw.after(module_id, effective_inputs, output, ctx)
+                    else:
+                        after_result = mw.after(module_id, effective_inputs, output, ctx)
+                    if after_result is not None:
+                        output = after_result
+
+                yield output
+            else:
+                # Streaming path: iterate module.stream(), accumulate via shallow merge
+                accumulated: dict[str, Any] = {}
+                async for chunk in module.stream(effective_inputs, ctx):
+                    accumulated = {**accumulated, **chunk}
+                    yield chunk
+
+                # Step 8 -- Output Validation on accumulated result
+                if hasattr(module, "output_schema") and module.output_schema is not None:
+                    try:
+                        module.output_schema.model_validate(accumulated)
+                    except pydantic.ValidationError as e:
+                        errors = [
+                            {
+                                "field": ".".join(str(loc) for loc in err["loc"]),
+                                "code": err["type"],
+                                "message": err["msg"],
+                            }
+                            for err in e.errors()
+                        ]
+                        raise SchemaValidationError(
+                            message="Output validation failed",
+                            errors=errors,
+                        ) from e
+
+                # Step 9 -- Middleware After on accumulated result (async-aware, reverse)
+                for mw in reversed(self._middleware_manager.snapshot()):
+                    if inspect.iscoroutinefunction(mw.after):
+                        after_result = await mw.after(module_id, effective_inputs, accumulated, ctx)
+                    else:
+                        after_result = mw.after(module_id, effective_inputs, accumulated, ctx)
+                    if after_result is not None:
+                        accumulated = after_result
+
+        except Exception as exc:
+            # Error handling with middleware recovery
+            if executed_middlewares:
+                recovery = await self._execute_on_error_async(
+                    module_id, effective_inputs, exc, ctx, executed_middlewares,
+                )
+                if recovery is not None:
+                    yield recovery
+                    return
+            raise
 
     async def _execute_async(self, module: Any, module_id: str, inputs: dict[str, Any], ctx: Context) -> dict[str, Any]:
         """Execute module asynchronously with timeout."""
