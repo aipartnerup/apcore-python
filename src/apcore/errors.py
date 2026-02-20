@@ -31,6 +31,7 @@ __all__ = [
     "BindingFileInvalidError",
     "CircularDependencyError",
     "ModuleLoadError",
+    "ErrorCodes",
 ]
 
 
@@ -393,3 +394,44 @@ class ModuleLoadError(ModuleError):
             details={"module_id": module_id, "reason": reason},
             **kwargs,
         )
+
+
+class ErrorCodes:
+    """All framework error codes as constants.
+
+    Use these instead of hardcoding error code strings.
+
+    Example:
+        if error.code == ErrorCodes.MODULE_NOT_FOUND:
+            handle_not_found()
+    """
+
+    CONFIG_NOT_FOUND = "CONFIG_NOT_FOUND"
+    CONFIG_INVALID = "CONFIG_INVALID"
+    ACL_RULE_ERROR = "ACL_RULE_ERROR"
+    ACL_DENIED = "ACL_DENIED"
+    MODULE_NOT_FOUND = "MODULE_NOT_FOUND"
+    MODULE_TIMEOUT = "MODULE_TIMEOUT"
+    MODULE_LOAD_ERROR = "MODULE_LOAD_ERROR"
+    MODULE_EXECUTE_ERROR = "MODULE_EXECUTE_ERROR"
+    SCHEMA_VALIDATION_ERROR = "SCHEMA_VALIDATION_ERROR"
+    SCHEMA_NOT_FOUND = "SCHEMA_NOT_FOUND"
+    SCHEMA_PARSE_ERROR = "SCHEMA_PARSE_ERROR"
+    SCHEMA_CIRCULAR_REF = "SCHEMA_CIRCULAR_REF"
+    CALL_DEPTH_EXCEEDED = "CALL_DEPTH_EXCEEDED"
+    CIRCULAR_CALL = "CIRCULAR_CALL"
+    CALL_FREQUENCY_EXCEEDED = "CALL_FREQUENCY_EXCEEDED"
+    GENERAL_INVALID_INPUT = "GENERAL_INVALID_INPUT"
+    GENERAL_INTERNAL_ERROR = "GENERAL_INTERNAL_ERROR"
+    FUNC_MISSING_TYPE_HINT = "FUNC_MISSING_TYPE_HINT"
+    FUNC_MISSING_RETURN_TYPE = "FUNC_MISSING_RETURN_TYPE"
+    BINDING_INVALID_TARGET = "BINDING_INVALID_TARGET"
+    BINDING_MODULE_NOT_FOUND = "BINDING_MODULE_NOT_FOUND"
+    BINDING_CALLABLE_NOT_FOUND = "BINDING_CALLABLE_NOT_FOUND"
+    BINDING_NOT_CALLABLE = "BINDING_NOT_CALLABLE"
+    BINDING_SCHEMA_MISSING = "BINDING_SCHEMA_MISSING"
+    BINDING_FILE_INVALID = "BINDING_FILE_INVALID"
+    CIRCULAR_DEPENDENCY = "CIRCULAR_DEPENDENCY"
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("ErrorCodes is immutable")

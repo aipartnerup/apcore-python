@@ -260,6 +260,7 @@ class TestPublicAPIAll:
     EXPECTED_NAMES = {
         # Core
         "Context",
+        "ContextFactory",
         "Identity",
         "Registry",
         "Executor",
@@ -269,9 +270,13 @@ class TestPublicAPIAll:
         "ValidationResult",
         # Registry types
         "ModuleDescriptor",
+        # Registry constants
+        "REGISTRY_EVENTS",
+        "MODULE_ID_PATTERN",
         # Config
         "Config",
         # Errors
+        "ErrorCodes",
         "ModuleError",
         "SchemaValidationError",
         "ACLDeniedError",

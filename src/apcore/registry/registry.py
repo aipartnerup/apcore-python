@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
@@ -28,7 +29,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Registry"]
+REGISTRY_EVENTS: dict[str, str] = {
+    "REGISTER": "register",
+    "UNREGISTER": "unregister",
+}
+
+MODULE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
+
+__all__ = ["Registry", "REGISTRY_EVENTS", "MODULE_ID_PATTERN"]
 
 
 class Registry:
@@ -73,8 +81,8 @@ class Registry:
         self._modules: dict[str, Any] = {}
         self._module_meta: dict[str, dict[str, Any]] = {}
         self._callbacks: dict[str, list[Callable[..., Any]]] = {
-            "register": [],
-            "unregister": [],
+            REGISTRY_EVENTS["REGISTER"]: [],
+            REGISTRY_EVENTS["UNREGISTER"]: [],
         }
         self._write_lock = threading.RLock()
         self._id_map: dict[str, dict[str, Any]] = {}
@@ -237,6 +245,12 @@ class Registry:
         """
         if not module_id:
             raise InvalidInputError(message="module_id must be a non-empty string")
+
+        if not MODULE_ID_PATTERN.match(module_id):
+            raise InvalidInputError(
+                f"Invalid module ID: '{module_id}'. Must match pattern: "
+                f"{MODULE_ID_PATTERN.pattern} (lowercase, digits, underscores, dots only; no hyphens)"
+            )
 
         with self._write_lock:
             if module_id in self._modules:

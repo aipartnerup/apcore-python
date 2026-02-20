@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["Context", "Identity"]
+__all__ = ["Context", "Identity", "ContextFactory"]
 
 
 @dataclass(frozen=True)
@@ -64,3 +64,24 @@ class Context:
             identity=self.identity,
             data=self.data,
         )
+
+
+@runtime_checkable
+class ContextFactory(Protocol):
+    """Protocol for creating Context from framework-specific requests.
+
+    Web framework integrations should implement this to extract Identity
+    from HTTP requests (e.g., Django request.user, JWT tokens, API keys).
+
+    Example:
+        class DjangoContextFactory:
+            def create_context(self, request: HttpRequest) -> Context:
+                identity = Identity(
+                    id=str(request.user.id),
+                    type="user",
+                    roles=list(request.user.groups.values_list("name", flat=True)),
+                )
+                return Context.create(identity=identity)
+    """
+
+    def create_context(self, request: Any) -> Context: ...

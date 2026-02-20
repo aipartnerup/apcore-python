@@ -161,6 +161,27 @@ class Executor:
         self._async_cache: dict[str, bool] = {}
         self._async_cache_lock = threading.Lock()
 
+    @classmethod
+    def from_registry(
+        cls,
+        registry: "Registry",
+        middlewares: list | None = None,
+        acl: "ACL | None" = None,
+        config: "Config | None" = None,
+    ) -> "Executor":
+        """Convenience factory for creating an Executor from a Registry.
+
+        Args:
+            registry: The module registry.
+            middlewares: Optional middleware list.
+            acl: Optional access control list.
+            config: Optional configuration.
+
+        Returns:
+            A configured Executor instance.
+        """
+        return cls(registry=registry, middlewares=middlewares, acl=acl, config=config)
+
     @property
     def registry(self) -> Registry:
         """Return the Registry instance."""

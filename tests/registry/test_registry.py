@@ -744,11 +744,11 @@ class TestThreadSafety:
         """list() returns snapshot not affected by concurrent mutations."""
         reg = Registry()
         for i in range(10):
-            reg.register(f"mod.{i:02d}", _ValidModule())
+            reg.register(f"mod.n{i:02d}", _ValidModule())
         snapshot = reg.list()
         assert len(snapshot) == 10
         # Unregister in another thread
-        reg.unregister("mod.05")
+        reg.unregister("mod.n05")
         # Original snapshot is still 10 items
         assert len(snapshot) == 10
 
@@ -760,7 +760,7 @@ class TestThreadSafety:
         def registerer() -> None:
             try:
                 for i in range(50):
-                    mid = f"thread.mod.{threading.current_thread().name}.{i}"
+                    mid = f"thread.mod.w{threading.current_thread().name}.n{i}"
                     reg.register(mid, _ValidModule())
             except Exception as e:
                 errors.append(e)
@@ -768,13 +768,13 @@ class TestThreadSafety:
         def reader() -> None:
             try:
                 for _ in range(200):
-                    reg.has("thread.mod.0")
+                    reg.has("thread.mod.n0")
                     reg.count  # noqa: B018
                     reg.module_ids
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=registerer, name=f"w-{i}") for i in range(3)]
+        threads = [threading.Thread(target=registerer, name=f"w{i}") for i in range(3)]
         threads += [threading.Thread(target=reader) for _ in range(5)]
         for t in threads:
             t.start()
@@ -787,7 +787,7 @@ class TestThreadSafety:
         """iter() snapshot is safe during concurrent unregister()."""
         reg = Registry()
         for i in range(20):
-            reg.register(f"mod.{i:02d}", _ValidModule())
+            reg.register(f"mod.n{i:02d}", _ValidModule())
         errors: list[Exception] = []
 
         def iterator() -> None:
@@ -800,7 +800,7 @@ class TestThreadSafety:
         def unregisterer() -> None:
             try:
                 for i in range(20):
-                    reg.unregister(f"mod.{i:02d}")
+                    reg.unregister(f"mod.n{i:02d}")
             except Exception as e:
                 errors.append(e)
 

@@ -182,42 +182,42 @@ class TestCallFlow:
             ex.call("test.module", {"name": "Alice"}, context=ctx)
 
     def test_circular_detection(self) -> None:
-        """Step 2: Raises CircularCallError for A->B->A."""
+        """Step 2: Raises CircularCallError for a->b->a."""
         mod = MockModule()
-        ex = _make_executor(module=mod, module_id="A")
+        ex = _make_executor(module=mod, module_id="a")
         ctx = Context.create(executor=ex)
-        ctx.call_chain = ["A", "B"]
+        ctx.call_chain = ["a", "b"]
         with pytest.raises(CircularCallError):
-            ex.call("A", {"name": "Alice"}, context=ctx)
+            ex.call("a", {"name": "Alice"}, context=ctx)
 
     def test_circular_detection_longer_chain(self) -> None:
-        """Step 2: Raises CircularCallError for A->B->C->A."""
+        """Step 2: Raises CircularCallError for a->b->c->a."""
         mod = MockModule()
-        ex = _make_executor(module=mod, module_id="A")
+        ex = _make_executor(module=mod, module_id="a")
         ctx = Context.create(executor=ex)
-        ctx.call_chain = ["A", "B", "C"]
+        ctx.call_chain = ["a", "b", "c"]
         with pytest.raises(CircularCallError):
-            ex.call("A", {"name": "Alice"}, context=ctx)
+            ex.call("a", {"name": "Alice"}, context=ctx)
 
     def test_self_call_not_circular(self) -> None:
-        """Step 2: Self-call A->A is NOT circular, governed by frequency."""
+        """Step 2: Self-call a->a is NOT circular, governed by frequency."""
         mod = MockModule()
-        ex = _make_executor(module=mod, module_id="A")
+        ex = _make_executor(module=mod, module_id="a")
         ctx = Context.create(executor=ex)
-        ctx.call_chain = ["A"]
+        ctx.call_chain = ["a"]
         # Self-call should not raise CircularCallError; frequency limit governs it
-        ex.call("A", {"name": "Alice"}, context=ctx)
+        ex.call("a", {"name": "Alice"}, context=ctx)
         assert len(mod.execute_calls) == 1
 
     def test_frequency_exceeded(self) -> None:
         """Step 2: Raises CallFrequencyExceededError when count > max_repeat."""
         mod = MockModule()
         config = Config(data={"executor": {"max_module_repeat": 2}})
-        ex = _make_executor(module=mod, module_id="A", config=config)
+        ex = _make_executor(module=mod, module_id="a", config=config)
         ctx = Context.create(executor=ex)
-        ctx.call_chain = ["A", "A", "A"]
+        ctx.call_chain = ["a", "a", "a"]
         with pytest.raises(CallFrequencyExceededError):
-            ex.call("A", {"name": "Alice"}, context=ctx)
+            ex.call("a", {"name": "Alice"}, context=ctx)
 
     def test_module_not_found(self) -> None:
         """Step 3: Raises ModuleNotFoundError for unknown module."""

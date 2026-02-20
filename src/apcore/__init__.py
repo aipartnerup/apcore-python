@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 # Core
-from apcore.context import Context, Identity
+from apcore.context import Context, ContextFactory, Identity
 from apcore.registry import Registry
+from apcore.registry.registry import MODULE_ID_PATTERN, REGISTRY_EVENTS
 from apcore.registry.types import ModuleDescriptor
 from apcore.executor import Executor, redact_sensitive, REDACTED_VALUE
 
@@ -22,6 +23,7 @@ from apcore.errors import (
     CircularCallError,
     CircularDependencyError,
     ConfigError,
+    ErrorCodes,
     InvalidInputError,
     ModuleError,
     ModuleNotFoundError,
@@ -64,6 +66,7 @@ __version__ = "0.2.2"
 __all__ = [
     # Core
     "Context",
+    "ContextFactory",
     "Identity",
     "Registry",
     "Executor",
@@ -75,7 +78,11 @@ __all__ = [
     "ModuleDescriptor",
     # Config
     "Config",
+    # Registry constants
+    "REGISTRY_EVENTS",
+    "MODULE_ID_PATTERN",
     # Errors
+    "ErrorCodes",
     "ModuleError",
     "SchemaValidationError",
     "ACLDeniedError",
