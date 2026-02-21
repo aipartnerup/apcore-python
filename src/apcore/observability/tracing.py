@@ -47,7 +47,7 @@ class StdoutExporter:
     def export(self, span: Span) -> None:
         """Write span as a single JSON line to stdout."""
         data = dataclasses.asdict(span)
-        print(json.dumps(data, default=str), file=sys.stdout)
+        sys.stdout.write(json.dumps(data, default=str) + "\n")
 
 
 _tracing_logger = logging.getLogger(__name__)

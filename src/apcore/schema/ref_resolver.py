@@ -204,3 +204,7 @@ class RefResolver:
 
         self._file_cache[file_path] = parsed
         return parsed
+
+    def clear_cache(self) -> None:
+        """Clear the file cache."""
+        self._file_cache.clear()

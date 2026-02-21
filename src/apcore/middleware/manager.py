@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 from typing import TYPE_CHECKING, Any
@@ -126,4 +127,69 @@ class MiddlewareManager:
             if result is not None:
                 return result
 
+        return None
+
+    async def execute_before_async(
+        self, module_id: str, inputs: dict[str, Any], context: Context
+    ) -> tuple[dict[str, Any], list[Middleware]]:
+        """Async-aware execute_before: awaits coroutine middlewares, calls sync ones directly."""
+        current_inputs = inputs
+        executed_middlewares: list[Middleware] = []
+        middlewares = self.snapshot()
+
+        for mw in middlewares:
+            executed_middlewares.append(mw)
+            try:
+                if inspect.iscoroutinefunction(mw.before):
+                    result = await mw.before(module_id, current_inputs, context)
+                else:
+                    result = mw.before(module_id, current_inputs, context)
+            except Exception as e:
+                raise MiddlewareChainError(original=e, executed_middlewares=executed_middlewares) from e
+            if result is not None:
+                current_inputs = result
+
+        return current_inputs, executed_middlewares
+
+    async def execute_after_async(
+        self,
+        module_id: str,
+        inputs: dict[str, Any],
+        output: dict[str, Any],
+        context: Context,
+    ) -> dict[str, Any]:
+        """Async-aware execute_after: awaits coroutine middlewares, calls sync ones directly."""
+        current_output = output
+        middlewares = self.snapshot()
+
+        for mw in reversed(middlewares):
+            if inspect.iscoroutinefunction(mw.after):
+                result = await mw.after(module_id, inputs, current_output, context)
+            else:
+                result = mw.after(module_id, inputs, current_output, context)
+            if result is not None:
+                current_output = result
+
+        return current_output
+
+    async def execute_on_error_async(
+        self,
+        module_id: str,
+        inputs: dict[str, Any],
+        error: Exception,
+        context: Context,
+        executed_middlewares: list[Middleware],
+    ) -> dict[str, Any] | None:
+        """Async-aware on_error chain."""
+        for mw in reversed(executed_middlewares):
+            try:
+                if inspect.iscoroutinefunction(mw.on_error):
+                    recovery = await mw.on_error(module_id, inputs, error, context)
+                else:
+                    recovery = mw.on_error(module_id, inputs, error, context)
+                if isinstance(recovery, dict):
+                    return recovery
+            except Exception:
+                _logger.exception("on_error handler failed in %s", type(mw).__name__)
+                continue
         return None

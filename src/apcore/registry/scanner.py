@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from apcore.errors import ConfigError, ConfigNotFoundError
 from apcore.registry.types import DiscoveredModule
@@ -123,7 +124,7 @@ def scan_extensions(
 
 
 def scan_multi_root(
-    roots: list[dict],
+    roots: list[dict[str, Any]],
     max_depth: int = 8,
     follow_symlinks: bool = False,
 ) -> list[DiscoveredModule]:

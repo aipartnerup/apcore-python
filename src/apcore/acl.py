@@ -57,7 +57,7 @@ class ACL:
         self._default_effect: str = default_effect
         self._yaml_path: str | None = None
         self.debug: bool = False
-        self._logger: logging.Logger = logging.getLogger("apcore.acl")
+        self._logger: logging.Logger = logging.getLogger(__name__)
         self._lock = threading.Lock()
 
     @classmethod
@@ -77,7 +77,7 @@ class ACL:
         if not os.path.isfile(yaml_path):
             raise ConfigNotFoundError(config_path=yaml_path)
 
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding="utf-8") as f:
             try:
                 data = yaml.safe_load(f)
             except yaml.YAMLError as e:

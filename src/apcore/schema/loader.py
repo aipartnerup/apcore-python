@@ -18,7 +18,7 @@ from apcore.schema.types import ResolvedSchema, SchemaDefinition, SchemaStrategy
 
 __all__ = ["SchemaLoader"]
 
-logger = logging.getLogger("apcore")
+logger = logging.getLogger(__name__)
 
 _TYPE_MAP: dict[str, type] = {
     "string": str,
@@ -388,4 +388,4 @@ class SchemaLoader:
         """Clear all internal caches."""
         self._schema_cache.clear()
         self._model_cache.clear()
-        self._resolver._file_cache.clear()
+        self._resolver.clear_cache()

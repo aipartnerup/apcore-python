@@ -66,7 +66,7 @@ class MetricsCollector:
             inf_key = (name, labels_key, float("inf"))
             self._histogram_buckets[inf_key] = self._histogram_buckets.get(inf_key, 0) + 1
 
-    def snapshot(self) -> dict:
+    def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "counters": dict(self._counters),

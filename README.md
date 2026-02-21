@@ -116,7 +116,7 @@ src/apcore/
     acl.py               # Access control
     errors.py            # Error hierarchy
     module.py            # Module annotations & metadata
-    middleware/           # Middleware system
+    middleware/          # Middleware system
     observability/       # Tracing, metrics, logging
     registry/            # Module discovery & registration
     schema/              # Schema loading, validation, export

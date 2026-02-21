@@ -11,8 +11,8 @@ from pydantic import BaseModel, ConfigDict, create_model
 
 from apcore.decorator import (
     FunctionModule,
-    _generate_input_model,
-    _generate_output_model,
+    generate_input_model,
+    generate_output_model,
 )
 from apcore.errors import (
     BindingCallableNotFoundError,
@@ -40,7 +40,7 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, type] = {
 _UNSUPPORTED_KEYS = {"oneOf", "anyOf", "allOf", "$ref", "format"}
 
 
-def _build_model_from_json_schema(schema: dict, model_name: str = "DynamicModel") -> type[BaseModel]:
+def _build_model_from_json_schema(schema: dict[str, Any], model_name: str = "DynamicModel") -> type[BaseModel]:
     """Build a Pydantic model from a simple JSON Schema dict."""
     # Check for unsupported top-level features
     if _UNSUPPORTED_KEYS & schema.keys():
@@ -174,8 +174,8 @@ class BindingLoader:
         # Determine schema mode
         if binding.get("auto_schema"):
             try:
-                input_schema = _generate_input_model(func)
-                output_schema = _generate_output_model(func)
+                input_schema = generate_input_model(func)
+                output_schema = generate_output_model(func)
             except (FuncMissingTypeHintError, FuncMissingReturnTypeError) as exc:
                 raise BindingSchemaMissingError(target=binding["target"]) from exc
         elif "input_schema" in binding or "output_schema" in binding:
@@ -204,8 +204,8 @@ class BindingLoader:
         else:
             # No schema mode specified, try auto_schema as default
             try:
-                input_schema = _generate_input_model(func)
-                output_schema = _generate_output_model(func)
+                input_schema = generate_input_model(func)
+                output_schema = generate_output_model(func)
             except (FuncMissingTypeHintError, FuncMissingReturnTypeError) as exc:
                 raise BindingSchemaMissingError(target=binding["target"]) from exc
 

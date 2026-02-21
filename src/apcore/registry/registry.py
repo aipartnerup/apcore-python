@@ -84,7 +84,7 @@ class Registry:
             REGISTRY_EVENTS["REGISTER"]: [],
             REGISTRY_EVENTS["UNREGISTER"]: [],
         }
-        self._write_lock = threading.RLock()
+        self._lock = threading.RLock()
         self._id_map: dict[str, dict[str, Any]] = {}
         self._schema_cache: dict[str, dict[str, Any]] = {}
         self._config = config
@@ -202,7 +202,7 @@ class Registry:
 
             merged_meta = merge_module_metadata(cls, meta)
 
-            with self._write_lock:
+            with self._lock:
                 self._modules[mod_id] = module
                 self._module_meta[mod_id] = merged_meta
 
@@ -212,7 +212,7 @@ class Registry:
                     module.on_load()
                 except Exception as e:
                     logger.error("on_load() failed for module '%s': %s", mod_id, e)
-                    with self._write_lock:
+                    with self._lock:
                         self._modules.pop(mod_id, None)
                         self._module_meta.pop(mod_id, None)
                     continue
@@ -252,7 +252,7 @@ class Registry:
                 f"{MODULE_ID_PATTERN.pattern} (lowercase, digits, underscores, dots only; no hyphens)"
             )
 
-        with self._write_lock:
+        with self._lock:
             if module_id in self._modules:
                 raise InvalidInputError(message=f"Module already exists: {module_id}")
             self._modules[module_id] = module
@@ -262,7 +262,7 @@ class Registry:
             try:
                 module.on_load()
             except Exception:
-                with self._write_lock:
+                with self._lock:
                     self._modules.pop(module_id, None)
                 raise
 
@@ -273,7 +273,7 @@ class Registry:
 
         Returns False if module was not registered.
         """
-        with self._write_lock:
+        with self._lock:
             if module_id not in self._modules:
                 return False
             module = self._modules.pop(module_id)
@@ -300,17 +300,17 @@ class Registry:
         """
         if module_id == "":
             raise ModuleNotFoundError(module_id="")
-        with self._write_lock:
+        with self._lock:
             return self._modules.get(module_id)
 
     def has(self, module_id: str) -> bool:
         """Check whether a module is registered."""
-        with self._write_lock:
+        with self._lock:
             return module_id in self._modules
 
     def list(self, tags: list[str] | None = None, prefix: str | None = None) -> list[str]:
         """Return sorted list of registered module IDs, optionally filtered."""
-        with self._write_lock:
+        with self._lock:
             snapshot = dict(self._modules)
             meta_snapshot = dict(self._module_meta)
 
@@ -338,25 +338,25 @@ class Registry:
 
     def iter(self) -> Iterator[tuple[str, Any]]:
         """Return an iterator of (module_id, module) tuples (snapshot-based)."""
-        with self._write_lock:
+        with self._lock:
             items = list(self._modules.items())
         return iter(items)
 
     @property
     def count(self) -> int:
         """Number of registered modules."""
-        with self._write_lock:
+        with self._lock:
             return len(self._modules)
 
     @property
     def module_ids(self) -> list[str]:
         """Sorted list of registered module IDs."""
-        with self._write_lock:
+        with self._lock:
             return sorted(self._modules.keys())
 
     def get_definition(self, module_id: str) -> ModuleDescriptor | None:
         """Get a ModuleDescriptor for a registered module. Returns None if not found."""
-        with self._write_lock:
+        with self._lock:
             module = self._modules.get(module_id)
             if module is None:
                 return None
@@ -396,14 +396,14 @@ class Registry:
         Raises:
             InvalidInputError: If event name is invalid.
         """
-        with self._write_lock:
+        with self._lock:
             if event not in self._callbacks:
                 raise InvalidInputError(message=f"Invalid event: {event}. Must be 'register' or 'unregister'")
             self._callbacks[event].append(callback)
 
     def _trigger_event(self, event: str, module_id: str, module: Any) -> None:
         """Trigger all callbacks for an event. Errors are logged and swallowed."""
-        with self._write_lock:
+        with self._lock:
             callbacks = list(self._callbacks.get(event, []))
         for cb in callbacks:
             try:
@@ -420,5 +420,5 @@ class Registry:
 
     def clear_cache(self) -> None:
         """Clear the schema cache."""
-        with self._write_lock:
+        with self._lock:
             self._schema_cache.clear()

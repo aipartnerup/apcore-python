@@ -13,7 +13,7 @@ from apcore.context import Context
 from apcore.errors import FuncMissingReturnTypeError, FuncMissingTypeHintError
 
 
-def _generate_input_model(func: Any) -> type[BaseModel]:
+def generate_input_model(func: Any) -> type[BaseModel]:
     """Convert a function's parameter signature into a dynamic Pydantic BaseModel.
 
     Skips self/cls, *args, **kwargs, and Context-typed parameters.
@@ -71,7 +71,7 @@ def _generate_input_model(func: Any) -> type[BaseModel]:
     return create_model("InputModel", **field_dict)
 
 
-def _generate_output_model(func: Any) -> type[BaseModel]:
+def generate_output_model(func: Any) -> type[BaseModel]:
     """Convert a function's return type annotation into a Pydantic BaseModel.
 
     - dict / dict[str, T] -> permissive model (extra="allow")
@@ -124,7 +124,7 @@ def _has_context_param(func: Any) -> tuple[bool, str | None]:
     return (False, None)
 
 
-def _normalize_result(result: Any) -> dict:
+def _normalize_result(result: Any) -> dict[str, Any]:
     """Normalize a function's return value to a dict for the executor pipeline."""
     if result is None:
         return {}
@@ -151,15 +151,15 @@ class FunctionModule:
         documentation: str | None = None,
         tags: list[str] | None = None,
         version: str = "1.0.0",
-        annotations: dict | None = None,
-        metadata: dict | None = None,
+        annotations: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
         input_schema: type[BaseModel] | None = None,
         output_schema: type[BaseModel] | None = None,
     ) -> None:
         self._func = func
         self.module_id = module_id
-        self.input_schema = input_schema if input_schema is not None else _generate_input_model(func)
-        self.output_schema = output_schema if output_schema is not None else _generate_output_model(func)
+        self.input_schema = input_schema if input_schema is not None else generate_input_model(func)
+        self.output_schema = output_schema if output_schema is not None else generate_output_model(func)
 
         has_context, context_param_name = _has_context_param(func)
 
@@ -181,7 +181,7 @@ class FunctionModule:
         # inspect.iscoroutinefunction returns the correct value.
         if inspect.iscoroutinefunction(func):
 
-            async def _async_execute(inputs: dict, context: Context) -> dict:
+            async def _async_execute(inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 call_kwargs = dict(inputs)
                 if has_context:
                     call_kwargs[context_param_name] = context
@@ -191,7 +191,7 @@ class FunctionModule:
             self.execute = _async_execute
         else:
 
-            def _sync_execute(inputs: dict, context: Context) -> dict:
+            def _sync_execute(inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 call_kwargs = dict(inputs)
                 if has_context:
                     call_kwargs[context_param_name] = context
@@ -219,10 +219,10 @@ def module(
     id: str | None = None,  # noqa: A002
     description: str | None = None,
     documentation: str | None = None,
-    annotations: dict | None = None,
+    annotations: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     version: str = "1.0.0",
-    metadata: dict | None = None,
+    metadata: dict[str, Any] | None = None,
     registry: Any = None,
 ) -> Any:
     """Wrap a Python function as an apcore module.

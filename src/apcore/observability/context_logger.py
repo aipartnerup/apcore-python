@@ -28,13 +28,13 @@ class ContextLogger:
     def __init__(
         self,
         name: str,
-        format: str = "json",
+        output_format: str = "json",
         level: str = "info",
         redact_sensitive: bool = True,
         output: Any = None,
     ) -> None:
         self._name = name
-        self._format = format
+        self._output_format = output_format
         self._level = level
         self._level_value = _LEVELS.get(level, 20)
         self._redact_sensitive = redact_sensitive
@@ -73,7 +73,7 @@ class ContextLogger:
             "extra": redacted_extra,
         }
 
-        if self._format == "json":
+        if self._output_format == "json":
             self._output.write(json.dumps(entry, default=str) + "\n")
         else:
             ts = now.strftime("%Y-%m-%d %H:%M:%S")

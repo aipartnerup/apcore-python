@@ -11,8 +11,8 @@ from pydantic import BaseModel, Field, ValidationError
 from apcore.context import Context
 from apcore.decorator import (
     FunctionModule,
-    _generate_input_model,
-    _generate_output_model,
+    generate_input_model,
+    generate_output_model,
     _has_context_param,
     _make_auto_id,
     module,
@@ -246,7 +246,7 @@ class _OutputModel(BaseModel):
 
 
 class TestGenerateInputModel:
-    """Tests for _generate_input_model()."""
+    """Tests for generate_input_model()."""
 
     def test_simple_primitives(self):
         """func(name: str, age: int) produces model with required str and int fields."""
@@ -254,7 +254,7 @@ class TestGenerateInputModel:
         def func(name: str, age: int) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert "name" in Model.model_fields
         assert "age" in Model.model_fields
         assert Model.model_fields["name"].is_required()
@@ -269,7 +269,7 @@ class TestGenerateInputModel:
         def func(name: str, count: int = 5) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert Model.model_fields["name"].is_required()
         assert not Model.model_fields["count"].is_required()
         inst = Model(name="Alice")
@@ -281,7 +281,7 @@ class TestGenerateInputModel:
         def func(value: Optional[str]) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         inst = Model(value=None)
         assert inst.value is None
 
@@ -291,7 +291,7 @@ class TestGenerateInputModel:
         def func(value: str | int) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert Model(value="hello").value == "hello"
         assert Model(value=42).value == 42
 
@@ -301,7 +301,7 @@ class TestGenerateInputModel:
         def func(items: list[str]) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         inst = Model(items=["a", "b"])
         assert inst.items == ["a", "b"]
 
@@ -311,7 +311,7 @@ class TestGenerateInputModel:
         def func(data: dict[str, int]) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         inst = Model(data={"a": 1})
         assert inst.data == {"a": 1}
 
@@ -321,7 +321,7 @@ class TestGenerateInputModel:
         def func(mode: Literal["fast", "slow"]) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         inst = Model(mode="fast")
         assert inst.mode == "fast"
         with pytest.raises(ValidationError):
@@ -333,7 +333,7 @@ class TestGenerateInputModel:
         def func(x: Annotated[int, Field(ge=0)]) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         inst = Model(x=5)
         assert inst.x == 5
         with pytest.raises(ValidationError):
@@ -345,7 +345,7 @@ class TestGenerateInputModel:
         def func(config: _HelperModel) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         inst = Model(config={"x": 1, "y": "hello"})
         assert inst.config.x == 1
         assert inst.config.y == "hello"
@@ -356,7 +356,7 @@ class TestGenerateInputModel:
         def func(name: str, context: Context) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert "name" in Model.model_fields
         assert "context" not in Model.model_fields
 
@@ -366,7 +366,7 @@ class TestGenerateInputModel:
         def func(name: str, ctx: Context) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert "name" in Model.model_fields
         assert "ctx" not in Model.model_fields
 
@@ -377,7 +377,7 @@ class TestGenerateInputModel:
             def method(self, name: str) -> dict:
                 return {}
 
-        Model = _generate_input_model(Svc.method)
+        Model = generate_input_model(Svc.method)
         assert "name" in Model.model_fields
         assert "self" not in Model.model_fields
 
@@ -387,7 +387,7 @@ class TestGenerateInputModel:
         def func(*args: Any, name: str) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert "name" in Model.model_fields
         assert len(Model.model_fields) == 1
 
@@ -397,7 +397,7 @@ class TestGenerateInputModel:
         def func(name: str, **kwargs: Any) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert "name" in Model.model_fields
         assert Model.model_config.get("extra") == "allow"
         # Extra fields accepted
@@ -412,7 +412,7 @@ class TestGenerateInputModel:
             return {}
 
         with pytest.raises(FuncMissingTypeHintError) as exc_info:
-            _generate_input_model(func)
+            generate_input_model(func)
         assert exc_info.value.details["parameter_name"] == "age"
 
     def test_nameerror_raises_func_missing_type_hint(self):
@@ -425,7 +425,7 @@ class TestGenerateInputModel:
         # Ensure the function's globals don't contain the type
         func.__globals__.pop("NonExistentType123", None)
         with pytest.raises(FuncMissingTypeHintError):
-            _generate_input_model(func)
+            generate_input_model(func)
 
     def test_only_args_and_kwargs(self):
         """Function with only *args and **kwargs produces empty model with extra='allow'."""
@@ -433,7 +433,7 @@ class TestGenerateInputModel:
         def func(*args: Any, **kwargs: Any) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert len(Model.model_fields) == 0
         assert Model.model_config.get("extra") == "allow"
 
@@ -443,7 +443,7 @@ class TestGenerateInputModel:
         def func() -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert len(Model.model_fields) == 0
         inst = Model()
         assert inst.model_dump() == {}
@@ -454,7 +454,7 @@ class TestGenerateInputModel:
         def func(a: str = "x", b: int = 0) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         inst = Model()
         assert inst.a == "x"
         assert inst.b == 0
@@ -469,13 +469,13 @@ class TestGenerateInputModel:
         def func(name: str, age: int = 25) -> dict:
             return {}
 
-        Model = _generate_input_model(func)
+        Model = generate_input_model(func)
         assert "name" in Model.model_fields
         assert "age" in Model.model_fields
 
 
 class TestGenerateOutputModel:
-    """Tests for _generate_output_model()."""
+    """Tests for generate_output_model()."""
 
     def test_return_bare_dict(self):
         """Return dict -> permissive model (extra='allow')."""
@@ -483,7 +483,7 @@ class TestGenerateOutputModel:
         def func() -> dict:
             return {}
 
-        Model = _generate_output_model(func)
+        Model = generate_output_model(func)
         assert Model.model_config.get("extra") == "allow"
 
     def test_return_typed_dict(self):
@@ -492,7 +492,7 @@ class TestGenerateOutputModel:
         def func() -> dict[str, Any]:
             return {}
 
-        Model = _generate_output_model(func)
+        Model = generate_output_model(func)
         assert Model.model_config.get("extra") == "allow"
 
     def test_return_basemodel_subclass(self):
@@ -501,7 +501,7 @@ class TestGenerateOutputModel:
         def func() -> _OutputModel:
             return _OutputModel(greeting="hi")
 
-        Model = _generate_output_model(func)
+        Model = generate_output_model(func)
         assert Model is _OutputModel
 
     def test_return_str(self):
@@ -510,7 +510,7 @@ class TestGenerateOutputModel:
         def func() -> str:
             return "hello"
 
-        Model = _generate_output_model(func)
+        Model = generate_output_model(func)
         assert "result" in Model.model_fields
         inst = Model(result="hello")
         assert inst.model_dump() == {"result": "hello"}
@@ -521,7 +521,7 @@ class TestGenerateOutputModel:
         def func() -> int:
             return 42
 
-        Model = _generate_output_model(func)
+        Model = generate_output_model(func)
         assert "result" in Model.model_fields
         inst = Model(result=42)
         assert inst.model_dump() == {"result": 42}
@@ -532,7 +532,7 @@ class TestGenerateOutputModel:
         def func() -> list[str]:
             return ["a"]
 
-        Model = _generate_output_model(func)
+        Model = generate_output_model(func)
         assert "result" in Model.model_fields
 
     def test_return_none(self):
@@ -541,7 +541,7 @@ class TestGenerateOutputModel:
         def func() -> None:
             pass
 
-        Model = _generate_output_model(func)
+        Model = generate_output_model(func)
         assert Model.model_config.get("extra") == "allow"
         assert len(Model.model_fields) == 0
 
@@ -552,7 +552,7 @@ class TestGenerateOutputModel:
             pass
 
         with pytest.raises(FuncMissingReturnTypeError):
-            _generate_output_model(func)
+            generate_output_model(func)
 
     def test_result_field_invariant(self):
         """Output schema result field coordinates with execute() wrapping."""
@@ -560,7 +560,7 @@ class TestGenerateOutputModel:
         def func() -> str:
             return "hello"
 
-        Model = _generate_output_model(func)
+        Model = generate_output_model(func)
         # Schema has result field
         assert "result" in Model.model_fields
         # Model validates the wrapped format

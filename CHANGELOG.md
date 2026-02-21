@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.5.0] - 2026-02-21
+
+### Changed
+
+#### API Naming
+- **decorator** - Renamed `_generate_input_model` / `_generate_output_model` to `generate_input_model` / `generate_output_model` as public API
+- **context_logger** - Renamed `format` parameter to `output_format` to avoid shadowing Python builtin
+- **registry** - Renamed `_write_lock` to `_lock` for clearer intent
+
+#### Type Annotations
+- **decorator** - Replaced bare `dict` with `dict[str, Any]` in `_normalize_result`, `annotations`, `metadata`, `_async_execute`, `_sync_execute`
+- **bindings** - Fixed `_build_model_from_json_schema` parameter type from `dict` to `dict[str, Any]`
+- **scanner** - Fixed `roots` parameter type from `list[dict]` to `list[dict[str, Any]]`
+- **metrics** - Fixed `snapshot` return type from `dict` to `dict[str, Any]`
+- **executor** - Removed redundant string-quoted forward references in `from_registry`; fixed `middlewares` parameter type to `list[Middleware] | None`
+
+#### Code Quality
+- **executor** - Extracted `_convert_validation_errors()` helper to eliminate 6 duplicated validation error conversion patterns
+- **executor** - Refactored `call_async()` and `stream()` to use new async middleware manager methods
+- **executor** - Removed internal `_execute_on_error_async` method (replaced by `MiddlewareManager.execute_on_error_async`)
+- **loader** - Use `self._resolver.clear_cache()` instead of accessing private `_file_cache` directly
+- **tracing** - Replaced `print()` with `sys.stdout.write()` in `StdoutExporter`
+- **acl / loader** - Changed hardcoded logger names to `logging.getLogger(__name__)`
+
+### Added
+
+#### Async Middleware
+- **MiddlewareManager** - Added `execute_before_async()`, `execute_after_async()`, `execute_on_error_async()` for proper async middleware dispatch with `inspect.iscoroutinefunction` detection
+- **RefResolver** - Added `clear_cache()` public method for cache management
+- **Executor** - Added `clear_async_cache()` public method
+
+### Fixed
+
+#### Memory Safety
+- **context** - Changed `Identity.roles` from mutable `list[str]` to immutable `tuple[str, ...]` in frozen dataclass
+
+#### Security
+- **acl** - Added explicit `encoding="utf-8"` to YAML file open
+
+
 ## [0.4.0] - 2026-02-20
 
 ### Added

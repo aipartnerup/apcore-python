@@ -15,7 +15,7 @@ class Identity:
 
     id: str
     type: str = "user"
-    roles: list[str] = field(default_factory=list)
+    roles: tuple[str, ...] = field(default_factory=tuple)
     attrs: dict[str, Any] = field(default_factory=dict)
 
 

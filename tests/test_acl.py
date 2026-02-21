@@ -368,7 +368,7 @@ class TestConditionalRules:
             ],
             default_effect="deny",
         )
-        ctx = Context.create(identity=Identity(id="u_1", type="user", roles=["admin", "reader"]))
+        ctx = Context.create(identity=Identity(id="u_1", type="user", roles=("admin", "reader")))
         assert acl.check(caller_id="caller", target_id="target", context=ctx) is True
 
     # Test: roles condition fails when no intersection
@@ -385,7 +385,7 @@ class TestConditionalRules:
             ],
             default_effect="deny",
         )
-        ctx = Context.create(identity=Identity(id="u_1", type="user", roles=["reader"]))
+        ctx = Context.create(identity=Identity(id="u_1", type="user", roles=("reader",)))
         assert acl.check(caller_id="caller", target_id="target", context=ctx) is False
 
     # Test: max_call_depth condition passes when depth within limit
@@ -554,8 +554,8 @@ class TestACLWithContext:
             ],
             default_effect="deny",
         )
-        ctx_admin = Context.create(identity=Identity(id="u_1", type="user", roles=["admin"]))
-        ctx_reader = Context.create(identity=Identity(id="u_2", type="user", roles=["reader"]))
+        ctx_admin = Context.create(identity=Identity(id="u_1", type="user", roles=("admin",)))
+        ctx_reader = Context.create(identity=Identity(id="u_2", type="user", roles=("reader",)))
         assert acl.check(caller_id="caller", target_id="target", context=ctx_admin) is True
         assert acl.check(caller_id="caller", target_id="target", context=ctx_reader) is False
 

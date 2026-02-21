@@ -21,7 +21,7 @@ class TestContextLoggerCreation:
         """ContextLogger created with name and default settings."""
         logger = ContextLogger(name="test.logger")
         assert logger._name == "test.logger"
-        assert logger._format == "json"
+        assert logger._output_format == "json"
         assert logger._trace_id is None
         assert logger._module_id is None
         assert logger._caller_id is None
@@ -101,7 +101,7 @@ class TestContextLoggerJsonFormat:
     def test_json_output_valid(self):
         """JSON format output is valid JSON with required fields."""
         buf = io.StringIO()
-        logger = ContextLogger(name="test", format="json", output=buf)
+        logger = ContextLogger(name="test", output_format="json", output=buf)
         logger.info("hello")
         data = json.loads(buf.getvalue())
         assert isinstance(data, dict)
@@ -145,7 +145,7 @@ class TestContextLoggerTextFormat:
     def test_text_format_pattern(self):
         """Text format output matches expected pattern."""
         buf = io.StringIO()
-        logger = ContextLogger(name="test", format="text", output=buf)
+        logger = ContextLogger(name="test", output_format="text", output=buf)
         logger._trace_id = "trace-abc"
         logger._module_id = "mod.a"
         logger.info("hello world", extra={"key": "val"})
