@@ -60,6 +60,9 @@ __all__ = [
     "TaskLimitExceededError",
     "VersionConstraintError",
     "InternalError",
+    "ModuleIdConflictError",
+    "InvalidSegmentError",
+    "IdTooLongError",
     "ErrorCodes",
     "ErrorCodeCollisionError",
     "ErrorCodeRegistry",
@@ -505,7 +508,9 @@ class CallDepthExceededError(ModuleError):
 
     _default_retryable: bool | None = False
 
-    def __init__(self, depth: int, max_depth: int, call_chain: list[str], **kwargs: Any) -> None:
+    def __init__(
+        self, depth: int, max_depth: int, call_chain: list[str], **kwargs: Any
+    ) -> None:
         kwargs.setdefault(
             "ai_guidance",
             f"Call depth {depth} exceeds maximum {max_depth}. "
@@ -601,8 +606,13 @@ class InvalidInputError(ModuleError):
 
     _default_retryable: bool | None = False
 
-    def __init__(self, message: str = "Invalid input", **kwargs: Any) -> None:
-        super().__init__(code="GENERAL_INVALID_INPUT", message=message, **kwargs)
+    def __init__(
+        self,
+        message: str = "Invalid input",
+        code: str = "GENERAL_INVALID_INPUT",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(code=code, message=message, **kwargs)
 
 
 class FuncMissingTypeHintError(ModuleError):
@@ -610,7 +620,9 @@ class FuncMissingTypeHintError(ModuleError):
 
     _default_retryable: bool | None = False
 
-    def __init__(self, *, function_name: str, parameter_name: str, **kwargs: Any) -> None:
+    def __init__(
+        self, *, function_name: str, parameter_name: str, **kwargs: Any
+    ) -> None:
         super().__init__(
             code="FUNC_MISSING_TYPE_HINT",
             message=(
@@ -933,7 +945,9 @@ class DependencyNotFoundError(ModuleError):
         )
         super().__init__(
             code="DEPENDENCY_NOT_FOUND",
-            message=(f"Module '{module_id}' has unsatisfied required dependency '{dependency_id}'"),
+            message=(
+                f"Module '{module_id}' has unsatisfied required dependency '{dependency_id}'"
+            ),
             details={"module_id": module_id, "dependency_id": dependency_id},
             **kwargs,
         )
@@ -1069,6 +1083,97 @@ class InternalError(ModuleError):
         )
 
 
+class ModuleIdConflictError(ModuleError):
+    """Raised when two classes in a file produce the same snake_case segment.
+
+    Corresponds to error code ``MODULE_ID_CONFLICT`` per PROTOCOL_SPEC §2.1.1.
+    No modules from the conflicting file are registered.
+    """
+
+    _default_retryable: bool | None = False
+
+    def __init__(
+        self,
+        file_path: str,
+        class_names: list[str],
+        conflicting_segment: str,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            code="MODULE_ID_CONFLICT",
+            message=(
+                f"Module ID conflict in '{file_path}': "
+                f"classes {class_names} produce the same segment '{conflicting_segment}'"
+            ),
+            details={
+                "file_path": file_path,
+                "class_names": class_names,
+                "conflicting_segment": conflicting_segment,
+            },
+            **kwargs,
+        )
+
+
+class InvalidSegmentError(ModuleError):
+    """Raised when a derived class_segment does not conform to the canonical ID grammar.
+
+    Corresponds to error code ``INVALID_SEGMENT`` per PROTOCOL_SPEC §2.1.1.
+    A valid segment must match ``^[a-z][a-z0-9_]*$``.
+    """
+
+    _default_retryable: bool | None = False
+
+    def __init__(
+        self,
+        file_path: str,
+        class_name: str,
+        segment: str,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            code="INVALID_SEGMENT",
+            message=(
+                f"Invalid segment '{segment}' derived from class '{class_name}' "
+                f"in '{file_path}': must match ^[a-z][a-z0-9_]*$"
+            ),
+            details={
+                "file_path": file_path,
+                "class_name": class_name,
+                "segment": segment,
+            },
+            **kwargs,
+        )
+
+
+class IdTooLongError(ModuleError):
+    """Raised when a derived module_id exceeds 192 characters.
+
+    Corresponds to error code ``ID_TOO_LONG`` per PROTOCOL_SPEC §2.1.1.
+    """
+
+    _default_retryable: bool | None = False
+
+    def __init__(
+        self,
+        file_path: str,
+        module_id: str,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            code="ID_TOO_LONG",
+            message=(
+                f"Derived module ID in '{file_path}' exceeds 192 characters "
+                f"(length: {len(module_id)})"
+            ),
+            details={
+                "file_path": file_path,
+                "module_id": module_id,
+                "length": len(module_id),
+            },
+            **kwargs,
+        )
+
+
 class ErrorCodes:
     """All framework error codes as constants.
 
@@ -1098,14 +1203,20 @@ class ErrorCodes:
     RELOAD_FAILED = "RELOAD_FAILED"
     EXECUTION_CANCELLED = "EXECUTION_CANCELLED"
     SCHEMA_VALIDATION_ERROR = "SCHEMA_VALIDATION_ERROR"
+    SCHEMA_VALIDATION_FAILED = "SCHEMA_VALIDATION_FAILED"
+    SCHEMA_UNION_NO_MATCH = "SCHEMA_UNION_NO_MATCH"
+    SCHEMA_UNION_AMBIGUOUS = "SCHEMA_UNION_AMBIGUOUS"
     SCHEMA_NOT_FOUND = "SCHEMA_NOT_FOUND"
     SCHEMA_PARSE_ERROR = "SCHEMA_PARSE_ERROR"
     SCHEMA_CIRCULAR_REF = "SCHEMA_CIRCULAR_REF"
+    SCHEMA_MAX_DEPTH_EXCEEDED = "SCHEMA_MAX_DEPTH_EXCEEDED"
     CALL_DEPTH_EXCEEDED = "CALL_DEPTH_EXCEEDED"
     CIRCULAR_CALL = "CIRCULAR_CALL"
     CALL_FREQUENCY_EXCEEDED = "CALL_FREQUENCY_EXCEEDED"
     GENERAL_INVALID_INPUT = "GENERAL_INVALID_INPUT"
     GENERAL_INTERNAL_ERROR = "GENERAL_INTERNAL_ERROR"
+    INVALID_MODULE_ID = "INVALID_MODULE_ID"
+    DUPLICATE_MODULE_ID = "DUPLICATE_MODULE_ID"
     FUNC_MISSING_TYPE_HINT = "FUNC_MISSING_TYPE_HINT"
     FUNC_MISSING_RETURN_TYPE = "FUNC_MISSING_RETURN_TYPE"
     BINDING_INVALID_TARGET = "BINDING_INVALID_TARGET"
@@ -1126,6 +1237,11 @@ class ErrorCodes:
     DEPENDENCY_VERSION_MISMATCH = "DEPENDENCY_VERSION_MISMATCH"
     VERSION_CONSTRAINT_INVALID = "VERSION_CONSTRAINT_INVALID"
     TASK_LIMIT_EXCEEDED = "TASK_LIMIT_EXCEEDED"
+    PIPELINE_STEP_ERROR = "PIPELINE_STEP_ERROR"
+    PIPELINE_STEP_NOT_FOUND = "PIPELINE_STEP_NOT_FOUND"
+    MODULE_ID_CONFLICT = "MODULE_ID_CONFLICT"
+    INVALID_SEGMENT = "INVALID_SEGMENT"
+    ID_TOO_LONG = "ID_TOO_LONG"
 
     # Note: this class is intentionally NOT instantiated. All callers access the
     # constants as class attributes (`ErrorCodes.MODULE_NOT_FOUND`). A previous
@@ -1157,6 +1273,7 @@ FRAMEWORK_ERROR_CODE_PREFIXES: frozenset[str] = frozenset(
         "APPROVAL_",
         "VERSION_",
         "ERROR_CODE_",
+        "PIPELINE_",
     }
 )
 
@@ -1164,7 +1281,9 @@ FRAMEWORK_ERROR_CODE_PREFIXES: frozenset[str] = frozenset(
 def _collect_framework_codes() -> frozenset[str]:
     """Collect all error codes defined on ``ErrorCodes``."""
     return frozenset(
-        value for name, value in vars(ErrorCodes).items() if not name.startswith("_") and isinstance(value, str)
+        value
+        for name, value in vars(ErrorCodes).items()
+        if not name.startswith("_") and isinstance(value, str)
     )
 
 
@@ -1256,10 +1375,14 @@ class ErrorCodeCollisionError(ModuleError):
 
     _default_retryable: bool | None = False
 
-    def __init__(self, code: str, module_id: str, conflict_source: str, **kwargs: Any) -> None:
+    def __init__(
+        self, code: str, module_id: str, conflict_source: str, **kwargs: Any
+    ) -> None:
         super().__init__(
             code="ERROR_CODE_COLLISION",
-            message=(f"Error code '{code}' from module '{module_id}' collides with {conflict_source}"),
+            message=(
+                f"Error code '{code}' from module '{module_id}' collides with {conflict_source}"
+            ),
             details={
                 "error_code": code,
                 "module_id": module_id,
