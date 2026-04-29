@@ -13,6 +13,7 @@ from pydantic_core import PydanticUndefined
 
 from apcore.config import Config
 from apcore.errors import SchemaNotFoundError, SchemaParseError
+from apcore.schema.hardening import content_hash
 from apcore.schema.ref_resolver import RefResolver
 from apcore.schema.types import ResolvedSchema, SchemaDefinition, SchemaStrategy
 
@@ -47,7 +48,11 @@ class SchemaLoader:
         max_depth = config.get("schema.max_ref_depth", 32)
         self._resolver = RefResolver(self._schemas_dir, max_depth=max_depth)
         self._schema_cache: dict[str, SchemaDefinition] = {}
-        self._model_cache: dict[str, tuple[ResolvedSchema, ResolvedSchema]] = {}
+        # Two-level content-addressable cache (PROTOCOL_SPEC §4.15 Issue #44):
+        # Level 1: path index — maps module_id to SHA-256 hash of resolved schema
+        # Level 2: content cache — maps hash to compiled model pair; deduplicates identical schemas
+        self._path_index: dict[str, str] = {}
+        self._content_cache: dict[str, tuple[ResolvedSchema, ResolvedSchema]] = {}
 
     def load(self, module_id: str) -> SchemaDefinition:
         """Load a schema definition from a YAML file."""
@@ -328,8 +333,8 @@ class SchemaLoader:
         native_output_schema: type[BaseModel] | None = None,
     ) -> tuple[ResolvedSchema, ResolvedSchema]:
         """Get resolved schemas using the configured loading strategy."""
-        if module_id in self._model_cache:
-            return self._model_cache[module_id]
+        if module_id in self._path_index:
+            return self._content_cache[self._path_index[module_id]]
 
         strategy = SchemaStrategy(self._config.get("schema.strategy", "yaml_first"))
         result: tuple[ResolvedSchema, ResolvedSchema] | None = None
@@ -355,17 +360,25 @@ class SchemaLoader:
         if result is None:
             raise SchemaNotFoundError(schema_id=module_id)
 
-        self._model_cache[module_id] = result
+        self._store_in_cache(module_id, result)
         return result
 
     def _load_and_resolve(self, module_id: str) -> tuple[ResolvedSchema, ResolvedSchema]:
-        """Load and resolve a schema, using model cache."""
-        if module_id in self._model_cache:
-            return self._model_cache[module_id]
+        """Load and resolve a schema, using the two-level content-addressable cache."""
+        if module_id in self._path_index:
+            return self._content_cache[self._path_index[module_id]]
         sd = self.load(module_id)
         result = self.resolve(sd)
-        self._model_cache[module_id] = result
+        self._store_in_cache(module_id, result)
         return result
+
+    def _store_in_cache(self, module_id: str, result: tuple[ResolvedSchema, ResolvedSchema]) -> None:
+        """Store a resolved schema pair in the two-level content-addressable cache."""
+        combined = {"input": result[0].json_schema, "output": result[1].json_schema}
+        digest = content_hash(combined)
+        if digest not in self._content_cache:
+            self._content_cache[digest] = result
+        self._path_index[module_id] = digest
 
     def _wrap_native(
         self,
@@ -391,5 +404,6 @@ class SchemaLoader:
     def clear_cache(self) -> None:
         """Clear all internal caches."""
         self._schema_cache.clear()
-        self._model_cache.clear()
+        self._path_index.clear()
+        self._content_cache.clear()
         self._resolver.clear_cache()

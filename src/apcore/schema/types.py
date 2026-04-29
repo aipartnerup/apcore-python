@@ -80,6 +80,7 @@ class SchemaValidationResult:
 
     valid: bool
     errors: list[SchemaValidationErrorDetail] = field(default_factory=list)
+    error_code: str | None = None
 
     def to_error(self) -> SchemaValidationError:
         """Convert this validation result into a SchemaValidationError exception."""

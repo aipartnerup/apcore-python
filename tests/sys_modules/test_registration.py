@@ -78,7 +78,12 @@ class TestRegisterSysModulesDisabled:
         config = _make_config({"sys_modules": {"enabled": False}})
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         assert result == {}
         assert not registry.has("system.health.summary")
@@ -101,7 +106,12 @@ class TestErrorHistory:
         )
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         eh = result["error_history"]
         assert isinstance(eh, ErrorHistory)
@@ -113,7 +123,12 @@ class TestErrorHistory:
         config = _make_config()
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         eh_mw = result["error_history_middleware"]
         assert isinstance(eh_mw, ErrorHistoryMiddleware)
@@ -127,7 +142,12 @@ class TestSysModuleRegistration:
         config = _make_config()
         registry, executor, metrics = _make_deps()
 
-        register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         assert registry.has("system.health.summary")
 
@@ -136,7 +156,12 @@ class TestSysModuleRegistration:
         config = _make_config()
         registry, executor, metrics = _make_deps()
 
-        register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         assert registry.has("system.health.module")
 
@@ -145,7 +170,12 @@ class TestSysModuleRegistration:
         config = _make_config()
         registry, executor, metrics = _make_deps()
 
-        register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         assert registry.has("system.manifest.module")
 
@@ -156,7 +186,12 @@ class TestEventsDisabled:
         config = _make_config({"sys_modules": {"events": {"enabled": False}}})
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         assert "event_emitter" not in result
         assert "platform_notify_middleware" not in result
@@ -168,11 +203,18 @@ class TestEventsEnabled:
         config = _make_config({"sys_modules": {"events": {"enabled": True}}})
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         assert isinstance(result["event_emitter"], EventEmitter)
 
-    def test_register_sys_modules_events_registers_platform_notify_middleware(self) -> None:
+    def test_register_sys_modules_events_registers_platform_notify_middleware(
+        self,
+    ) -> None:
         """Events enabled: PlatformNotifyMiddleware added to executor with correct thresholds."""
         config = _make_config(
             {
@@ -189,7 +231,12 @@ class TestEventsEnabled:
         )
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         pn_mw = result["platform_notify_middleware"]
         assert isinstance(pn_mw, PlatformNotifyMiddleware)
@@ -219,11 +266,23 @@ class TestEventsEnabled:
         )
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         emitter = result["event_emitter"]
         assert len(emitter._subscribers) == 1
-        sub = emitter._subscribers[0]
+        from apcore.events.circuit_breaker import CircuitBreakerWrapper
+
+        wrapper = emitter._subscribers[0]
+        assert isinstance(wrapper, CircuitBreakerWrapper)
+        from apcore.events.subscribers import WebhookSubscriber
+
+        sub = wrapper._subscriber
+        assert isinstance(sub, WebhookSubscriber)
         assert sub._url == "https://example.com/hook"
         assert sub._headers == {"X-Custom": "value"}
         assert sub._retry_count == 2
@@ -247,7 +306,10 @@ class TestEventsEnabled:
 
         with caplog.at_level(logging.WARNING):
             result = register_sys_modules(
-                registry=registry, executor=executor, config=config, metrics_collector=metrics
+                registry=registry,
+                executor=executor,
+                config=config,
+                metrics_collector=metrics,
             )
 
         # Should still have emitter and PlatformNotifyMiddleware
@@ -259,7 +321,12 @@ class TestEventsEnabled:
         config = _make_config({"sys_modules": {"events": {"enabled": True}}})
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         emitter = result["event_emitter"]
         # Subscribe a mock to capture emitted events
@@ -292,7 +359,12 @@ class TestReturnContext:
         config = _make_config({"sys_modules": {"events": {"enabled": True}}})
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         assert "error_history" in result
         assert "error_history_middleware" in result
@@ -337,11 +409,23 @@ class TestA2ASubscriber:
         )
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         emitter = result["event_emitter"]
         assert len(emitter._subscribers) == 1
-        sub = emitter._subscribers[0]
+        from apcore.events.circuit_breaker import CircuitBreakerWrapper
+
+        wrapper = emitter._subscribers[0]
+        assert isinstance(wrapper, CircuitBreakerWrapper)
+        from apcore.events.subscribers import A2ASubscriber
+
+        sub = wrapper._subscriber
+        assert isinstance(sub, A2ASubscriber)
         assert sub._platform_url == "https://platform.example.com/a2a"
         assert sub._auth == "my-token"
 
@@ -380,11 +464,20 @@ class TestCustomSubscriberRegistry:
         )
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
         emitter = result["event_emitter"]
         assert len(emitter._subscribers) == 1
-        sub = emitter._subscribers[0]
+        from apcore.events.circuit_breaker import CircuitBreakerWrapper
+
+        wrapper = emitter._subscribers[0]
+        assert isinstance(wrapper, CircuitBreakerWrapper)
+        sub = wrapper._subscriber
         assert isinstance(sub, SlackSubscriber)
         assert sub.channel == "#alerts"
 
@@ -425,9 +518,18 @@ class TestCustomSubscriberRegistry:
         )
         registry, executor, metrics = _make_deps()
 
-        result = register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+        result = register_sys_modules(
+            registry=registry,
+            executor=executor,
+            config=config,
+            metrics_collector=metrics,
+        )
 
-        sub = result["event_emitter"]._subscribers[0]
+        from apcore.events.circuit_breaker import CircuitBreakerWrapper
+
+        wrapper = result["event_emitter"]._subscribers[0]
+        assert isinstance(wrapper, CircuitBreakerWrapper)
+        sub = wrapper._subscriber
         assert isinstance(sub, CustomWebhook)
         assert sub.custom is True
 
@@ -448,7 +550,12 @@ class TestCustomSubscriberRegistry:
         registry, executor, metrics = _make_deps()
 
         with caplog.at_level(logging.WARNING):
-            register_sys_modules(registry=registry, executor=executor, config=config, metrics_collector=metrics)
+            register_sys_modules(
+                registry=registry,
+                executor=executor,
+                config=config,
+                metrics_collector=metrics,
+            )
 
         assert any("Failed to instantiate subscriber" in msg for msg in caplog.messages)
 

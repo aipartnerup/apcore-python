@@ -30,6 +30,10 @@ A schema-enforced module standard for the AI-Perceivable era.
 - **Async task management** -- Background module execution with status tracking, cancellation, and concurrency limiting
 - **Behavioral annotations** -- Declare module traits (readonly, destructive, idempotent, cacheable, paginated, streaming) for AI-aware orchestration
 - **W3C Trace Context** -- traceparent header injection/extraction for distributed tracing interop
+- **Circuit breakers** -- `CircuitBreakerMiddleware` for per-module OPEN/CLOSED/HALF_OPEN protection; `CircuitBreakerWrapper` for per-subscriber event delivery resilience
+- **Multi-class module discovery** -- Opt-in `@multi_class` decorator for multiple Module classes per file with snake_case ID derivation (PROTOCOL_SPEC §2.1.1)
+- **Pluggable stores** -- `TaskStore` for async task persistence; `ObservabilityStore` for error/metric backends; `AuditStore` for control-module audit trails
+- **Prometheus / K8s integration** -- `PrometheusExporter` with `/metrics`, `/healthz`, `/readyz` endpoints; `UsageCollector` and `MetricsCollector` emit standard Prometheus gauge/counter metrics
 
 ## API Overview
 
@@ -64,6 +68,7 @@ A schema-enforced module standard for the AI-Perceivable era.
 | `ErrorHistoryMiddleware` | Records errors into ErrorHistory |
 | `PlatformNotifyMiddleware` | Emits events on error rate/latency spikes |
 | `ObsLoggingMiddleware` | Observability-aware structured logging middleware |
+| `CircuitBreakerMiddleware` | Per-module circuit breaker (OPEN/CLOSED/HALF_OPEN) |
 
 **Schema**
 
@@ -79,15 +84,17 @@ A schema-enforced module standard for the AI-Perceivable era.
 | Class | Description |
 |-------|-------------|
 | `TracingMiddleware` | Distributed tracing with span export |
+| `BatchSpanProcessor` | Non-blocking OTEL span export with configurable queue |
 | `MetricsMiddleware` / `MetricsCollector` | Call count, latency, error rate metrics |
-| `ContextLogger` | Context-aware structured logging |
-| `ErrorHistory` | Ring buffer of recent errors with deduplication |
-| `UsageCollector` | Per-module usage statistics and trends |
+| `ContextLogger` | Context-aware structured logging with `RedactionConfig` |
+| `ErrorHistory` | Min-heap error ring buffer with SHA-256 fingerprint deduplication |
+| `UsageCollector` | Per-module usage statistics, trends, and Prometheus export |
 | `UsageMiddleware` | Per-call usage tracking middleware |
 | `TraceContext` | W3C Trace Context propagation (traceparent/tracestate) |
 | `InMemoryExporter` | Span exporter that stores spans in memory |
 | `StdoutExporter` | Span exporter that writes spans to stdout |
 | `OTLPExporter` | Span exporter using OpenTelemetry Protocol |
+| `PrometheusExporter` | HTTP server for `/metrics`, `/healthz`, `/readyz` endpoints |
 
 **Events & Extensions**
 

@@ -79,6 +79,7 @@ from apcore.errors import (
     CallFrequencyExceededError,
     CircularCallError,
     CircularDependencyError,
+    CircuitOpenError,
     ConfigBindError,
     ConfigEnvMapConflictError,
     ConfigEnvPrefixConflictError,
@@ -103,8 +104,10 @@ from apcore.errors import (
     ModuleExecuteError,
     ModuleLoadError,
     ModuleNotFoundError,
+    ModuleReloadConflictError,
     ModuleTimeoutError,
     ReloadFailedError,
+    SysModuleRegistrationError,
     SchemaCircularRefError,
     SchemaNotFoundError,
     SchemaParseError,
@@ -120,6 +123,8 @@ from apcore.acl import ACL, ACLRule, AuditEntry
 from apcore.middleware import (
     AfterMiddleware,
     BeforeMiddleware,
+    CircuitBreakerMiddleware,
+    CircuitState,
     ErrorHistoryMiddleware,
     LoggingMiddleware,
     Middleware,
@@ -128,6 +133,7 @@ from apcore.middleware import (
     PlatformNotifyMiddleware,
     RetryConfig,
     RetryMiddleware,
+    RetrySignal,
 )
 
 # Decorators
@@ -138,7 +144,15 @@ from apcore._docstrings import parse_docstring as parse_docstring
 from apcore.extensions import ExtensionManager, ExtensionPoint
 
 # Async tasks
-from apcore.async_task import AsyncTaskManager, TaskInfo, TaskStatus
+from apcore.async_task import (
+    AsyncTaskManager,
+    BackoffStrategy,
+    InMemoryTaskStore,
+    RetryPolicy,
+    TaskInfo,
+    TaskStatus,
+    TaskStore,
+)
 
 # Bindings
 from apcore.bindings import BindingLoader
@@ -210,6 +224,9 @@ from apcore.pipeline import (
     PipelineAbortError,
     PipelineContext,
     PipelineEngine,
+    PipelineState,
+    PipelineStepError,
+    PipelineStepNotFoundError,
     PipelineTrace,
     Step,
     StepNameDuplicateError,
@@ -581,6 +598,7 @@ __all__ = [
     "BindingStrictSchemaIncompatibleError",
     "CallDepthExceededError",
     "CallFrequencyExceededError",
+    "CircuitOpenError",
     "CircularCallError",
     "CircularDependencyError",
     "ConfigBindError",
@@ -605,7 +623,9 @@ __all__ = [
     "ModuleExecuteError",
     "ModuleLoadError",
     "ModuleNotFoundError",
+    "ModuleReloadConflictError",
     "ReloadFailedError",
+    "SysModuleRegistrationError",
     "ModuleTimeoutError",
     "SchemaCircularRefError",
     "SchemaNotFoundError",
@@ -619,6 +639,7 @@ __all__ = [
     "AuditEntry",
     # Middleware
     "Middleware",
+    "RetrySignal",
     "MiddlewareManager",
     "BeforeMiddleware",
     "AfterMiddleware",
@@ -628,6 +649,8 @@ __all__ = [
     "RetryMiddleware",
     "ErrorHistoryMiddleware",
     "PlatformNotifyMiddleware",
+    "CircuitBreakerMiddleware",
+    "CircuitState",
     # Decorators
     "module",
     "FunctionModule",
@@ -640,6 +663,10 @@ __all__ = [
     "AsyncTaskManager",
     "TaskStatus",
     "TaskInfo",
+    "TaskStore",
+    "InMemoryTaskStore",
+    "RetryPolicy",
+    "BackoffStrategy",
     # Bindings
     "BindingLoader",
     # Schema
@@ -701,6 +728,9 @@ __all__ = [
     "ExecutionStrategy",
     "StrategyInfo",
     "PipelineAbortError",
+    "PipelineState",
+    "PipelineStepError",
+    "PipelineStepNotFoundError",
     "StepNotFoundError",
     "StepNotRemovableError",
     "StepNotReplaceableError",

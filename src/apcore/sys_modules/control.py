@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import fnmatch
 import logging
+import os
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from apcore.config import Config, _CONSTRAINTS
 from apcore.utils.redaction import REDACTED_VALUE
@@ -16,11 +22,13 @@ from apcore.errors import (
     ModuleDisabledError,
     ModuleError,
     ModuleNotFoundError,
+    ModuleReloadConflictError,
     ReloadFailedError,
 )
 from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.module import ModuleAnnotations
 from apcore.registry.registry import Registry
+from apcore.sys_modules.audit import AuditEntry, AuditStore
 
 __all__ = [
     "UpdateConfigModule",
@@ -87,12 +95,74 @@ logger = logging.getLogger(__name__)
 #: Keys that cannot be changed at runtime.
 _RESTRICTED_KEYS: frozenset[str] = frozenset({"sys_modules.enabled"})
 
+# Per-path locks prevent concurrent writers from corrupting the overrides file.
+_overrides_locks: dict[str, threading.Lock] = {}
+_overrides_locks_lock = threading.Lock()
+
+
+def _get_overrides_lock(overrides_path: str) -> threading.Lock:
+    """Return (creating if needed) the per-path lock for a given overrides file."""
+    with _overrides_locks_lock:
+        if overrides_path not in _overrides_locks:
+            _overrides_locks[overrides_path] = threading.Lock()
+        return _overrides_locks[overrides_path]
+
+
+def _write_overrides(overrides_path: str, key: str, value: Any) -> None:
+    """Read the overrides YAML, update the key, and write it back atomically.
+
+    Uses a per-path lock to prevent concurrent writes and an atomic
+    rename (write to temp → os.replace) to prevent partial-write corruption.
+    """
+    lock = _get_overrides_lock(overrides_path)
+    with lock:
+        try:
+            try:
+                with open(overrides_path, "r", encoding="utf-8") as f:
+                    existing: dict[str, Any] = yaml.safe_load(f) or {}
+            except FileNotFoundError:
+                existing = {}
+            existing[key] = value
+            parent = Path(overrides_path).parent
+            fd, tmp_path = tempfile.mkstemp(dir=parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(existing, f, default_flow_style=False)
+                os.replace(tmp_path, overrides_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception as exc:
+            logger.error("Failed to persist override for key '%s': %s", key, exc)
+
+
+def _build_audit_entry(
+    action: str,
+    target_module_id: str,
+    context: Any,
+    change: dict[str, Any],
+) -> AuditEntry:
+    """Build an AuditEntry from context identity."""
+    identity = getattr(context, "identity", None) if context is not None else None
+    actor_id = getattr(identity, "id", "unknown") if identity is not None else "unknown"
+    actor_type = getattr(identity, "type", "unknown") if identity is not None else "unknown"
+    trace_id = getattr(context, "trace_id", "") if context is not None else ""
+    return AuditEntry(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        action=action,
+        target_module_id=target_module_id,
+        actor_id=actor_id,
+        actor_type=actor_type,
+        trace_id=trace_id or "",
+        change=change,
+    )
+
 
 class UpdateConfigModule:
-    """Update a runtime configuration value by dot-path key.
-
-    Changes are runtime-only and not persisted to YAML.
-    """
+    """Update a runtime configuration value by dot-path key."""
 
     description = "Update a runtime configuration value by dot-path key"
     annotations = ModuleAnnotations(requires_approval=True, destructive=False)
@@ -108,7 +178,10 @@ class UpdateConfigModule:
     output_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "success": {"type": "boolean", "description": "Whether the update succeeded"},
+            "success": {
+                "type": "boolean",
+                "description": "Whether the update succeeded",
+            },
             "key": {"type": "string", "description": "Updated config key"},
             "old_value": {"description": "Previous value (redacted for sensitive keys)"},
             "new_value": {"description": "New value (redacted for sensitive keys)"},
@@ -120,34 +193,42 @@ class UpdateConfigModule:
         self,
         config: Config,
         event_emitter: EventEmitter,
+        overrides_path: str | None = None,
+        audit_store: AuditStore | None = None,
     ) -> None:
         self._config = config
         self._emitter = event_emitter
+        self._overrides_path = overrides_path
+        self._audit_store = audit_store
 
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
-        """Update a config value and emit a config_changed event.
-
-        Args:
-            inputs: Must contain ``key`` (dot-path str), ``value`` (any),
-                    and ``reason`` (str, required for audit).
-            context: Execution context (unused).
-
-        Returns:
-            Dict with ``success``, ``key``, ``old_value``, ``new_value``.
-        """
+        """Update a config value, emit event, and optionally persist + audit."""
         key, value, reason = self._validate_inputs(inputs)
         self._check_restricted(key)
 
         old_value = self._config.get(key)
         self._config.set(key, value)
 
-        if not self._validate_post_set(key, value, old_value):
-            return {}  # unreachable; _validate_post_set raises on failure
+        self._validate_post_set(key, value, old_value)
 
         self._emit_event(key, old_value, value)
         self._log_change(key, old_value, value, reason)
 
+        if self._overrides_path:
+            _write_overrides(self._overrides_path, key, value)
+
         redacted = self._is_sensitive_key(key)
+        if self._audit_store is not None:
+            entry = _build_audit_entry(
+                action="update_config",
+                target_module_id="system.control.update_config",
+                context=context,
+                change={
+                    "before": REDACTED_VALUE if redacted else old_value,
+                    "after": REDACTED_VALUE if redacted else value,
+                },
+            )
+            self._audit_store.append(entry)
         return {
             "success": True,
             "key": key,
@@ -183,10 +264,10 @@ class UpdateConfigModule:
                 details={"key": key},
             )
 
-    def _validate_post_set(self, key: str, value: Any, old_value: Any) -> bool:
-        """Check constraints after setting. Roll back on failure."""
+    def _validate_post_set(self, key: str, value: Any, old_value: Any) -> None:
+        """Check constraints after setting. Roll back and raise ConfigError on failure."""
         if key not in _CONSTRAINTS:
-            return True
+            return
 
         check_fn, err_msg = _CONSTRAINTS[key]
         if not check_fn(value):
@@ -195,7 +276,6 @@ class UpdateConfigModule:
                 message=f"Invalid value for '{key}': {err_msg} (got {value!r})",
                 details={"key": key, "value": value},
             )
-        return True
 
     def _emit_event(self, key: str, old_value: Any, new_value: Any) -> None:
         """Emit ``apcore.config.updated`` (canonical event)."""
@@ -218,11 +298,7 @@ class UpdateConfigModule:
 
     @classmethod
     def _is_sensitive_key(cls, key: str) -> bool:
-        """Check if a config key path contains sensitive-sounding segments.
-
-        Matches exact segments or underscore-compound segments (e.g. api_key,
-        auth_token) without false-positives on words like "keyboard".
-        """
+        """Check if a config key path contains sensitive-sounding segments."""
         return any(
             seg == s or seg.endswith(f"_{s}") or seg.startswith(f"{s}_")
             for seg in key.lower().split(".")
@@ -251,8 +327,8 @@ class UpdateConfigModule:
 class ReloadModule:
     """Hot-reload a module via safe unregister + re-discover (PRD F10).
 
-    Safely unregisters a module with drain, re-discovers its source,
-    re-registers it, and emits a config_changed event on success.
+    Supports both single-module reload (via module_id) and bulk reload
+    (via path_filter glob pattern). The two modes are mutually exclusive.
     """
 
     description = "Hot-reload a module by safe unregister and re-discover"
@@ -260,19 +336,43 @@ class ReloadModule:
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "module_id": {"type": "string", "description": "ID of the module to reload"},
+            "module_id": {
+                "type": "string",
+                "description": "ID of the module to reload (mutually exclusive with path_filter)",
+            },
+            "path_filter": {
+                "type": "string",
+                "description": "Glob pattern for bulk reload (mutually exclusive with module_id)",
+            },
+            "reload_dependents": {
+                "type": "boolean",
+                "description": "When true, also reload modules that depend on matched modules",
+                "default": False,
+            },
             "reason": {"type": "string", "description": "Audit reason for the reload"},
         },
-        "required": ["module_id", "reason"],
+        "required": ["reason"],
     }
     output_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "success": {"type": "boolean", "description": "Whether the reload succeeded"},
-            "module_id": {"type": "string", "description": "ID of the reloaded module"},
-            "previous_version": {"type": "string", "description": "Version before reload"},
+            "success": {
+                "type": "boolean",
+                "description": "Whether the reload succeeded",
+            },
+            "module_id": {
+                "type": ["string", "null"],
+                "description": "ID of the reloaded module (null for bulk reload via path_filter)",
+            },
+            "previous_version": {
+                "type": "string",
+                "description": "Version before reload",
+            },
             "new_version": {"type": "string", "description": "Version after reload"},
-            "reload_duration_ms": {"type": "number", "description": "Reload duration in milliseconds"},
+            "reload_duration_ms": {
+                "type": "number",
+                "description": "Reload duration in milliseconds",
+            },
         },
         "required": ["success", "module_id"],
     }
@@ -281,27 +381,44 @@ class ReloadModule:
         self,
         registry: Registry,
         event_emitter: EventEmitter,
+        audit_store: AuditStore | None = None,
     ) -> None:
         self._registry = registry
         self._emitter = event_emitter
+        self._audit_store = audit_store
 
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
-        """Reload a module: unregister, re-discover, re-register.
+        """Reload one or more modules.
 
-        Args:
-            inputs: Must contain ``module_id`` (str) and ``reason`` (str).
-            context: Execution context (unused).
-
-        Returns:
-            Dict with ``success``, ``module_id``, ``previous_version``,
-            ``new_version``, ``reload_duration_ms``.
+        Raises ModuleReloadConflictError if both module_id and path_filter are given.
+        Note: reload_dependents is declared in the schema but not yet implemented.
         """
-        module_id, reason = self._validate_inputs(inputs)
-        previous_version = self._get_current_version(module_id)
+        module_id: Any = inputs.get("module_id")
+        path_filter: Any = inputs.get("path_filter")
+        reason = self._validate_reason(inputs)
 
+        if module_id is not None and path_filter is not None:
+            raise ModuleReloadConflictError()
+
+        if path_filter is not None:
+            return self._execute_bulk(path_filter, reason, context)
+
+        return self._execute_single(module_id, reason, context)
+
+    # ------------------------------------------------------------------
+    # Single-module reload
+    # ------------------------------------------------------------------
+
+    def _execute_single(self, module_id: Any, reason: str, context: Any) -> dict[str, Any]:
+        """Reload a single module by ID."""
+        if module_id is None or not isinstance(module_id, str):
+            raise InvalidInputError(message="'module_id' is required and must be a string")
+        if not module_id:
+            raise InvalidInputError(message="'module_id' must not be empty")
+
+        previous_version = self._get_current_version(module_id)
         start = time.monotonic()
 
-        # Suspend: capture state from old instance before unload
         old_module = self._registry.get(module_id)
         suspended_state = self._try_suspend(module_id, old_module)
 
@@ -310,22 +427,27 @@ class ReloadModule:
         try:
             new_module = self._rediscover_module(module_id)
         except Exception as exc:
-            raise ReloadFailedError(
-                module_id=module_id,
-                reason=str(exc),
-            ) from exc
+            raise ReloadFailedError(module_id=module_id, reason=str(exc)) from exc
 
         self._reregister_module(module_id, new_module)
 
-        # Resume: restore state into new instance after on_load
         if suspended_state is not None:
             self._try_resume(module_id, new_module, suspended_state)
 
         elapsed_ms = (time.monotonic() - start) * 1000.0
-
         new_version = getattr(new_module, "version", "1.0.0")
+
         self._emit_module_reloaded(module_id, previous_version, new_version)
         self._log_reload(module_id, previous_version, new_version, reason)
+
+        if self._audit_store is not None:
+            entry = _build_audit_entry(
+                action="reload_module",
+                target_module_id=module_id,
+                context=context,
+                change={"before": previous_version, "after": new_version},
+            )
+            self._audit_store.append(entry)
 
         return {
             "success": True,
@@ -336,23 +458,110 @@ class ReloadModule:
         }
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # Bulk reload via path_filter
+    # ------------------------------------------------------------------
+
+    def _execute_bulk(self, path_filter: Any, reason: str, context: Any) -> dict[str, Any]:
+        """Reload all modules matching the glob pattern in topological order."""
+        if not isinstance(path_filter, str) or not path_filter:
+            raise InvalidInputError(message="'path_filter' must be a non-empty string glob pattern")
+
+        all_ids = self._registry.module_ids
+        matched = sorted(mid for mid in all_ids if fnmatch.fnmatch(mid, path_filter))
+
+        topo_order = self._topo_sort_modules(matched)
+        start = time.monotonic()
+
+        reloaded: list[str] = []
+        for mid in topo_order:
+            try:
+                self._reload_one(mid)
+                reloaded.append(mid)
+            except Exception as exc:
+                logger.error("Bulk reload: failed to reload '%s': %s", mid, exc)
+
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        logger.info(
+            "Bulk reload: reloaded %d modules via path_filter=%r reason=%s",
+            len(reloaded),
+            path_filter,
+            reason,
+        )
+
+        if self._audit_store is not None:
+            entry = _build_audit_entry(
+                action="reload_module",
+                target_module_id=path_filter,
+                context=context,
+                change={"before": None, "after": reloaded},
+            )
+            self._audit_store.append(entry)
+
+        return {
+            "success": True,
+            "module_id": None,
+            "reloaded_modules": reloaded,
+            "reload_duration_ms": elapsed_ms,
+        }
+
+    def _topo_sort_modules(self, module_ids: list[str]) -> list[str]:
+        """Return module_ids in dependency topological order (leaves first)."""
+        from apcore.registry.dependencies import resolve_dependencies
+        from apcore.registry.metadata import parse_dependencies
+
+        matched_set = set(module_ids)
+        entries: list[tuple[str, list[Any]]] = []
+        for mid in module_ids:
+            meta = self._registry.get_module_metadata(mid)
+            deps_raw = meta.get("dependencies", [])
+            deps = parse_dependencies(deps_raw) if deps_raw else []
+            # Only include deps that are also in the matched set
+            filtered_deps = [d for d in deps if d.module_id in matched_set]
+            entries.append((mid, filtered_deps))
+
+        try:
+            return resolve_dependencies(entries, known_ids=matched_set)
+        except Exception as exc:
+            logger.warning(
+                "Topo sort failed for path_filter reload; falling back to alphabetical: %s",
+                exc,
+            )
+            return sorted(module_ids)
+
+    def _reload_one(self, module_id: str) -> None:
+        """Reload a single module without emitting events (used in bulk mode)."""
+        old_module = self._registry.get(module_id)
+        if old_module is None:
+            return
+
+        suspended_state = self._try_suspend(module_id, old_module)
+        self._registry.safe_unregister(module_id)
+
+        try:
+            new_module = self._rediscover_module(module_id)
+        except Exception as exc:
+            raise ReloadFailedError(module_id=module_id, reason=str(exc)) from exc
+
+        self._reregister_module(module_id, new_module)
+
+        if suspended_state is not None:
+            self._try_resume(module_id, new_module, suspended_state)
+
+        new_version = getattr(new_module, "version", "1.0.0")
+        prev_version = getattr(old_module, "version", "1.0.0")
+        self._emit_module_reloaded(module_id, str(prev_version), str(new_version))
+
+    # ------------------------------------------------------------------
+    # Shared helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _validate_inputs(inputs: dict[str, Any]) -> tuple[str, str]:
-        """Validate and extract module_id and reason from inputs."""
-        module_id: Any = inputs.get("module_id")
-        if module_id is None or not isinstance(module_id, str):
-            raise InvalidInputError(message="'module_id' is required and must be a string")
-        if not module_id:
-            raise InvalidInputError(message="'module_id' must not be empty")
-
+    def _validate_reason(inputs: dict[str, Any]) -> str:
+        """Validate and return reason."""
         reason: Any = inputs.get("reason")
         if reason is None or not isinstance(reason, str) or not reason:
             raise InvalidInputError(message="'reason' is required and must be a non-empty string")
-
-        return module_id, reason
+        return reason
 
     def _get_current_version(self, module_id: str) -> str:
         """Get the version of the currently registered module."""
@@ -362,11 +571,7 @@ class ReloadModule:
         return str(getattr(module, "version", "1.0.0"))
 
     def _rediscover_module(self, module_id: str) -> Any:
-        """Re-discover the module source and return a new instance.
-
-        Override or mock this in tests. The default implementation triggers
-        a full registry discover pass and returns the re-registered module.
-        """
+        """Re-discover the module source and return a new instance."""
         self._registry.discover()
         module = self._registry.get(module_id)
         if module is None:
@@ -374,13 +579,7 @@ class ReloadModule:
         return module
 
     def _reregister_module(self, module_id: str, module: Any) -> None:
-        """Re-register a module instance after reload.
-
-        Uses register_internal() because the module was already validated
-        during initial registration. This is safe because execute() verifies
-        the module exists (via _get_current_version) before reaching this
-        point — only previously-registered modules can be reloaded.
-        """
+        """Re-register a module instance after reload."""
         self._registry.register_internal(module_id, module)
 
     def _emit_module_reloaded(self, module_id: str, previous_version: str, new_version: str) -> None:
@@ -440,19 +639,21 @@ class ReloadModule:
 
 
 class ToggleFeatureModule:
-    """Disable or enable a module without unloading it from the Registry (PRD F19).
-
-    A disabled module remains registered but calls return MODULE_DISABLED error.
-    Re-enabling resumes normal operation. Toggle state survives module reload.
-    """
+    """Disable or enable a module without unloading it from the Registry (PRD F19)."""
 
     description = "Disable or enable a module without unloading it"
     annotations = ModuleAnnotations(requires_approval=True, destructive=False)
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "module_id": {"type": "string", "description": "ID of the module to toggle"},
-            "enabled": {"type": "boolean", "description": "True to enable, false to disable"},
+            "module_id": {
+                "type": "string",
+                "description": "ID of the module to toggle",
+            },
+            "enabled": {
+                "type": "boolean",
+                "description": "True to enable, false to disable",
+            },
             "reason": {"type": "string", "description": "Audit reason for the toggle"},
         },
         "required": ["module_id", "enabled", "reason"],
@@ -460,7 +661,10 @@ class ToggleFeatureModule:
     output_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "success": {"type": "boolean", "description": "Whether the toggle succeeded"},
+            "success": {
+                "type": "boolean",
+                "description": "Whether the toggle succeeded",
+            },
             "module_id": {"type": "string", "description": "ID of the toggled module"},
             "enabled": {"type": "boolean", "description": "Current enabled state"},
         },
@@ -472,27 +676,40 @@ class ToggleFeatureModule:
         registry: Registry,
         event_emitter: EventEmitter,
         toggle_state: ToggleState | None = None,
+        overrides_path: str | None = None,
+        audit_store: AuditStore | None = None,
     ) -> None:
         self._registry = registry
         self._emitter = event_emitter
         self._toggle_state = toggle_state or _default_toggle_state
+        self._overrides_path = overrides_path
+        self._audit_store = audit_store
 
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
-        """Toggle a module's enabled/disabled state.
-
-        Args:
-            inputs: Must contain ``module_id`` (str), ``enabled`` (bool),
-                    and ``reason`` (str, required for audit).
-            context: Execution context (unused).
-
-        Returns:
-            Dict with ``success``, ``module_id``, ``enabled``.
-        """
+        """Toggle a module's enabled/disabled state."""
         module_id, enabled, reason = self._validate_inputs(inputs)
         self._check_module_exists(module_id)
+
+        before = not self._toggle_state.is_disabled(module_id)
         self._apply_toggle(module_id, enabled)
         self._emit_event(module_id, enabled)
         self._log_toggle(module_id, enabled, reason)
+
+        if self._overrides_path:
+            _write_overrides(
+                self._overrides_path,
+                f"toggle.{module_id}",
+                enabled,
+            )
+
+        if self._audit_store is not None:
+            entry = _build_audit_entry(
+                action="toggle_feature",
+                target_module_id=module_id,
+                context=context,
+                change={"before": before, "after": enabled},
+            )
+            self._audit_store.append(entry)
 
         return {
             "success": True,

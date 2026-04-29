@@ -1,10 +1,13 @@
-"""Structured logging: ContextLogger and ObsLoggingMiddleware."""
+"""Structured logging: ContextLogger, RedactionConfig, and ObsLoggingMiddleware."""
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import re
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -22,6 +25,35 @@ _LEVELS = {
 }
 
 _REDACTED = "***REDACTED***"
+
+
+@dataclass
+class RedactionConfig:
+    """Runtime-configurable redaction rules for observability logging.
+
+    Applied in addition to schema-level ``x-sensitive`` annotations.
+    The union of all matching fields and values is redacted.
+
+    Fields:
+        field_patterns: Glob patterns matched against field names (e.g. ``"*password*"``).
+        value_patterns: Regex patterns matched against string field values (e.g. ``r"^Bearer .*"``).
+        replacement: Substitution string for redacted values; default ``"***REDACTED***"``.
+    """
+
+    field_patterns: list[str] = field(default_factory=list)
+    value_patterns: list[str] = field(default_factory=list)
+    replacement: str = "***REDACTED***"
+
+
+def _apply_redaction_config(data: dict[str, Any], config: RedactionConfig) -> dict[str, Any]:
+    """Return a new dict with fields/values matching RedactionConfig replaced."""
+    result: dict[str, Any] = {}
+    for key, value in data.items():
+        field_match = any(fnmatch.fnmatch(key, pattern) for pattern in config.field_patterns)
+        value_str = str(value) if not isinstance(value, str) else value
+        value_match = any(re.search(pattern, value_str) for pattern in config.value_patterns)
+        result[key] = config.replacement if (field_match or value_match) else value
+    return result
 
 
 class ContextLogger:
@@ -111,6 +143,8 @@ class ContextLogger:
 class ObsLoggingMiddleware(Middleware):
     """Structured observability logging middleware using ContextLogger.
 
+    Supports ``RedactionConfig`` for runtime-configurable field/value redaction
+    applied in addition to schema-level ``x-sensitive`` annotations.
     Uses stack-based timing in context.data for safe nested call support.
     """
 
@@ -119,10 +153,18 @@ class ObsLoggingMiddleware(Middleware):
         logger: ContextLogger | None = None,
         log_inputs: bool = True,
         log_outputs: bool = True,
+        redaction_config: RedactionConfig | None = None,
     ) -> None:
         self._logger = logger if logger is not None else ContextLogger(name="apcore.obs_logging")
         self._log_inputs = log_inputs
         self._log_outputs = log_outputs
+        self._redaction_config = redaction_config
+
+    def _redact(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Apply RedactionConfig rules if configured."""
+        if self._redaction_config is None:
+            return data
+        return _apply_redaction_config(data, self._redaction_config)
 
     def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
         starts = LOGGING_STARTS.get(context, default=[])
@@ -133,7 +175,8 @@ class ObsLoggingMiddleware(Middleware):
             "caller_id": context.caller_id,
         }
         if self._log_inputs:
-            extra["inputs"] = context.redacted_inputs if context.redacted_inputs is not None else inputs
+            base = context.redacted_inputs if context.redacted_inputs is not None else inputs
+            extra["inputs"] = self._redact(base)
         self._logger.info("Module call started", extra=extra)
         return None
 
@@ -154,7 +197,7 @@ class ObsLoggingMiddleware(Middleware):
             "duration_ms": duration_ms,
         }
         if self._log_outputs:
-            extra["output"] = output
+            extra["output"] = self._redact(output)
         self._logger.info("Module call completed", extra=extra)
         return None
 
@@ -179,4 +222,5 @@ class ObsLoggingMiddleware(Middleware):
 __all__ = [
     "ContextLogger",
     "ObsLoggingMiddleware",
+    "RedactionConfig",
 ]

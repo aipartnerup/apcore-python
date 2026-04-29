@@ -2,36 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import threading
-from dataclasses import dataclass
 from typing import Any
 
 from apcore.errors import ModuleError
-from apcore.middleware.base import Context, Middleware
-
+from apcore.middleware.base import Context, Middleware, RetrySignal
 
 __all__ = ["MiddlewareManager", "MiddlewareChainError", "RetrySignal"]
-
-
-@dataclass(frozen=True)
-class RetrySignal:
-    """Return value from ``Middleware.on_error`` requesting a retry.
-
-    This is distinct from returning a plain ``dict`` — a dict is interpreted
-    by :class:`MiddlewareManager` as the *final recovery output* of the call
-    (short-circuits remaining handlers, becomes the module's return value).
-    A :class:`RetrySignal` instead asks the executor to re-run the module
-    with ``inputs``; no recovery dict is produced.
-
-    Middlewares that need to retry (e.g. :class:`RetryMiddleware`) must
-    return ``RetrySignal(inputs=...)`` rather than the raw inputs dict so
-    the two intents — "here's the recovery output" vs "please try again" —
-    stay distinguishable in the middleware protocol.
-    """
-
-    inputs: dict[str, Any]
 
 
 _logger = logging.getLogger(__name__)
@@ -236,6 +216,10 @@ class MiddlewareManager:
     ) -> dict[str, Any] | RetrySignal | None:
         """Async-aware on_error chain.
 
+        Sync ``on_error`` handlers are run via ``asyncio.to_thread`` so that
+        blocking operations (e.g. ``time.sleep`` in :class:`RetryMiddleware`)
+        do not stall the event loop. Async handlers are awaited directly.
+
         Matches the sync contract: returns a recovery ``dict``, a
         :class:`RetrySignal`, or ``None``.
         """
@@ -244,7 +228,7 @@ class MiddlewareManager:
                 if inspect.iscoroutinefunction(mw.on_error):
                     recovery = await mw.on_error(module_id, inputs, error, context)
                 else:
-                    recovery = mw.on_error(module_id, inputs, error, context)
+                    recovery = await asyncio.to_thread(mw.on_error, module_id, inputs, error, context)
                 if isinstance(recovery, RetrySignal):
                     return recovery
                 if isinstance(recovery, dict):

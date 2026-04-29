@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from apcore.context_keys import RETRY_COUNT_BASE
-from apcore.middleware.base import Context, Middleware
-from apcore.middleware.manager import RetrySignal
+from apcore.middleware.base import Context, Middleware, RetrySignal
 
 __all__ = ["RetryConfig", "RetryMiddleware"]
 
@@ -50,7 +49,8 @@ class RetryMiddleware(Middleware):
        so the event loop is not blocked.
     """
 
-    def __init__(self, config: RetryConfig | None = None) -> None:
+    def __init__(self, config: RetryConfig | None = None, *, priority: int = 100) -> None:
+        super().__init__(priority=priority)
         self._config = config or RetryConfig()
 
     def on_error(

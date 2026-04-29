@@ -1,4 +1,4 @@
-"""Tracing system: Span dataclass, SpanExporter implementations, and TracingMiddleware."""
+"""Tracing system: Span dataclass, SpanExporter, SpanProcessor implementations, and TracingMiddleware."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import dataclasses
 import json
 import logging
 import os
+import queue
 import random
 import sys
 import threading
@@ -135,7 +136,7 @@ class OTLPExporter:
             )
             from opentelemetry.sdk.resources import Resource  # type: ignore[import-not-found]
             from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-not-found]
-            from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # type: ignore[import-not-found]
+            from opentelemetry.sdk.trace.export import SimpleSpanProcessor as _OtelSimpleSpanProcessor  # type: ignore[import-not-found]
             from opentelemetry.trace import StatusCode  # type: ignore[import-not-found]
         except ImportError:
             raise ImportError(
@@ -156,27 +157,20 @@ class OTLPExporter:
             exporter_kwargs["endpoint"] = endpoint
 
         otlp_exporter = _OTLPSpanExporter(**exporter_kwargs)
-        self._provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
+        self._provider.add_span_processor(_OtelSimpleSpanProcessor(otlp_exporter))
         self._tracer = self._provider.get_tracer("apcore.tracing")
 
     def export(self, span: Span) -> None:
-        """Convert an apcore Span to an OpenTelemetry span and export via OTLP.
-
-        Apcore-specific identifiers (``trace_id``, ``span_id``,
-        ``parent_span_id``) are added as span attributes prefixed with
-        ``apcore.`` so they can be correlated in the collector backend.
-        """
+        """Convert an apcore Span to an OpenTelemetry span and export via OTLP."""
         start_ns = int(span.start_time * 1e9)
 
         otel_span = self._tracer.start_span(name=span.name, start_time=start_ns)
 
-        # Carry apcore IDs as attributes for correlation
         otel_span.set_attribute("apcore.trace_id", span.trace_id)
         otel_span.set_attribute("apcore.span_id", span.span_id)
         if span.parent_span_id:
             otel_span.set_attribute("apcore.parent_span_id", span.parent_span_id)
 
-        # Copy span attributes (only primitive types supported by OTel)
         for key, value in span.attributes.items():
             if value is None:
                 continue
@@ -187,17 +181,14 @@ class OTLPExporter:
             else:
                 otel_span.set_attribute(key, str(value))
 
-        # Set status
         if span.status == "error":
             otel_span.set_status(self._StatusCode.ERROR)
 
-        # Replay events
         for event in span.events:
             event_name = event.get("name", "event")
             event_attrs = {k: str(v) for k, v in event.items() if k != "name"}
             otel_span.add_event(event_name, attributes=event_attrs)
 
-        # End with original end_time
         end_ns = int(span.end_time * 1e9) if span.end_time else None
         otel_span.end(end_time=end_ns)
 
@@ -206,11 +197,142 @@ class OTLPExporter:
         self._provider.shutdown()
 
 
+# ---------------------------------------------------------------------------
+# Span Processors
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class SpanProcessor(Protocol):
+    """Protocol for span processor implementations.
+
+    Both ``SimpleSpanProcessor`` and ``BatchSpanProcessor`` satisfy this
+    protocol, as do any user-defined processors.
+    """
+
+    def on_span_end(self, span: Span) -> None:
+        """Called when a span has finished; may export synchronously or queue it."""
+        ...
+
+    def shutdown(self) -> None:
+        """Flush and release resources; called once when the processor is discarded."""
+        ...
+
+
+class SimpleSpanProcessor:
+    """Synchronous span processor: exports each span immediately on the calling thread.
+
+    Use in development and testing environments where blocking is acceptable.
+    """
+
+    def __init__(self, exporter: SpanExporter) -> None:
+        self._exporter = exporter
+
+    def on_span_end(self, span: Span) -> None:
+        """Export the span synchronously."""
+        self._exporter.export(span)
+
+    def shutdown(self) -> None:
+        """No-op for the simple processor."""
+
+
+class BatchSpanProcessor:
+    """Non-blocking span processor that buffers spans and exports in background batches.
+
+    Spans are enqueued immediately without blocking the caller. A background thread
+    periodically drains the queue up to ``max_export_batch_size`` spans per flush.
+    When the queue is full, new spans are dropped and ``spans_dropped`` is incremented.
+
+    Args:
+        exporter: The SpanExporter to deliver batches to.
+        max_queue_size: Maximum buffer capacity before drops occur (default 2048).
+        schedule_delay_ms: Milliseconds between successive flush attempts (default 5000).
+        max_export_batch_size: Maximum spans per flush call (default 512).
+        export_timeout_ms: Shutdown flush deadline in milliseconds (default 30000).
+    """
+
+    def __init__(
+        self,
+        exporter: SpanExporter,
+        max_queue_size: int = 2048,
+        schedule_delay_ms: int = 5000,
+        max_export_batch_size: int = 512,
+        export_timeout_ms: int = 30000,
+    ) -> None:
+        self._exporter = exporter
+        self._max_queue_size = max_queue_size
+        self._schedule_delay_ms = schedule_delay_ms
+        self._max_export_batch_size = max_export_batch_size
+        self._export_timeout_ms = export_timeout_ms
+        self._queue: queue.Queue[Span] = queue.Queue(maxsize=max_queue_size)
+        self._spans_dropped = 0
+        self._dropped_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    @property
+    def spans_dropped(self) -> int:
+        with self._dropped_lock:
+            return self._spans_dropped
+
+    @property
+    def queue_size(self) -> int:
+        return self._queue.qsize()
+
+    def on_span_end(self, span: Span) -> None:
+        """Enqueue span or drop (non-blocking) if the queue is at capacity."""
+        try:
+            self._queue.put_nowait(span)
+        except queue.Full:
+            with self._dropped_lock:
+                self._spans_dropped += 1
+
+    def _flush(self) -> None:
+        """Drain up to max_export_batch_size spans and export them."""
+        batch: list[Span] = []
+        try:
+            while len(batch) < self._max_export_batch_size:
+                batch.append(self._queue.get_nowait())
+        except queue.Empty:
+            pass
+        for span in batch:
+            try:
+                self._exporter.export(span)
+            except Exception:
+                _tracing_logger.exception("BatchSpanProcessor: export failed")
+
+    def _run(self) -> None:
+        """Background worker: flush on each schedule_delay_ms tick, then on shutdown."""
+        delay = self._schedule_delay_ms / 1000.0
+        while True:
+            shutdown_signaled = self._shutdown_event.wait(timeout=delay)
+            self._flush()
+            if shutdown_signaled:
+                break
+
+    def shutdown(self) -> None:
+        """Signal shutdown; flush remaining spans within export_timeout_ms deadline."""
+        self._shutdown_event.set()
+        timeout = self._export_timeout_ms / 1000.0
+        self._thread.join(timeout=timeout)
+        # Final drain for any spans that arrived after the last flush
+        self._flush()
+
+
+# ---------------------------------------------------------------------------
+# TracingMiddleware
+# ---------------------------------------------------------------------------
+
 _VALID_STRATEGIES = {"full", "proportional", "error_first", "off"}
 
 
 class TracingMiddleware(Middleware):
     """Middleware that creates and manages trace spans for module calls.
+
+    Accepts either an ``exporter`` (wrapped in ``SimpleSpanProcessor``) or a
+    ``processor`` directly.  When ``exporter`` is supplied, backward-compatible
+    behavior is preserved.
 
     Uses stack-based context.data storage to correctly handle nested
     module-to-module call chains.
@@ -218,25 +340,44 @@ class TracingMiddleware(Middleware):
 
     def __init__(
         self,
-        exporter: SpanExporter,
+        exporter: SpanExporter | None = None,
         sampling_rate: float = 1.0,
         sampling_strategy: str = "full",
+        *,
+        processor: SpanProcessor | None = None,
+        priority: int = 100,
     ) -> None:
+        super().__init__(priority=priority)
         if not (0.0 <= sampling_rate <= 1.0):
             raise ValueError(f"sampling_rate must be between 0.0 and 1.0, got {sampling_rate}")
         if sampling_strategy not in _VALID_STRATEGIES:
             raise ValueError(f"sampling_strategy must be one of {_VALID_STRATEGIES}, got {sampling_strategy!r}")
-        self._exporter = exporter
+        if exporter is None and processor is None:
+            raise ValueError("Either 'exporter' or 'processor' must be provided.")
         self._sampling_rate = sampling_rate
         self._sampling_strategy = sampling_strategy
+        if processor is not None:
+            self._processor: SpanProcessor = processor
+        else:
+            assert exporter is not None
+            self._processor = SimpleSpanProcessor(exporter)
+
+    @property
+    def _exporter(self) -> SpanExporter:
+        """Backward-compatible accessor: return the exporter from the underlying processor."""
+        if isinstance(self._processor, SimpleSpanProcessor):
+            return self._processor._exporter
+        raise AttributeError("TracingMiddleware uses a BatchSpanProcessor; access _processor._exporter instead.")
 
     def set_exporter(self, exporter: SpanExporter) -> None:
-        """Replace the span exporter used by this middleware.
+        """Replace the underlying exporter (wraps it in a SimpleSpanProcessor).
 
-        Args:
-            exporter: The new SpanExporter to use.
+        Calls ``shutdown()`` on the previous processor to prevent thread leaks
+        when replacing a ``BatchSpanProcessor``.
         """
-        self._exporter = exporter
+        old = self._processor
+        self._processor = SimpleSpanProcessor(exporter)
+        old.shutdown()
 
     def _should_sample(self, context: Any) -> bool:
         """Make or inherit sampling decision."""
@@ -298,7 +439,7 @@ class TracingMiddleware(Middleware):
         span.attributes["success"] = True
 
         if context.data.get("_apcore.mw.tracing.sampled"):
-            self._exporter.export(span)
+            self._processor.on_span_end(span)
         return None
 
     def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
@@ -319,7 +460,7 @@ class TracingMiddleware(Middleware):
 
         should_export = self._sampling_strategy == "error_first" or context.data.get("_apcore.mw.tracing.sampled")
         if should_export:
-            self._exporter.export(span)
+            self._processor.on_span_end(span)
         return None
 
 
@@ -327,8 +468,11 @@ __all__ = [
     "Span",
     "create_span",
     "SpanExporter",
+    "SpanProcessor",
     "StdoutExporter",
     "InMemoryExporter",
     "OTLPExporter",
+    "SimpleSpanProcessor",
+    "BatchSpanProcessor",
     "TracingMiddleware",
 ]

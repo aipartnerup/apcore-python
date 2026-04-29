@@ -8,7 +8,8 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol, runtime_checkable
+from collections.abc import Sequence
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from apcore.errors import ModuleError
 from apcore.utils.pattern import match_pattern
@@ -102,6 +103,8 @@ class PipelineContext:
     dry_run: bool = False
     version_hint: str | None = None
     executed_middlewares: list[Any] = field(default_factory=list)
+    # New in v0.20
+    run_until: Callable[[PipelineState], bool] | None = None
 
 
 @dataclass
@@ -128,6 +131,15 @@ class PipelineTrace:
 
 
 @dataclass
+class PipelineState:
+    """Snapshot passed to run_until predicates after each step completes."""
+
+    step_name: str
+    outputs: dict[str, Any]
+    context: PipelineContext
+
+
+@dataclass
 class StrategyInfo:
     """AI-introspectable description of an execution strategy."""
 
@@ -143,7 +155,7 @@ class StrategyInfo:
 class ExecutionStrategy:
     """An ordered sequence of steps that defines how a module is executed."""
 
-    def __init__(self, name: str, steps: list[Step]) -> None:
+    def __init__(self, name: str, steps: Sequence[Step]) -> None:
         self.name = name
         self.steps = list(steps)
         # Validate unique step names
@@ -151,7 +163,12 @@ class ExecutionStrategy:
         if len(names) != len(set(names)):
             dupes = [n for n in names if names.count(n) > 1]
             raise StepNameDuplicateError(f"Duplicate step names: {set(dupes)}")
+        self._rebuild_index()
         self._validate_dependencies()
+
+    def _rebuild_index(self) -> None:
+        """Rebuild the O(1) name→index map. Called after any mutation."""
+        self._name_to_idx: dict[str, int] = {s.name: i for i, s in enumerate(self.steps)}
 
     def _validate_dependencies(self) -> None:
         """Warn if any step's requires are not provided by a preceding step."""
@@ -170,45 +187,59 @@ class ExecutionStrategy:
 
     def insert_after(self, anchor: str, step: Step) -> None:
         """Insert a step after the named anchor step."""
-        if any(s.name == step.name for s in self.steps):
+        if step.name in self._name_to_idx:
             raise StepNameDuplicateError(f"Step '{step.name}' already exists")
-        for i, s in enumerate(self.steps):
-            if s.name == anchor:
-                self.steps.insert(i + 1, step)
-                self._validate_dependencies()
-                return
-        raise StepNotFoundError(f"Anchor step '{anchor}' not found")
+        anchor_idx = self._name_to_idx.get(anchor)
+        if anchor_idx is None:
+            raise StepNotFoundError(f"Anchor step '{anchor}' not found")
+        self.steps.insert(anchor_idx + 1, step)
+        self._rebuild_index()
+        self._validate_dependencies()
 
     def insert_before(self, anchor: str, step: Step) -> None:
         """Insert a step before the named anchor step."""
-        if any(s.name == step.name for s in self.steps):
+        if step.name in self._name_to_idx:
             raise StepNameDuplicateError(f"Step '{step.name}' already exists")
-        for i, s in enumerate(self.steps):
-            if s.name == anchor:
-                self.steps.insert(i, step)
-                self._validate_dependencies()
-                return
-        raise StepNotFoundError(f"Anchor step '{anchor}' not found")
+        anchor_idx = self._name_to_idx.get(anchor)
+        if anchor_idx is None:
+            raise StepNotFoundError(f"Anchor step '{anchor}' not found")
+        self.steps.insert(anchor_idx, step)
+        self._rebuild_index()
+        self._validate_dependencies()
 
     def remove(self, step_name: str) -> None:
         """Remove a step by name. Raises if the step is not removable."""
-        for i, s in enumerate(self.steps):
-            if s.name == step_name:
-                if not s.removable:
-                    raise StepNotRemovableError(f"Step '{step_name}' is not removable")
-                self.steps.pop(i)
-                return
-        raise StepNotFoundError(f"Step '{step_name}' not found")
+        idx = self._name_to_idx.get(step_name)
+        if idx is None:
+            raise StepNotFoundError(f"Step '{step_name}' not found")
+        if not self.steps[idx].removable:
+            raise StepNotRemovableError(f"Step '{step_name}' is not removable")
+        self.steps.pop(idx)
+        self._rebuild_index()
 
     def replace(self, step_name: str, new_step: Step) -> None:
         """Replace a step by name. Raises if the step is not replaceable."""
-        for i, s in enumerate(self.steps):
-            if s.name == step_name:
-                if not s.replaceable:
-                    raise StepNotReplaceableError(f"Step '{step_name}' is not replaceable")
-                self.steps[i] = new_step
-                return
-        raise StepNotFoundError(f"Step '{step_name}' not found")
+        idx = self._name_to_idx.get(step_name)
+        if idx is None:
+            raise StepNotFoundError(f"Step '{step_name}' not found")
+        if not self.steps[idx].replaceable:
+            raise StepNotReplaceableError(f"Step '{step_name}' is not replaceable")
+        self.steps[idx] = new_step
+        self._rebuild_index()
+
+    def configure_step(self, step_name: str, new_step: Step) -> None:
+        """Replace a step by name (replace semantic: idempotent, no duplicate).
+
+        Calling configure_step twice with the same step_name always leaves
+        exactly one step at that position.
+        """
+        idx = self._name_to_idx.get(step_name)
+        if idx is None:
+            raise PipelineStepNotFoundError(step_name)
+        if not self.steps[idx].replaceable:
+            raise StepNotReplaceableError(f"Step '{step_name}' is not replaceable")
+        self.steps[idx] = new_step
+        self._rebuild_index()
 
     def step_names(self) -> list[str]:
         """Return the ordered list of step names."""
@@ -231,6 +262,8 @@ class PipelineEngine:
         self,
         strategy: ExecutionStrategy,
         ctx: PipelineContext,
+        *,
+        run_until: Callable[[PipelineState], bool] | None = None,
     ) -> tuple[Any, PipelineTrace]:
         """Run all steps in the strategy, returning the final output and trace."""
         trace = PipelineTrace(
@@ -239,6 +272,9 @@ class PipelineEngine:
         )
         start = time.monotonic()
         steps = strategy.steps
+        name_to_idx = strategy._name_to_idx  # O(1) step lookup (§1.5)
+        step_outputs: dict[str, Any] = {}
+        effective_run_until = run_until or ctx.run_until
         i = 0
 
         # Index-based loop (not for-each) to support skip_to.
@@ -345,7 +381,7 @@ class PipelineEngine:
                     )
                     i += 1
                     continue
-                # Not ignored: record and raise
+                # Fail-fast (§1.1): wrap in PipelineStepError with step name and cause
                 trace.steps.append(
                     StepTrace(
                         name=step.name,
@@ -354,7 +390,7 @@ class PipelineEngine:
                     )
                 )
                 trace.total_duration_ms = (time.monotonic() - start) * 1000
-                raise
+                raise PipelineStepError(step_name=step.name, cause=exc, trace=trace) from exc
 
             # (5) Record successful step trace
             step_trace = StepTrace(
@@ -364,6 +400,10 @@ class PipelineEngine:
                 decision_point=result.confidence is not None,
             )
             trace.steps.append(step_trace)
+
+            # (6) Snapshot output for run_until predicates (shallow copy prevents
+            # later in-place mutations from altering the historical record)
+            step_outputs[step.name] = dict(ctx.output) if ctx.output is not None else None
 
             if result.action == "abort":
                 trace.total_duration_ms = (time.monotonic() - start) * 1000
@@ -375,12 +415,14 @@ class PipelineEngine:
                 )
             elif result.action == "skip_to":
                 target = result.skip_to
-                target_idx = None
-                for j in range(i + 1, len(steps)):
-                    if steps[j].name == target:
-                        target_idx = j
-                        break
-                    # Record skipped steps in trace
+                if target is None:
+                    raise StepNotFoundError("skip_to target is None")
+                # O(1) lookup via pre-built index (§1.5)
+                target_idx = name_to_idx.get(target)
+                if target_idx is None or target_idx <= i:
+                    raise StepNotFoundError(f"skip_to target '{target}' not found")
+                # Record skipped steps in trace
+                for j in range(i + 1, target_idx):
                     trace.steps.append(
                         StepTrace(
                             name=steps[j].name,
@@ -390,12 +432,20 @@ class PipelineEngine:
                             decision_point=False,
                         )
                     )
-                if target_idx is None:
-                    raise StepNotFoundError(
-                        f"skip_to target '{target}' not found",
-                    )
                 i = target_idx
                 continue
+
+            # (7) run_until: evaluate predicate only on clean continue (§1.4)
+            if effective_run_until is not None:
+                state = PipelineState(
+                    step_name=step.name,
+                    outputs=step_outputs,
+                    context=ctx,
+                )
+                if effective_run_until(state):
+                    trace.success = True
+                    trace.total_duration_ms = (time.monotonic() - start) * 1000
+                    return ctx.output, trace
 
             i += 1
 
@@ -451,6 +501,11 @@ class PipelineAbortError(ModuleError):
         self.pipeline_trace = trace
         self.abort_reason: AbortReason = abort_reason or AbortReason.OTHER
 
+    @property
+    def step_name(self) -> str:
+        """Alias for ``step``, matching the naming convention of ``PipelineStepError``."""
+        return self.step
+
 
 class StepNotFoundError(ModuleError):
     """Raised when a referenced step does not exist."""
@@ -485,3 +540,42 @@ class StrategyNotFoundError(ModuleError):
 
     def __init__(self, message: str = "", **kwargs: Any) -> None:
         super().__init__(code="STRATEGY_NOT_FOUND", message=message, **kwargs)
+
+
+class PipelineStepError(ModuleError):
+    """Raised when a pipeline step fails (fail-fast, §1.1).
+
+    Wraps the original exception from the step, carrying the step name for
+    diagnostics. When ignore_errors is true on the step, this error is NOT
+    raised; execution continues instead.
+    """
+
+    def __init__(
+        self,
+        step_name: str,
+        cause: Exception | None = None,
+        trace: PipelineTrace | None = None,
+        **kwargs: Any,
+    ) -> None:
+        cause_msg = str(cause) if cause is not None else "unknown error"
+        super().__init__(
+            code="PIPELINE_STEP_ERROR",
+            message=f"Pipeline step '{step_name}' failed: {cause_msg}",
+            cause=cause,
+            details={"step_name": step_name},
+            **kwargs,
+        )
+        self.step_name = step_name
+        self.pipeline_trace = trace
+
+
+class PipelineStepNotFoundError(ModuleError):
+    """Raised when configure_step targets a step name that does not exist."""
+
+    def __init__(self, step_name: str = "", **kwargs: Any) -> None:
+        super().__init__(
+            code="PIPELINE_STEP_NOT_FOUND",
+            message=f"Pipeline step not found: '{step_name}'",
+            **kwargs,
+        )
+        self.step_name = step_name

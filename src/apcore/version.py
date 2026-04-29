@@ -104,7 +104,11 @@ class VersionIncompatibleError(ModuleError):
         super().__init__(
             code="VERSION_INCOMPATIBLE",
             message=f"Version incompatible: declared={declared}, sdk={sdk} — {reason}",
-            details={"declared_version": declared, "sdk_version": sdk, "reason": reason},
+            details={
+                "declared_version": declared,
+                "sdk_version": sdk,
+                "reason": reason,
+            },
             **kwargs,
         )
 

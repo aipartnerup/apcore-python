@@ -69,7 +69,8 @@ class TestObservabilityPackageExports:
     def test_all_contains_all_public_names(self):
         import apcore.observability as obs
 
-        expected = {
+        # Original exports must still be present (non-breaking superset)
+        original = {
             "ContextLogger",
             "ErrorEntry",
             "ErrorHistory",
@@ -87,6 +88,20 @@ class TestObservabilityPackageExports:
             "create_span",
             "estimate_p99_latency_ms",
         }
+        # v0.20 hardening additions
+        hardening_additions = {
+            "BatchSpanProcessor",
+            "SimpleSpanProcessor",
+            "SpanProcessor",
+            "InMemoryObservabilityStore",
+            "ObservabilityStore",
+            "MetricPoint",
+            "PrometheusExporter",
+            "RedactionConfig",
+            "normalize_message",
+            "compute_fingerprint",
+        }
+        expected = original | hardening_additions
         assert set(obs.__all__) == expected
 
     def test_all_entries_are_attributes(self):

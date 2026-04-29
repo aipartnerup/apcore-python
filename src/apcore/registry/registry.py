@@ -117,9 +117,7 @@ MAX_MODULE_ID_LENGTH = 192
 # specific unset marker should supply `version="0.0.0"` explicitly.
 DEFAULT_MODULE_VERSION = "1.0.0"
 
-RESERVED_WORDS = frozenset(
-    {"system", "internal", "core", "apcore", "plugin", "schema", "acl"}
-)
+RESERVED_WORDS = frozenset({"system", "internal", "core", "apcore", "plugin", "schema", "acl"})
 
 __all__ = [
     "Registry",
@@ -287,26 +285,19 @@ class Registry:
             InvalidInputError: If both extensions_dir and extensions_dirs are specified.
         """
         if extensions_dir is not None and extensions_dirs is not None:
-            raise InvalidInputError(
-                message="Cannot specify both extensions_dir and extensions_dirs"
-            )
+            raise InvalidInputError(message="Cannot specify both extensions_dir and extensions_dirs")
 
         # Determine extension roots: individual params > config > defaults
         if extensions_dir is not None:
             self._extension_roots: list[dict[str, Any]] = [{"root": extensions_dir}]
         elif extensions_dirs is not None:
-            self._extension_roots = [
-                {"root": item} if isinstance(item, str) else item
-                for item in extensions_dirs
-            ]
+            self._extension_roots = [{"root": item} if isinstance(item, str) else item for item in extensions_dirs]
         elif config is not None:
             ext_root = config.get("extensions.root")
             if ext_root:
                 self._extension_roots = [{"root": ext_root}]
             else:
-                self._extension_roots = [
-                    {"root": Config.get_default("extensions.root")}
-                ]
+                self._extension_roots = [{"root": Config.get_default("extensions.root")}]
         else:
             self._extension_roots = [{"root": Config.get_default("extensions.root")}]
 
@@ -413,9 +404,7 @@ class Registry:
                 self.register(mod_id, mod)
                 registered_count += 1
             except Exception as e:
-                logger.warning(
-                    "Failed to register custom-discovered module '%s': %s", mod_id, e
-                )
+                logger.warning("Failed to register custom-discovered module '%s': %s", mod_id, e)
 
         if registered_count == 0 and custom_modules:
             logger.warning(
@@ -442,9 +431,7 @@ class Registry:
         valid_classes = self._validate_all(resolved_classes)
         load_order = self._resolve_load_order(valid_classes, raw_metadata)
         valid_classes = self._filter_id_conflicts(load_order, valid_classes)
-        registered_count = self._register_in_order(
-            load_order, valid_classes, raw_metadata
-        )
+        registered_count = self._register_in_order(load_order, valid_classes, raw_metadata)
 
         if registered_count == 0 and discovered:
             logger.warning(
@@ -470,9 +457,7 @@ class Registry:
             return 8, False
         max_depth = self._config.get("extensions.max_depth", 8)
         follow_symlinks = self._config.get("extensions.follow_symlinks", False)
-        if follow_symlinks and not getattr(
-            self, "_logged_follow_symlinks_warning", False
-        ):
+        if follow_symlinks and not getattr(self, "_logged_follow_symlinks_warning", False):
             logger.warning(
                 "extensions.follow_symlinks=True — scanner will traverse symlinked "
                 "directories (confined to the extension root). Ensure the root is "
@@ -517,9 +502,7 @@ class Registry:
         """Stage 3 — read each module's optional companion ``*_meta.yaml``."""
         raw_metadata: dict[str, dict[str, Any]] = {}
         for dm in discovered:
-            raw_metadata[dm.canonical_id] = (
-                load_metadata(dm.meta_path) if dm.meta_path else {}
-            )
+            raw_metadata[dm.canonical_id] = load_metadata(dm.meta_path) if dm.meta_path else {}
         return raw_metadata
 
     def _resolve_all_entry_points(
@@ -544,9 +527,7 @@ class Registry:
                     pre_approval_hook=self._pre_approval_hook,
                 )
             except Exception as e:
-                logger.warning(
-                    "Failed to resolve entry point for '%s': %s", dm.canonical_id, e
-                )
+                logger.warning("Failed to resolve entry point for '%s': %s", dm.canonical_id, e)
         return resolved
 
     def _validate_all(self, resolved_classes: dict[str, type]) -> dict[str, type]:
@@ -558,9 +539,7 @@ class Registry:
             else:
                 errors = validate_module(cls)
             if errors:
-                logger.warning(
-                    "Module '%s' failed validation: %s", mod_id, "; ".join(errors)
-                )
+                logger.warning("Module '%s' failed validation: %s", mod_id, "; ".join(errors))
                 continue
             valid[mod_id] = cls
         return valid
@@ -582,9 +561,7 @@ class Registry:
             modules_with_deps.append((mod_id, deps))
 
         module_versions = self._collect_module_versions(valid_classes, raw_metadata)
-        known_ids = {mod_id for mod_id, _ in modules_with_deps} | set(
-            self._modules.keys()
-        )
+        known_ids = {mod_id for mod_id, _ in modules_with_deps} | set(self._modules.keys())
         return resolve_dependencies(
             modules_with_deps,
             known_ids=known_ids,
@@ -801,13 +778,9 @@ class Registry:
         if self._custom_validator is not None:
             errors = self._custom_validator.validate(module)
             if errors:
-                raise InvalidInputError(
-                    message=f"Custom validator rejected module '{module_id}': {'; '.join(errors)}"
-                )
+                raise InvalidInputError(message=f"Custom validator rejected module '{module_id}': {'; '.join(errors)}")
 
-        effective_version = (
-            version or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
-        )
+        effective_version = version or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
 
         is_versioned = version is not None
 
@@ -931,9 +904,7 @@ class Registry:
         with self._lock:
             return module_id in self._modules
 
-    def list(
-        self, tags: list[str] | None = None, prefix: str | None = None
-    ) -> list[str]:
+    def list(self, tags: list[str] | None = None, prefix: str | None = None) -> list[str]:
         """Return sorted list of unique registered module IDs, optionally filtered."""
         with self._lock:
             snapshot = dict(self._modules)
@@ -979,9 +950,7 @@ class Registry:
         with self._lock:
             return sorted(self._modules.keys())
 
-    def get_definition(
-        self, module_id: str, version_hint: str | None = None
-    ) -> ModuleDescriptor | None:
+    def get_definition(self, module_id: str, version_hint: str | None = None) -> ModuleDescriptor | None:
         """Get a ModuleDescriptor for a registered module. Returns None if not found.
 
         Args:
@@ -1002,12 +971,8 @@ class Registry:
 
         cls = type(module)
 
-        input_schema_cls = getattr(module, "input_schema", None) or getattr(
-            cls, "input_schema", None
-        )
-        output_schema_cls = getattr(module, "output_schema", None) or getattr(
-            cls, "output_schema", None
-        )
+        input_schema_cls = getattr(module, "input_schema", None) or getattr(cls, "input_schema", None)
+        output_schema_cls = getattr(module, "output_schema", None) or getattr(cls, "output_schema", None)
 
         for schema_cls in (input_schema_cls, output_schema_cls):
             if schema_cls is not None and hasattr(schema_cls, "model_rebuild"):
@@ -1019,12 +984,16 @@ class Registry:
         input_json = (
             input_schema_cls
             if isinstance(input_schema_cls, dict)
-            else input_schema_cls.model_json_schema() if input_schema_cls else {}
+            else input_schema_cls.model_json_schema()
+            if input_schema_cls
+            else {}
         )
         output_json = (
             output_schema_cls
             if isinstance(output_schema_cls, dict)
-            else output_schema_cls.model_json_schema() if output_schema_cls else {}
+            else output_schema_cls.model_json_schema()
+            if output_schema_cls
+            else {}
         )
 
         effective_metadata = meta.get("metadata", {})
@@ -1060,9 +1029,7 @@ class Registry:
             sunset_date=sunset_date,
         )
 
-    def _log_deprecation_warning(
-        self, module_id: str, version: str, deprecation: dict[str, Any]
-    ) -> None:
+    def _log_deprecation_warning(self, module_id: str, version: str, deprecation: dict[str, Any]) -> None:
         """Log a deprecation warning for a module version."""
         deprecated_since = deprecation.get("deprecated_since", "unknown")
         sunset_version = deprecation.get("sunset_version", "unknown")
@@ -1072,9 +1039,7 @@ class Registry:
             msg += f" Migration: {migration_guide}"
         logger.warning(msg)
 
-    def export_schema(
-        self, module_id: str, strict: bool = False
-    ) -> dict[str, Any] | None:
+    def export_schema(self, module_id: str, strict: bool = False) -> dict[str, Any] | None:
         """Export the schema definition for a registered module as a plain dict.
 
         Returns the module's input and output schemas in the generic export
@@ -1179,9 +1144,7 @@ class Registry:
         """
         with self._lock:
             if event not in self._callbacks:
-                raise InvalidInputError(
-                    message=f"Invalid event: {event}. Must be 'register' or 'unregister'"
-                )
+                raise InvalidInputError(message=f"Invalid event: {event}. Must be 'register' or 'unregister'")
             self._callbacks[event].append(callback)
 
     def off(self, event: str, callback: Callable[..., Any]) -> bool:
@@ -1202,9 +1165,7 @@ class Registry:
         """
         with self._lock:
             if event not in self._callbacks:
-                raise InvalidInputError(
-                    message=f"Invalid event: {event}. Must be 'register' or 'unregister'"
-                )
+                raise InvalidInputError(message=f"Invalid event: {event}. Must be 'register' or 'unregister'")
             callbacks = self._callbacks[event]
             try:
                 callbacks.remove(callback)
@@ -1235,9 +1196,7 @@ class Registry:
                 cb(module_id, module)
             except Exception as e:
                 with self._lock:
-                    self._callback_errors[event] = (
-                        self._callback_errors.get(event, 0) + 1
-                    )
+                    self._callback_errors[event] = self._callback_errors.get(event, 0) + 1
                 logger.error(
                     "Callback error for event '%s' on module '%s': %s",
                     event,
@@ -1387,9 +1346,7 @@ class Registry:
         try:
             from watchdog.observers import Observer  # type: ignore[import-not-found]
         except ImportError:
-            raise ImportError(
-                "watchdog is required for hot reload. Install it with: pip install watchdog"
-            )
+            raise ImportError("watchdog is required for hot reload. Install it with: pip install watchdog")
 
         if hasattr(self, "_observer") and self._observer is not None:
             return  # Already watching
@@ -1436,21 +1393,15 @@ class Registry:
         """
         # Phase 1 (outside lock): compile + instantiate + validate new module.
         try:
-            cls = resolve_entry_point(
-                Path(path), pre_approval_hook=self._pre_approval_hook
-            )
+            cls = resolve_entry_point(Path(path), pre_approval_hook=self._pre_approval_hook)
         except Exception as e:
-            logger.warning(
-                "Hot reload failed to resolve entry point for %s: %s", path, e
-            )
+            logger.warning("Hot reload failed to resolve entry point for %s: %s", path, e)
             return
 
         try:
             instance = cls()
         except Exception as e:
-            logger.warning(
-                "Hot reload failed to instantiate class from %s: %s", path, e
-            )
+            logger.warning("Hot reload failed to instantiate class from %s: %s", path, e)
             return
 
         validation_errors = validate_module(instance)
@@ -1495,17 +1446,11 @@ class Registry:
             self._modules[new_id] = instance
             self._lowercase_map[new_id.lower()] = new_id
             self._versioned_modules.add(new_id, effective_version, instance)
-            self._versioned_meta.add(
-                new_id, effective_version, {"version": effective_version}
-            )
+            self._versioned_meta.add(new_id, effective_version, {"version": effective_version})
 
         # Phase 5 (outside lock): register event + on_resume hook on new module.
         self._trigger_event("register", new_id, instance)
-        if (
-            suspended_state is not None
-            and hasattr(instance, "on_resume")
-            and callable(instance.on_resume)
-        ):
+        if suspended_state is not None and hasattr(instance, "on_resume") and callable(instance.on_resume):
             try:
                 instance.on_resume(suspended_state)
             except Exception as e:
@@ -1532,9 +1477,7 @@ class Registry:
             return None
         if isinstance(raw_state, dict):
             return raw_state
-        logger.warning(
-            "on_suspend() for module '%s' returned non-dict; ignoring", module_id
-        )
+        logger.warning("on_suspend() for module '%s' returned non-dict; ignoring", module_id)
         return None
 
     def _call_on_unload(self, module_id: str, module: Any) -> None:

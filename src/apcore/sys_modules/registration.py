@@ -3,20 +3,36 @@
 from __future__ import annotations
 
 import logging
-import warnings
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, TypedDict
 
+import yaml
+
 from apcore.config import Config
+from apcore.errors import SysModuleRegistrationError
+from apcore.events.circuit_breaker import CircuitBreakerWrapper
 from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
-from apcore.events.subscribers import A2ASubscriber, WebhookSubscriber
+from apcore.events.subscribers import (
+    A2ASubscriber,
+    FileSubscriber,
+    FilterSubscriber,
+    StdoutSubscriber,
+    WebhookSubscriber,
+)
 from apcore.executor import Executor
 from apcore.middleware.error_history_middleware import ErrorHistoryMiddleware
 from apcore.middleware.platform_notify import PlatformNotifyMiddleware
 from apcore.observability.error_history import ErrorHistory
 from apcore.observability.metrics import MetricsCollector
 from apcore.registry.registry import Registry
-from apcore.sys_modules.control import ReloadModule, ToggleFeatureModule, UpdateConfigModule
+from apcore.sys_modules.audit import AuditStore
+from apcore.sys_modules.control import (
+    ReloadModule,
+    ToggleFeatureModule,
+    ToggleState,
+    UpdateConfigModule,
+)
 from apcore.sys_modules.health import HealthModule, HealthSummaryModule
 from apcore.sys_modules.manifest import ManifestFullModule, ManifestModule
 from apcore.sys_modules.usage import UsageModule, UsageSummaryModule
@@ -47,6 +63,7 @@ class SysModulesContext(TypedDict, total=False):
     event_emitter: Any
     metrics_collector: Any
     usage_collector: Any
+    audit_store: Any
 
 
 # ---------------------------------------------------------------------------
@@ -70,74 +87,66 @@ def _default_a2a_factory(cfg: dict[str, Any]) -> EventSubscriber:
     return A2ASubscriber(
         platform_url=cfg["platform_url"],
         auth=cfg.get("auth"),
+        timeout_ms=cfg.get("timeout_ms", 5000),
     )
 
 
+def _default_file_factory(cfg: dict[str, Any]) -> EventSubscriber:
+    return FileSubscriber(
+        path=cfg["path"],
+        append=cfg.get("append", True),
+        output_format=cfg.get("format", "json"),
+        rotate_bytes=cfg.get("rotate_bytes"),
+    )
+
+
+def _default_stdout_factory(cfg: dict[str, Any]) -> EventSubscriber:
+    return StdoutSubscriber(
+        output_format=cfg.get("format", "text"),
+        level_filter=cfg.get("level_filter"),
+    )
+
+
+def _default_filter_factory(cfg: dict[str, Any]) -> EventSubscriber:
+    delegate_cfg = {**cfg.get("delegate_config", {}), "type": cfg["delegate_type"]}
+    delegate = _create_subscriber(delegate_cfg)
+    return FilterSubscriber(
+        delegate=delegate,
+        include_events=cfg.get("include_events"),
+        exclude_events=cfg.get("exclude_events"),
+    )
+
+
+# Built-in subscriber type registry
+_BUILTIN_FACTORIES: dict[str, Callable[[dict[str, Any]], EventSubscriber]] = {
+    "webhook": _default_webhook_factory,
+    "a2a": _default_a2a_factory,
+    "file": _default_file_factory,
+    "stdout": _default_stdout_factory,
+    "filter": _default_filter_factory,
+}
+
 # Register built-in types
-_subscriber_factories["webhook"] = _default_webhook_factory
-_subscriber_factories["a2a"] = _default_a2a_factory
+_subscriber_factories.update(_BUILTIN_FACTORIES)
 
 
 def register_subscriber_type(
     type_name: str,
     factory: Callable[[dict[str, Any]], EventSubscriber],
 ) -> None:
-    """Register a custom subscriber type factory.
-
-    After registration, the type can be used in config::
-
-        sys_modules:
-          events:
-            subscribers:
-              - type: "my_custom_type"
-                key: value
-
-    Args:
-        type_name: Subscriber type identifier used in config ``type`` field.
-        factory: Callable that receives the subscriber config dict and returns
-                 an EventSubscriber instance.
-    """
-    warnings.warn(
-        "register_subscriber_type is deprecated and will be removed in version 1.0.0.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
+    """Register a custom subscriber type factory."""
     _subscriber_factories[type_name] = factory
 
 
 def unregister_subscriber_type(type_name: str) -> None:
-    """Remove a previously registered subscriber type.
-
-    Built-in types (``webhook``, ``a2a``) can also be removed if desired.
-
-    Args:
-        type_name: Subscriber type identifier to remove.
-
-    Raises:
-        KeyError: If the type_name is not registered.
-    """
-    warnings.warn(
-        "unregister_subscriber_type is deprecated and will be removed in version 1.0.0.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
+    """Remove a previously registered subscriber type."""
     del _subscriber_factories[type_name]
 
 
 def reset_subscriber_registry() -> None:
-    """Reset the subscriber registry to built-in types only.
-
-    Useful in tests to ensure isolation between test cases that
-    register custom subscriber types.
-    """
-    warnings.warn(
-        "reset_subscriber_registry is deprecated and will be removed in version 1.0.0.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
+    """Reset the subscriber registry to built-in types only."""
     _subscriber_factories.clear()
-    _subscriber_factories["webhook"] = _default_webhook_factory
-    _subscriber_factories["a2a"] = _default_a2a_factory
+    _subscriber_factories.update(_BUILTIN_FACTORIES)
 
 
 # ---------------------------------------------------------------------------
@@ -161,11 +170,7 @@ def _nested_dict_get(data: dict[str, Any], dotted_key: str, default: Any) -> Any
 
 
 def _resolve_sys_cfg(config: Config) -> dict[str, Any] | None:
-    """Return the sys_modules namespace dict in namespace mode (§9.15.3).
-
-    In namespace mode, prefer ``config.namespace("sys_modules")``.
-    Returns None in legacy mode so callers fall back to ``config.get("sys_modules.*")``.
-    """
+    """Return the sys_modules namespace dict in namespace mode (§9.15.3)."""
     if getattr(config, "_mode", "legacy") == "namespace":
         return config.namespace("sys_modules") or {}
     return None
@@ -178,11 +183,58 @@ def _cfg_get(sys_cfg: dict[str, Any] | None, config: Config, sub_key: str, defau
     return config.get(f"sys_modules.{sub_key}", default)
 
 
+def _load_overrides(
+    config: Config,
+    overrides_path: str,
+    toggle_state: Any | None = None,
+) -> None:
+    """Load YAML overrides file and apply each key to config (in-memory only).
+
+    Keys prefixed with ``toggle.`` are applied to the toggle_state (if provided)
+    rather than the config. All other keys are set as config dot-paths.
+    """
+    p = Path(overrides_path)
+    if not p.exists():
+        return
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            overrides: Any = yaml.safe_load(f)
+        if not isinstance(overrides, dict):
+            logger.warning("Overrides file %s did not contain a mapping; skipping", overrides_path)
+            return
+        config_count = 0
+        toggle_count = 0
+        for key, value in overrides.items():
+            if not isinstance(key, str):
+                continue
+            if key.startswith("toggle.") and toggle_state is not None:
+                module_id = key[len("toggle.") :]
+                if isinstance(value, bool):
+                    if value:
+                        toggle_state.enable(module_id)
+                    else:
+                        toggle_state.disable(module_id)
+                    toggle_count += 1
+            elif not key.startswith("_"):
+                config.set(key, value)
+                config_count += 1
+        logger.info(
+            "Loaded %d config overrides and %d toggle overrides from %s",
+            config_count,
+            toggle_count,
+            overrides_path,
+        )
+    except Exception as exc:
+        logger.error("Failed to load overrides from %s: %s", overrides_path, exc)
+
+
 def register_sys_modules(
     registry: Registry,
     executor: Executor,
     config: Config,
     metrics_collector: MetricsCollector | None = None,
+    fail_on_error: bool = False,
+    audit_store: AuditStore | None = None,
 ) -> dict[str, Any]:
     """Auto-register all sys.* modules and middleware based on config.
 
@@ -191,6 +243,10 @@ def register_sys_modules(
         executor: Executor for middleware registration.
         config: Configuration with sys_modules section.
         metrics_collector: Optional MetricsCollector instance.
+        fail_on_error: When True, any registration failure raises
+            SysModuleRegistrationError immediately. When False (default),
+            failures are logged at ERROR level and execution continues.
+        audit_store: Optional audit store for control module audit trails.
 
     Returns:
         Dict with references to created components for testing/inspection.
@@ -202,6 +258,11 @@ def register_sys_modules(
 
     if not _cfg_get(sys_cfg, config, "enabled", False):
         return result
+
+    # Load overrides from disk before registering modules
+    overrides_path: str | None = _cfg_get(sys_cfg, config, "control.overrides_path", None)
+    if overrides_path:
+        _load_overrides(config, overrides_path)
 
     error_history = _create_error_history(config, sys_cfg)
     result["error_history"] = error_history
@@ -217,10 +278,29 @@ def register_sys_modules(
     executor.use(usage_middleware)
     result["usage_middleware"] = usage_middleware
 
-    _register_sys_modules(registry, config, metrics_collector, error_history, usage_collector)
+    _register_sys_modules(
+        registry,
+        config,
+        metrics_collector,
+        error_history,
+        usage_collector,
+        fail_on_error=fail_on_error,
+    )
 
     if _cfg_get(sys_cfg, config, "events.enabled", False):
-        _setup_events(registry, executor, config, sys_cfg, metrics_collector, error_history, usage_collector, result)
+        _setup_events(
+            registry,
+            executor,
+            config,
+            sys_cfg,
+            metrics_collector,
+            error_history,
+            usage_collector,
+            result,
+            overrides_path=overrides_path,
+            audit_store=audit_store,
+            fail_on_error=fail_on_error,
+        )
 
     return result
 
@@ -235,13 +315,23 @@ def _create_error_history(config: Config, sys_cfg: dict[str, Any] | None) -> Err
     )
 
 
-def _register_sys_module(registry: Registry, module_id: str, module: Any) -> None:
+def _register_sys_module(
+    registry: Registry,
+    module_id: str,
+    module: Any,
+    fail_on_error: bool = False,
+) -> None:
     """Register a sys module, bypassing reserved word checks.
 
-    System modules use the 'system.' prefix which is a reserved word.
-    This helper uses the public register_internal() API.
+    When fail_on_error is True, raises SysModuleRegistrationError on failure.
+    When fail_on_error is False, logs at ERROR level and continues.
     """
-    registry.register_internal(module_id, module)
+    try:
+        registry.register_internal(module_id, module)
+    except Exception as exc:
+        if fail_on_error:
+            raise SysModuleRegistrationError(module_id=module_id, reason=str(exc)) from exc
+        logger.error("System module '%s' failed to register: %s. Continuing.", module_id, exc)
 
 
 def _register_sys_modules(
@@ -250,52 +340,61 @@ def _register_sys_modules(
     metrics_collector: MetricsCollector | None,
     error_history: ErrorHistory,
     usage_collector: UsageCollector,
+    fail_on_error: bool = False,
 ) -> None:
     """Register all sys.* modules: health, manifest, and usage."""
-    # HealthSummaryModule and HealthModule require a non-None
-    # MetricsCollector. When the caller did not supply one, fall back to a
-    # fresh empty collector so health modules degrade to "no recorded
-    # metrics" rather than crashing at registration.
     effective_metrics = metrics_collector if metrics_collector is not None else MetricsCollector()
 
-    # Health modules
-    health_summary = HealthSummaryModule(
-        registry=registry,
-        metrics_collector=effective_metrics,
-        error_history=error_history,
-        config=config,
+    _register_sys_module(
+        registry,
+        "system.health.summary",
+        HealthSummaryModule(
+            registry=registry,
+            metrics_collector=effective_metrics,
+            error_history=error_history,
+            config=config,
+        ),
+        fail_on_error=fail_on_error,
     )
-    _register_sys_module(registry, "system.health.summary", health_summary)
 
-    health_module = HealthModule(
-        registry=registry,
-        metrics_collector=effective_metrics,
-        error_history=error_history,
+    _register_sys_module(
+        registry,
+        "system.health.module",
+        HealthModule(
+            registry=registry,
+            metrics_collector=effective_metrics,
+            error_history=error_history,
+        ),
+        fail_on_error=fail_on_error,
     )
-    _register_sys_module(registry, "system.health.module", health_module)
 
-    # Manifest modules
-    manifest_module = ManifestModule(
-        registry=registry,
-        config=config,
+    _register_sys_module(
+        registry,
+        "system.manifest.module",
+        ManifestModule(registry=registry, config=config),
+        fail_on_error=fail_on_error,
     )
-    _register_sys_module(registry, "system.manifest.module", manifest_module)
 
-    manifest_full = ManifestFullModule(
-        registry=registry,
-        config=config,
+    _register_sys_module(
+        registry,
+        "system.manifest.full",
+        ManifestFullModule(registry=registry, config=config),
+        fail_on_error=fail_on_error,
     )
-    _register_sys_module(registry, "system.manifest.full", manifest_full)
 
-    # Usage modules
-    usage_summary = UsageSummaryModule(collector=usage_collector)
-    _register_sys_module(registry, "system.usage.summary", usage_summary)
-
-    usage_module = UsageModule(
-        registry=registry,
-        usage_collector=usage_collector,
+    _register_sys_module(
+        registry,
+        "system.usage.summary",
+        UsageSummaryModule(collector=usage_collector),
+        fail_on_error=fail_on_error,
     )
-    _register_sys_module(registry, "system.usage.module", usage_module)
+
+    _register_sys_module(
+        registry,
+        "system.usage.module",
+        UsageModule(registry=registry, usage_collector=usage_collector),
+        fail_on_error=fail_on_error,
+    )
 
 
 def _setup_events(
@@ -307,6 +406,9 @@ def _setup_events(
     error_history: ErrorHistory,
     usage_collector: UsageCollector,
     result: dict[str, Any],
+    overrides_path: str | None = None,
+    audit_store: AuditStore | None = None,
+    fail_on_error: bool = False,
 ) -> None:
     """Set up event emitter, subscribers, PlatformNotifyMiddleware, control modules, and registry bridge."""
     event_emitter = EventEmitter()
@@ -323,8 +425,14 @@ def _setup_events(
     executor.use(pn_middleware)
     result["platform_notify_middleware"] = pn_middleware
 
-    # Control modules (require EventEmitter)
-    _register_control_modules(registry, config, event_emitter)
+    _register_control_modules(
+        registry,
+        config,
+        event_emitter,
+        overrides_path=overrides_path,
+        audit_store=audit_store,
+        fail_on_error=fail_on_error,
+    )
 
     _instantiate_subscribers(config, sys_cfg, event_emitter)
     _bridge_registry_events(registry, event_emitter)
@@ -334,25 +442,69 @@ def _register_control_modules(
     registry: Registry,
     config: Config,
     event_emitter: EventEmitter,
+    overrides_path: str | None = None,
+    audit_store: AuditStore | None = None,
+    fail_on_error: bool = False,
 ) -> None:
-    """Register control sys modules that require an EventEmitter."""
-    update_config = UpdateConfigModule(config=config, event_emitter=event_emitter)
-    _register_sys_module(registry, "system.control.update_config", update_config)
+    """Register control sys modules that require an EventEmitter.
 
-    reload_module = ReloadModule(registry=registry, event_emitter=event_emitter)
-    _register_sys_module(registry, "system.control.reload_module", reload_module)
+    A fresh ToggleState is created per call so multiple Registry instances
+    in the same process do not share toggle state.
+    """
+    toggle_state = ToggleState()
 
-    toggle_feature = ToggleFeatureModule(registry=registry, event_emitter=event_emitter)
-    _register_sys_module(registry, "system.control.toggle_feature", toggle_feature)
+    _register_sys_module(
+        registry,
+        "system.control.update_config",
+        UpdateConfigModule(
+            config=config,
+            event_emitter=event_emitter,
+            overrides_path=overrides_path,
+            audit_store=audit_store,
+        ),
+        fail_on_error=fail_on_error,
+    )
+
+    _register_sys_module(
+        registry,
+        "system.control.reload_module",
+        ReloadModule(
+            registry=registry,
+            event_emitter=event_emitter,
+            audit_store=audit_store,
+        ),
+        fail_on_error=fail_on_error,
+    )
+
+    _register_sys_module(
+        registry,
+        "system.control.toggle_feature",
+        ToggleFeatureModule(
+            registry=registry,
+            event_emitter=event_emitter,
+            toggle_state=toggle_state,
+            overrides_path=overrides_path,
+            audit_store=audit_store,
+        ),
+        fail_on_error=fail_on_error,
+    )
 
 
 def _instantiate_subscribers(config: Config, sys_cfg: dict[str, Any] | None, event_emitter: EventEmitter) -> None:
-    """Create and subscribe EventSubscribers from config."""
+    """Create and subscribe EventSubscribers from config, each wrapped in a circuit breaker."""
     subscribers_config = _cfg_get(sys_cfg, config, "events.subscribers", [])
     for sub_cfg in subscribers_config:
         try:
             subscriber = _create_subscriber(sub_cfg)
-            event_emitter.subscribe(subscriber)
+            cb_cfg: dict[str, Any] = sub_cfg.get("circuit_breaker") or {}
+            wrapped = CircuitBreakerWrapper(
+                subscriber=subscriber,
+                emitter=event_emitter,
+                timeout_ms=cb_cfg.get("timeout_ms", 5000),
+                open_threshold=cb_cfg.get("open_threshold", 5),
+                recovery_window_ms=cb_cfg.get("recovery_window_ms", 60000),
+            )
+            event_emitter.subscribe(wrapped)
         except Exception:
             logger.warning(
                 "Failed to instantiate subscriber: %s",
@@ -362,20 +514,7 @@ def _instantiate_subscribers(config: Config, sys_cfg: dict[str, Any] | None, eve
 
 
 def _create_subscriber(sub_cfg: dict[str, Any]) -> EventSubscriber:
-    """Factory for EventSubscriber from a config dict.
-
-    Looks up the subscriber type in the extensible subscriber registry.
-    Use ``register_subscriber_type()`` to add custom types.
-
-    Args:
-        sub_cfg: Subscriber configuration with 'type' key.
-
-    Returns:
-        An EventSubscriber instance.
-
-    Raises:
-        ValueError: If subscriber type is not registered.
-    """
+    """Factory for EventSubscriber from a config dict."""
     sub_type = sub_cfg.get("type", "")
     factory = _subscriber_factories.get(sub_type)
     if factory is None:

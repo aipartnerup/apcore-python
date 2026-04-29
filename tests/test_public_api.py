@@ -437,6 +437,7 @@ class TestPublicAPIAll:
         "BindingStrictSchemaIncompatibleError",
         "CallDepthExceededError",
         "CallFrequencyExceededError",
+        "CircuitOpenError",
         "CircularCallError",
         "CircularDependencyError",
         "ConfigError",
@@ -463,6 +464,7 @@ class TestPublicAPIAll:
         "AuditEntry",
         # Middleware
         "Middleware",
+        "RetrySignal",
         "MiddlewareManager",
         "BeforeMiddleware",
         "AfterMiddleware",
@@ -470,6 +472,8 @@ class TestPublicAPIAll:
         "MiddlewareChainError",
         "RetryConfig",
         "RetryMiddleware",
+        "CircuitBreakerMiddleware",
+        "CircuitState",
         # Decorators
         "module",
         "FunctionModule",
@@ -480,6 +484,10 @@ class TestPublicAPIAll:
         "AsyncTaskManager",
         "TaskStatus",
         "TaskInfo",
+        "TaskStore",
+        "InMemoryTaskStore",
+        "RetryPolicy",
+        "BackoffStrategy",
         # Bindings
         "BindingLoader",
         # Schema
@@ -533,7 +541,9 @@ class TestPublicAPIAll:
         "ExportProfile",
         # Additional errors
         "ModuleDisabledError",
+        "ModuleReloadConflictError",
         "ReloadFailedError",
+        "SysModuleRegistrationError",
         # Observability (added in 0.11.0, exported in 0.12.0)
         "ErrorEntry",
         "ErrorHistory",
@@ -554,6 +564,9 @@ class TestPublicAPIAll:
         "ExecutionStrategy",
         "StrategyInfo",
         "PipelineAbortError",
+        "PipelineState",
+        "PipelineStepError",
+        "PipelineStepNotFoundError",
         "StepNotFoundError",
         "StepNotRemovableError",
         "StepNotReplaceableError",

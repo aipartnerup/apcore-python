@@ -728,6 +728,63 @@ class TestGetSchema:
 # === clear_cache() ===
 
 
+class TestContentAddressableCache:
+    """Verify _store_in_cache deduplication: same content → one _content_cache entry."""
+
+    def _make_schema_yaml(self, name: str, schema_body: dict) -> dict:
+        return {
+            "module_id": name,
+            "description": f"Schema {name}",
+            "input_schema": schema_body,
+            "output_schema": {"type": "object"},
+        }
+
+    def test_same_content_shares_cache_entry(self, tmp_path: Path) -> None:
+        identical_input = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        }
+        write_yaml(
+            tmp_path / "alpha.schema.yaml",
+            self._make_schema_yaml("alpha", identical_input),
+        )
+        write_yaml(
+            tmp_path / "beta.schema.yaml",
+            self._make_schema_yaml("beta", identical_input),
+        )
+
+        loader = make_loader(tmp_path)
+        loader.get_schema("alpha")
+        loader.get_schema("beta")
+
+        assert (
+            len(loader._content_cache) == 1
+        ), "Two modules with identical input+output schemas must share one _content_cache entry"
+        assert (
+            loader._path_index["alpha"] == loader._path_index["beta"]
+        ), "Both module_ids must map to the same SHA-256 digest"
+
+    def test_different_content_produces_separate_entries(self, tmp_path: Path) -> None:
+        write_yaml(
+            tmp_path / "mod_a.schema.yaml",
+            self._make_schema_yaml("mod_a", {"type": "object", "properties": {"x": {"type": "string"}}}),
+        )
+        write_yaml(
+            tmp_path / "mod_b.schema.yaml",
+            self._make_schema_yaml("mod_b", {"type": "object", "properties": {"y": {"type": "integer"}}}),
+        )
+
+        loader = make_loader(tmp_path)
+        loader.get_schema("mod_a")
+        loader.get_schema("mod_b")
+
+        assert (
+            len(loader._content_cache) == 2
+        ), "Two modules with different schemas must produce separate _content_cache entries"
+        assert loader._path_index["mod_a"] != loader._path_index["mod_b"]
+
+
 class TestClearCache:
     def test_clear_cache_invalidates(self, tmp_path: Path) -> None:
         write_simple_schema(tmp_path)

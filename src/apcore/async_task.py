@@ -13,7 +13,16 @@ from typing import Any, Protocol, runtime_checkable
 from apcore.context import Context
 from apcore.errors import TaskLimitExceededError
 
-__all__ = ["TaskStatus", "TaskInfo", "AsyncTaskManager", "ExecutorProtocol"]
+__all__ = [
+    "TaskStatus",
+    "TaskInfo",
+    "TaskStore",
+    "InMemoryTaskStore",
+    "RetryPolicy",
+    "BackoffStrategy",
+    "AsyncTaskManager",
+    "ExecutorProtocol",
+]
 
 
 @runtime_checkable
@@ -45,6 +54,7 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    RETRYING = "retrying"
 
 
 @dataclass
@@ -59,12 +69,87 @@ class TaskInfo:
     completed_at: float | None = None
     result: Any = None
     error: str | None = None
+    attempt_number: int = 0
+    max_retries: int = 0
+
+
+@runtime_checkable
+class TaskStore(Protocol):
+    """Sync storage backend for :class:`TaskInfo` records.
+
+    The default implementation is :class:`InMemoryTaskStore`. Users may
+    supply a custom store (e.g. Redis, DB) via ``AsyncTaskManager(store=...)``.
+    All methods are synchronous; async stores must wrap I/O in a sync adapter.
+    """
+
+    def get(self, task_id: str) -> TaskInfo | None: ...
+    def put(self, info: TaskInfo) -> None: ...
+    def delete(self, task_id: str) -> None: ...
+    def list(self, status: TaskStatus | None = None) -> list[TaskInfo]: ...
+
+
+class InMemoryTaskStore:
+    """Default in-memory :class:`TaskStore` backed by a plain dict."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, TaskInfo] = {}
+
+    def get(self, task_id: str) -> TaskInfo | None:
+        return self._data.get(task_id)
+
+    def put(self, info: TaskInfo) -> None:
+        self._data[info.task_id] = info
+
+    def delete(self, task_id: str) -> None:
+        self._data.pop(task_id, None)
+
+    def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+        if status is None:
+            return list(self._data.values())
+        return [t for t in self._data.values() if t.status == status]
+
+
+class BackoffStrategy(str, Enum):
+    """Backoff formula applied between retry attempts."""
+
+    FIXED = "fixed"
+    LINEAR = "linear"
+    EXPONENTIAL = "exponential"
+
+
+@dataclass
+class RetryPolicy:
+    """Retry configuration for a submitted task.
+
+    Attributes:
+        max_retries: Maximum number of retry attempts (0 = no retry).
+        backoff: Delay growth strategy between attempts.
+        base_delay_seconds: Base wait time fed into the backoff formula.
+    """
+
+    max_retries: int = 3
+    backoff: BackoffStrategy = BackoffStrategy.EXPONENTIAL
+    base_delay_seconds: float = 1.0
+
+    def delay_for(self, attempt: int) -> float:
+        """Return wait seconds before retry *attempt* (1-indexed)."""
+        if self.backoff == BackoffStrategy.FIXED:
+            return self.base_delay_seconds
+        if self.backoff == BackoffStrategy.LINEAR:
+            return self.base_delay_seconds * attempt
+        # EXPONENTIAL
+        return self.base_delay_seconds * (2 ** (attempt - 1))
+
+
+_ACTIVE_STATUSES = frozenset({TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.RETRYING})
+_TERMINAL_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
 
 
 class AsyncTaskManager:
     """Manages background execution of modules via asyncio tasks.
 
     Limits concurrency with a semaphore and tracks task lifecycle.
+    Accepts a pluggable :class:`TaskStore` for custom persistence.
     """
 
     def __init__(
@@ -72,18 +157,23 @@ class AsyncTaskManager:
         executor: ExecutorProtocol,
         max_concurrent: int = 10,
         max_tasks: int = 1000,
+        store: TaskStore | None = None,
     ) -> None:
         self._executor = executor
         self._max_tasks = max_tasks
-        self._tasks: dict[str, TaskInfo] = {}
+        self._store: TaskStore = store if store is not None else InMemoryTaskStore()
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._async_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._reaper_task: asyncio.Task[Any] | None = None
+        self._reaper_interval: float = 3600.0
+        self._reaper_max_age: float = 3600.0
 
     async def submit(
         self,
         module_id: str,
         inputs: dict[str, Any],
         context: Context | None = None,
+        retry_policy: RetryPolicy | None = None,
     ) -> str:
         """Submit a module for background execution.
 
@@ -94,11 +184,12 @@ class AsyncTaskManager:
             module_id: The module to execute.
             inputs: Input data for the module.
             context: Optional execution context.
+            retry_policy: Optional retry configuration. None means no retries.
 
         Returns:
             The generated task_id (UUID4 string).
         """
-        active = sum(1 for info in self._tasks.values() if info.status in (TaskStatus.PENDING, TaskStatus.RUNNING))
+        active = sum(1 for info in self._store.list() if info.status in _ACTIVE_STATUSES)
         if active >= self._max_tasks:
             raise TaskLimitExceededError(max_tasks=self._max_tasks)
 
@@ -108,10 +199,11 @@ class AsyncTaskManager:
             module_id=module_id,
             status=TaskStatus.PENDING,
             submitted_at=time.time(),
+            max_retries=retry_policy.max_retries if retry_policy is not None else 0,
         )
-        self._tasks[task_id] = info
+        self._store.put(info)
 
-        async_task = asyncio.create_task(self._run(task_id, module_id, inputs, context))
+        async_task = asyncio.create_task(self._run(task_id, module_id, inputs, context, retry_policy))
         async_task.add_done_callback(lambda _: self._async_tasks.pop(task_id, None))
         self._async_tasks[task_id] = async_task
 
@@ -119,7 +211,7 @@ class AsyncTaskManager:
 
     def get_status(self, task_id: str) -> TaskInfo | None:
         """Return the TaskInfo for a task, or None if not found."""
-        return self._tasks.get(task_id)
+        return self._store.get(task_id)
 
     def get_result(self, task_id: str) -> Any:
         """Return the result of a completed task.
@@ -128,7 +220,7 @@ class AsyncTaskManager:
             KeyError: If the task_id is not found.
             RuntimeError: If the task is not in COMPLETED status.
         """
-        info = self._tasks.get(task_id)
+        info = self._store.get(task_id)
         if info is None:
             raise KeyError(f"Task not found: {task_id}")
         if info.status != TaskStatus.COMPLETED:
@@ -136,18 +228,15 @@ class AsyncTaskManager:
         return info.result
 
     async def cancel(self, task_id: str) -> bool:
-        """Cancel a running or pending task.
-
-        Uses the CancelToken on the context if available, otherwise falls back
-        to asyncio.Task.cancel().
+        """Cancel a running, pending, or retrying task.
 
         Returns:
             True if the task was successfully cancelled, False otherwise.
         """
-        info = self._tasks.get(task_id)
+        info = self._store.get(task_id)
         if info is None:
             return False
-        if info.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        if info.status not in _ACTIVE_STATUSES:
             return False
 
         async_task = self._async_tasks.get(task_id)
@@ -158,13 +247,8 @@ class AsyncTaskManager:
         try:
             await async_task
         except asyncio.CancelledError:
-            # Expected outcome of cooperative cancellation.
             pass
         except Exception as exc:
-            # Unexpected failure from the task body (e.g., user code raised a
-            # non-CancelledError exception during cleanup). Log at WARNING
-            # with stack context — callers chose to cancel, so we must not
-            # re-raise, but silently swallowing would hide real bugs.
             _logger.warning(
                 "Task %s raised while being cancelled: %s",
                 task_id,
@@ -172,23 +256,22 @@ class AsyncTaskManager:
                 exc_info=True,
             )
 
-        # Status may have been updated by _run; force CANCELLED if still active
-        if info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        if info.status in _ACTIVE_STATUSES:
             info.status = TaskStatus.CANCELLED
             info.completed_at = time.time()
+            self._store.put(info)
 
         return True
 
     async def shutdown(self) -> None:
-        """Cancel all pending/running tasks and wait for them to finish."""
+        """Cancel all pending/running/retrying tasks and stop the reaper."""
+        self.stop_reaper()
         for task_id in list(self._async_tasks):
             await self.cancel(task_id)
 
     def list_tasks(self, status: TaskStatus | None = None) -> list[TaskInfo]:
         """Return all tasks, optionally filtered by status."""
-        if status is None:
-            return list(self._tasks.values())
-        return [t for t in self._tasks.values() if t.status == status]
+        return self._store.list(status)
 
     def cleanup(self, max_age_seconds: float = 3600.0) -> int:
         """Remove terminal-state tasks older than max_age_seconds.
@@ -198,22 +281,56 @@ class AsyncTaskManager:
         Returns:
             The number of tasks removed.
         """
-        terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
         now = time.time()
         to_remove: list[str] = []
 
-        for task_id, info in self._tasks.items():
-            if info.status not in terminal:
+        for info in self._store.list():
+            if info.status not in _TERMINAL_STATUSES:
                 continue
             ref_time = info.completed_at if info.completed_at is not None else info.submitted_at
             if now - ref_time >= max_age_seconds:
-                to_remove.append(task_id)
+                to_remove.append(info.task_id)
 
         for task_id in to_remove:
-            del self._tasks[task_id]
+            self._store.delete(task_id)
             self._async_tasks.pop(task_id, None)
 
         return len(to_remove)
+
+    def start_reaper(
+        self,
+        interval_seconds: float = 3600.0,
+        max_age_seconds: float = 3600.0,
+    ) -> None:
+        """Start a background asyncio task that periodically calls cleanup().
+
+        Args:
+            interval_seconds: How often to run cleanup (seconds).
+            max_age_seconds: Terminal tasks older than this are removed.
+
+        Raises:
+            RuntimeError: If the reaper is already running.
+        """
+        if self._reaper_task is not None and not self._reaper_task.done():
+            raise RuntimeError("Reaper is already running; call stop_reaper() first")
+        self._reaper_interval = interval_seconds
+        self._reaper_max_age = max_age_seconds
+        self._reaper_task = asyncio.create_task(self._reap_loop())
+
+    def stop_reaper(self) -> None:
+        """Stop the background reaper task. No-op if not running."""
+        if self._reaper_task is not None and not self._reaper_task.done():
+            self._reaper_task.cancel()
+        self._reaper_task = None
+
+    async def _reap_loop(self) -> None:
+        """Periodic cleanup loop executed by the reaper task."""
+        try:
+            while True:
+                await asyncio.sleep(self._reaper_interval)
+                self.cleanup(self._reaper_max_age)
+        except asyncio.CancelledError:
+            pass
 
     async def _run(
         self,
@@ -221,27 +338,63 @@ class AsyncTaskManager:
         module_id: str,
         inputs: dict[str, Any],
         context: Context | None,
+        retry_policy: RetryPolicy | None,
     ) -> None:
-        """Internal coroutine that executes a module under the concurrency semaphore."""
-        info = self._tasks[task_id]
-        try:
-            async with self._semaphore:
-                info.status = TaskStatus.RUNNING
-                info.started_at = time.time()
+        """Internal coroutine: execute a module with optional retry/backoff."""
+        info = self._store.get(task_id)
+        if info is None:
+            return
 
-                result = await self._executor.call_async(module_id, inputs, context)
+        max_retries = retry_policy.max_retries if retry_policy is not None else 0
 
-                info.status = TaskStatus.COMPLETED
+        while True:
+            try:
+                async with self._semaphore:
+                    info.status = TaskStatus.RUNNING
+                    if info.started_at is None:
+                        info.started_at = time.time()
+                    self._store.put(info)
+
+                    result = await self._executor.call_async(module_id, inputs, context)
+
+                    info.status = TaskStatus.COMPLETED
+                    info.completed_at = time.time()
+                    info.result = result
+                    self._store.put(info)
+                    return
+
+            except asyncio.CancelledError:
+                info.status = TaskStatus.CANCELLED
                 info.completed_at = time.time()
-                info.result = result
+                self._store.put(info)
+                _logger.info("Task %s cancelled", task_id)
+                return
 
-        except asyncio.CancelledError:
-            info.status = TaskStatus.CANCELLED
-            info.completed_at = time.time()
-            _logger.info("Task %s cancelled", task_id)
-
-        except Exception as exc:
-            info.status = TaskStatus.FAILED
-            info.completed_at = time.time()
-            info.error = str(exc)
-            _logger.error("Task %s failed: %s", task_id, exc, exc_info=True)
+            except Exception as exc:
+                if retry_policy is not None and info.attempt_number < max_retries:
+                    info.attempt_number += 1
+                    delay = retry_policy.delay_for(info.attempt_number)
+                    info.status = TaskStatus.RETRYING
+                    self._store.put(info)
+                    _logger.info(
+                        "Task %s failed (attempt %d/%d), retrying in %.3fs",
+                        task_id,
+                        info.attempt_number,
+                        max_retries,
+                        delay,
+                    )
+                    try:
+                        await asyncio.sleep(delay)
+                    except asyncio.CancelledError:
+                        info.status = TaskStatus.CANCELLED
+                        info.completed_at = time.time()
+                        self._store.put(info)
+                        _logger.info("Task %s cancelled during backoff", task_id)
+                        return
+                else:
+                    info.status = TaskStatus.FAILED
+                    info.completed_at = time.time()
+                    info.error = str(exc)
+                    self._store.put(info)
+                    _logger.error("Task %s failed: %s", task_id, exc, exc_info=True)
+                    return

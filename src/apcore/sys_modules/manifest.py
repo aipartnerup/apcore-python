@@ -24,7 +24,9 @@ def _compute_source_path(config: Config | None, module_id: str) -> str | None:
     return f"{source_root}/{relative_path}"
 
 
-def _serialize_annotations(annotations: ModuleAnnotations | None) -> dict[str, Any] | None:
+def _serialize_annotations(
+    annotations: ModuleAnnotations | None,
+) -> dict[str, Any] | None:
     """Convert ModuleAnnotations dataclass to a dict."""
     if annotations is None:
         return None
@@ -39,7 +41,10 @@ class ManifestModule:
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "module_id": {"type": "string", "description": "ID of the module to inspect"},
+            "module_id": {
+                "type": "string",
+                "description": "ID of the module to inspect",
+            },
         },
         "required": ["module_id"],
     }
@@ -49,9 +54,18 @@ class ManifestModule:
             "module_id": {"type": "string", "description": "Module identifier"},
             "description": {"type": "string", "description": "Module description"},
             "documentation": {"description": "Module documentation (Markdown)"},
-            "source_path": {"type": "string", "description": "Computed source file path"},
-            "input_schema": {"type": "object", "description": "Module input JSON Schema"},
-            "output_schema": {"type": "object", "description": "Module output JSON Schema"},
+            "source_path": {
+                "type": "string",
+                "description": "Computed source file path",
+            },
+            "input_schema": {
+                "type": "object",
+                "description": "Module input JSON Schema",
+            },
+            "output_schema": {
+                "type": "object",
+                "description": "Module output JSON Schema",
+            },
             "annotations": {"type": "object", "description": "Module annotations"},
             "tags": {"type": "array", "description": "Module tags"},
             "dependencies": {"type": "array", "description": "Module dependencies"},
@@ -142,14 +156,24 @@ class ManifestFullModule:
                 "default": True,
             },
             "prefix": {"type": "string", "description": "Filter modules by ID prefix"},
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter modules by tags"},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Filter modules by tags",
+            },
         },
     }
     output_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "project_name": {"type": "string", "description": "Project name from config"},
-            "module_count": {"type": "integer", "description": "Number of modules returned"},
+            "project_name": {
+                "type": "string",
+                "description": "Project name from config",
+            },
+            "module_count": {
+                "type": "integer",
+                "description": "Number of modules returned",
+            },
             "modules": {"type": "array", "description": "Module manifest entries"},
         },
         "required": ["project_name", "module_count", "modules"],

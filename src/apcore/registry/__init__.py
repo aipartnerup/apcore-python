@@ -16,6 +16,12 @@ from apcore.registry.conflicts import ConflictResult, detect_id_conflicts
 from apcore.registry.dependencies import resolve_dependencies
 from apcore.registry.entry_point import resolve_entry_point
 from apcore.registry.metadata import load_id_map, load_metadata
+from apcore.registry.multi_class import (
+    MAX_MODULE_ID_LEN,
+    class_name_to_segment,
+    discover_multi_class,
+    multi_class,
+)
 from apcore.registry.registry import MODULE_ID_PATTERN, Registry
 from apcore.registry.scanner import scan_extensions, scan_multi_root
 from apcore.registry.types import DependencyInfo, DiscoveredModule, ModuleDescriptor
@@ -28,9 +34,13 @@ __all__ = [
     "MODULE_ID_PATTERN",
     "ModuleDescriptor",
     "Registry",
+    "MAX_MODULE_ID_LEN",
+    "class_name_to_segment",
     "detect_id_conflicts",
+    "discover_multi_class",
     "load_id_map",
     "load_metadata",
+    "multi_class",
     "resolve_dependencies",
     "resolve_entry_point",
     "scan_extensions",

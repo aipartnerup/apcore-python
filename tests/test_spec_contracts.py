@@ -7,6 +7,7 @@ Clause IDs follow the pattern: <component>.<operation>.<category>.<CODE>
 
 Test naming convention: test_{clause_id_snake}_{brief_description}
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -669,9 +670,7 @@ class TestModuleErrorToDict:
             CallDepthExceededError(depth=5, max_depth=4, call_chain=["a", "b", "a"]),
         ]
         for err in errors:
-            assert isinstance(err.code, str) and len(err.code) > 0, (
-                f"{type(err).__name__}.code must be non-empty"
-            )
+            assert isinstance(err.code, str) and len(err.code) > 0, f"{type(err).__name__}.code must be non-empty"
 
     def test_module_error_invariant_ai_guidance_non_empty_when_set(self) -> None:
         """Tests module_error.invariant.ai_guidance_non_empty
@@ -741,9 +740,7 @@ class TestErrorCodesInvariants:
             ),
             (
                 ErrorCodes.CALL_FREQUENCY_EXCEEDED,
-                CallFrequencyExceededError(
-                    module_id="a", count=4, max_repeat=3, call_chain=["a"]
-                ),
+                CallFrequencyExceededError(module_id="a", count=4, max_repeat=3, call_chain=["a"]),
             ),
             (
                 ErrorCodes.EXECUTION_CANCELLED,
@@ -760,8 +757,7 @@ class TestErrorCodesInvariants:
         ]
         for expected_code, exc in cases:
             assert exc.code == expected_code, (
-                f"{type(exc).__name__}.code={exc.code!r} "
-                f"does not match ErrorCodes constant {expected_code!r}"
+                f"{type(exc).__name__}.code={exc.code!r} " f"does not match ErrorCodes constant {expected_code!r}"
             )
 
 
@@ -784,12 +780,10 @@ class TestErrorCodeDrift:
         ErrorCodes must expose INVALID_MODULE_ID as a distinct constant that
         does not equal GENERAL_INVALID_INPUT.
         """
-        assert hasattr(ErrorCodes, "INVALID_MODULE_ID"), (
-            "ErrorCodes.INVALID_MODULE_ID constant is missing"
-        )
-        assert ErrorCodes.INVALID_MODULE_ID != ErrorCodes.GENERAL_INVALID_INPUT, (
-            "INVALID_MODULE_ID must be distinct from GENERAL_INVALID_INPUT"
-        )
+        assert hasattr(ErrorCodes, "INVALID_MODULE_ID"), "ErrorCodes.INVALID_MODULE_ID constant is missing"
+        assert (
+            ErrorCodes.INVALID_MODULE_ID != ErrorCodes.GENERAL_INVALID_INPUT
+        ), "INVALID_MODULE_ID must be distinct from GENERAL_INVALID_INPUT"
 
     def test_error_codes_has_duplicate_module_id_constant(self) -> None:
         """Tests registry.register.error.DUPLICATE_MODULE_ID
@@ -797,12 +791,10 @@ class TestErrorCodeDrift:
         ErrorCodes must expose DUPLICATE_MODULE_ID as a distinct constant that
         does not equal GENERAL_INVALID_INPUT.
         """
-        assert hasattr(ErrorCodes, "DUPLICATE_MODULE_ID"), (
-            "ErrorCodes.DUPLICATE_MODULE_ID constant is missing"
-        )
-        assert ErrorCodes.DUPLICATE_MODULE_ID != ErrorCodes.GENERAL_INVALID_INPUT, (
-            "DUPLICATE_MODULE_ID must be distinct from GENERAL_INVALID_INPUT"
-        )
+        assert hasattr(ErrorCodes, "DUPLICATE_MODULE_ID"), "ErrorCodes.DUPLICATE_MODULE_ID constant is missing"
+        assert (
+            ErrorCodes.DUPLICATE_MODULE_ID != ErrorCodes.GENERAL_INVALID_INPUT
+        ), "DUPLICATE_MODULE_ID must be distinct from GENERAL_INVALID_INPUT"
 
     def test_registry_register_malformed_id_uses_invalid_module_id_code(self) -> None:
         """Tests registry.register.error.INVALID_MODULE_ID

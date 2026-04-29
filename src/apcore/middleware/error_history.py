@@ -7,5 +7,3 @@ warnings.warn(
     DeprecationWarning,
     stacklevel=2,
 )
-
-from apcore.middleware.error_history_middleware import ErrorHistoryMiddleware  # noqa: F401, E402

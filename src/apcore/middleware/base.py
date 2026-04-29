@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, TypeAlias
 
 Context: TypeAlias = Any
+
+
+@dataclass(frozen=True)
+class RetrySignal:
+    """Return value from ``Middleware.on_error`` requesting a retry.
+
+    This is distinct from returning a plain ``dict`` — a dict is interpreted
+    by :class:`~apcore.middleware.manager.MiddlewareManager` as the *final
+    recovery output* of the call. A :class:`RetrySignal` instead asks the
+    executor to re-run the module with ``inputs``; no recovery dict is produced.
+    """
+
+    inputs: dict[str, Any]
 
 
 class Middleware:
@@ -46,6 +60,6 @@ class Middleware:
         inputs: dict[str, Any],
         error: Exception,
         context: Context,
-    ) -> dict[str, Any] | None:
-        """Called when an error occurs. Return recovery dict or None."""
+    ) -> dict[str, Any] | RetrySignal | None:
+        """Called when an error occurs. Return recovery dict, RetrySignal, or None."""
         return None

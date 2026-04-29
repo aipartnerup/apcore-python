@@ -92,6 +92,18 @@ _CONSTRAINTS: dict[str, tuple[Any, str]] = {
         lambda v: isinstance(v, (int, float)) and v > 0,
         "must be a positive number",
     ),
+    "middleware.circuit_breaker.failure_threshold": (
+        lambda v: isinstance(v, int) and v >= 1,
+        "must be a positive integer",
+    ),
+    "middleware.circuit_breaker.recovery_window_ms": (
+        lambda v: isinstance(v, int) and v >= 0,
+        "must be a non-negative integer (milliseconds)",
+    ),
+    "middleware.circuit_breaker.success_threshold": (
+        lambda v: isinstance(v, int) and v >= 1,
+        "must be a positive integer",
+    ),
 }
 
 #: Default configuration values.
@@ -151,6 +163,13 @@ _DEFAULTS: dict[str, Any] = {
                 "latency_p99_ms": 5000.0,
             },
             "subscribers": [],
+        },
+    },
+    "middleware": {
+        "circuit_breaker": {
+            "failure_threshold": 5,
+            "recovery_window_ms": 60000,
+            "success_threshold": 1,
         },
     },
     "stream": {
@@ -1019,7 +1038,10 @@ class Config:
         ext_root = _get_nested(self._data, "extensions.root")
         auto_discover = _get_nested(self._data, "extensions.auto_discover", False)
         if auto_discover and ext_root and not Path(str(ext_root)).exists():
-            _logger.warning("extensions.auto_discover=true but extensions.root '%s' does not exist", ext_root)
+            _logger.warning(
+                "extensions.auto_discover=true but extensions.root '%s' does not exist",
+                ext_root,
+            )
 
         schema_strategy = _get_nested(self._data, "schema.strategy")
         schema_root = _get_nested(self._data, "schema.root")
@@ -1192,7 +1214,11 @@ Config.register_namespace(
         "enabled": True,
         "health": {"enabled": True},
         "manifest": {"enabled": True},
-        "usage": {"enabled": True, "retention_hours": 168, "bucketing_strategy": "hourly"},
+        "usage": {
+            "enabled": True,
+            "retention_hours": 168,
+            "bucketing_strategy": "hourly",
+        },
         "control": {"enabled": True},
         "events": {
             "enabled": False,

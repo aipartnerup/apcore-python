@@ -8,7 +8,15 @@ from typing import Any
 
 import pytest
 
-from apcore.async_task import AsyncTaskManager, TaskInfo, TaskStatus
+from apcore.async_task import (
+    AsyncTaskManager,
+    BackoffStrategy,
+    InMemoryTaskStore,
+    RetryPolicy,
+    TaskInfo,
+    TaskStatus,
+    TaskStore,
+)
 from apcore.context import Context
 from apcore.executor import Executor
 from apcore.registry import Registry
@@ -383,16 +391,15 @@ class TestMaxTasksLimit:
             await mgr.submit("test.simple", {"x": 1})
         await asyncio.sleep(0.1)
 
-        # Terminal tasks stay in _tasks for get_status()/get_result(), but
+        # Terminal tasks stay accessible via get_status()/get_result(), but
         # they must not block new submissions.
         assert all(
-            info.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
-            for info in mgr._tasks.values()
+            info.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED) for info in mgr.list_tasks()
         )
 
         # Submitting again should succeed without calling cleanup().
         new_id = await mgr.submit("test.simple", {"x": 99})
-        assert new_id in mgr._tasks
+        assert mgr.get_status(new_id) is not None
 
 
 class TestShutdown:
@@ -431,7 +438,339 @@ class TestAsyncTaskAutoCleanup:
         # The asyncio.Task should have been auto-removed from _async_tasks
         assert task_id not in mgr._async_tasks
 
-        # But the TaskInfo should still be in _tasks
+        # But the TaskInfo should still be accessible via the public API
         info = mgr.get_status(task_id)
         assert info is not None
         assert info.status == TaskStatus.COMPLETED
+
+
+# =============================================================================
+# New tests: TaskStore, RetryPolicy, Reaper
+# =============================================================================
+
+
+class _SpyStore:
+    """TaskStore spy that records status at the time of each put() call."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, TaskInfo] = {}
+        self.put_statuses: list[TaskStatus] = []
+
+    def get(self, task_id: str) -> TaskInfo | None:
+        return self._data.get(task_id)
+
+    def put(self, info: TaskInfo) -> None:
+        self._data[info.task_id] = info
+        self.put_statuses.append(info.status)
+
+    def delete(self, task_id: str) -> None:
+        self._data.pop(task_id, None)
+
+    def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+        if status is None:
+            return list(self._data.values())
+        return [t for t in self._data.values() if t.status == status]
+
+
+class _CountingModule:
+    """Module that fails on the first N attempts, then succeeds."""
+
+    input_schema = None
+    output_schema = None
+
+    def __init__(self, fail_times: int) -> None:
+        self._fail_times = fail_times
+        self._calls = 0
+
+    def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+        self._calls += 1
+        if self._calls <= self._fail_times:
+            raise RuntimeError(f"intentional failure #{self._calls}")
+        return {"calls": self._calls}
+
+
+class TestTaskStoreProtocol:
+    """TC-001/TC-002: InMemoryTaskStore satisfies TaskStore protocol."""
+
+    def test_in_memory_store_satisfies_protocol(self) -> None:
+        assert isinstance(InMemoryTaskStore(), TaskStore)
+
+    def test_custom_store_satisfies_protocol(self) -> None:
+        assert isinstance(_SpyStore(), TaskStore)
+
+
+class TestInMemoryTaskStore:
+    """TC-003..006: InMemoryTaskStore CRUD and list filtering."""
+
+    def _make_info(self, status: TaskStatus = TaskStatus.COMPLETED) -> TaskInfo:
+        import uuid
+
+        return TaskInfo(
+            task_id=str(uuid.uuid4()),
+            module_id="test.mod",
+            status=status,
+            submitted_at=time.time(),
+        )
+
+    def test_put_then_get_returns_same_object(self) -> None:
+        store = InMemoryTaskStore()
+        info = self._make_info()
+        store.put(info)
+        assert store.get(info.task_id) is info
+
+    def test_get_unknown_returns_none(self) -> None:
+        assert InMemoryTaskStore().get("nonexistent") is None
+
+    def test_delete_removes_entry(self) -> None:
+        store = InMemoryTaskStore()
+        info = self._make_info()
+        store.put(info)
+        store.delete(info.task_id)
+        assert store.get(info.task_id) is None
+
+    def test_list_status_filter(self) -> None:
+        store = InMemoryTaskStore()
+        completed = self._make_info(TaskStatus.COMPLETED)
+        failed = self._make_info(TaskStatus.FAILED)
+        store.put(completed)
+        store.put(failed)
+        result = store.list(status=TaskStatus.COMPLETED)
+        assert len(result) == 1
+        assert result[0] is completed
+
+
+class TestCustomStore:
+    """TC-007/TC-008: AsyncTaskManager routes all state through a custom store."""
+
+    @pytest.mark.asyncio
+    async def test_manager_accepts_custom_store(self, executor: Executor) -> None:
+        spy = _SpyStore()
+        mgr = AsyncTaskManager(executor, store=spy)
+        task_id = await mgr.submit("test.simple", {"x": 1})
+        await asyncio.sleep(0.1)
+
+        assert spy.get(task_id) is not None
+        assert spy.get(task_id).status == TaskStatus.COMPLETED  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_put_called_for_each_state_transition(self, executor: Executor) -> None:
+        spy = _SpyStore()
+        mgr = AsyncTaskManager(executor, store=spy)
+        await mgr.submit("test.simple", {"x": 1})
+        await asyncio.sleep(0.1)
+
+        # Must see PENDING (from submit), RUNNING, COMPLETED (from _run)
+        assert TaskStatus.PENDING in spy.put_statuses
+        assert TaskStatus.RUNNING in spy.put_statuses
+        assert TaskStatus.COMPLETED in spy.put_statuses
+        # Order: PENDING first, COMPLETED last
+        assert spy.put_statuses[0] == TaskStatus.PENDING
+        assert spy.put_statuses[-1] == TaskStatus.COMPLETED
+
+
+class TestRetryPolicyDelayFor:
+    """TC-009/010/011: delay_for() formulas for each BackoffStrategy."""
+
+    def test_fixed_strategy(self) -> None:
+        policy = RetryPolicy(max_retries=3, backoff=BackoffStrategy.FIXED, base_delay_seconds=2.0)
+        assert [policy.delay_for(n) for n in range(1, 4)] == [2.0, 2.0, 2.0]
+
+    def test_linear_strategy(self) -> None:
+        policy = RetryPolicy(max_retries=3, backoff=BackoffStrategy.LINEAR, base_delay_seconds=1.0)
+        assert [policy.delay_for(n) for n in range(1, 4)] == [1.0, 2.0, 3.0]
+
+    def test_exponential_strategy(self) -> None:
+        policy = RetryPolicy(max_retries=3, backoff=BackoffStrategy.EXPONENTIAL, base_delay_seconds=1.0)
+        assert [policy.delay_for(n) for n in range(1, 4)] == [1.0, 2.0, 4.0]
+
+
+class TestRetryLifecycle:
+    """TC-012..017: Retry behaviour in AsyncTaskManager."""
+
+    @pytest.fixture
+    def failing_executor(self) -> Executor:
+        reg = Registry()
+        reg.register("test.failing", FailingModule())
+        return Executor(registry=reg)
+
+    @pytest.mark.asyncio
+    async def test_no_retry_policy_goes_straight_to_failed(self, failing_executor: Executor) -> None:
+        """TC-012: without retry_policy, task goes FAILED immediately."""
+        mgr = AsyncTaskManager(failing_executor)
+        task_id = await mgr.submit("test.failing", {})
+        await asyncio.sleep(0.1)
+        info = mgr.get_status(task_id)
+        assert info is not None
+        assert info.status == TaskStatus.FAILED
+        assert info.attempt_number == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted_then_failed(self, failing_executor: Executor) -> None:
+        """TC-013: after max_retries the task ends FAILED with correct attempt_number."""
+        policy = RetryPolicy(max_retries=2, backoff=BackoffStrategy.FIXED, base_delay_seconds=0.01)
+        mgr = AsyncTaskManager(failing_executor)
+        task_id = await mgr.submit("test.failing", {}, retry_policy=policy)
+        await asyncio.sleep(0.5)
+        info = mgr.get_status(task_id)
+        assert info is not None
+        assert info.status == TaskStatus.FAILED
+        assert info.attempt_number == 2
+        assert info.max_retries == 2
+
+    @pytest.mark.asyncio
+    async def test_status_sequence_includes_retrying(self, failing_executor: Executor) -> None:
+        """TC-015: status transitions include RETRYING between attempts."""
+        spy = _SpyStore()
+        policy = RetryPolicy(max_retries=1, backoff=BackoffStrategy.FIXED, base_delay_seconds=0.01)
+        mgr = AsyncTaskManager(failing_executor, store=spy)
+        await mgr.submit("test.failing", {}, retry_policy=policy)
+        await asyncio.sleep(0.3)
+
+        assert TaskStatus.RETRYING in spy.put_statuses
+        # Verify ordering: first RUNNING before first RETRYING
+        first_running = spy.put_statuses.index(TaskStatus.RUNNING)
+        first_retrying = spy.put_statuses.index(TaskStatus.RETRYING)
+        assert first_running < first_retrying
+
+    @pytest.mark.asyncio
+    async def test_succeeds_on_retry(self, executor: Executor) -> None:
+        """TC-016: task completes on retry N with attempt_number == N."""
+        counting = _CountingModule(fail_times=1)
+        reg = Registry()
+        reg.register("test.counting", counting)
+        exec_ = Executor(registry=reg)
+        policy = RetryPolicy(max_retries=2, backoff=BackoffStrategy.FIXED, base_delay_seconds=0.01)
+        mgr = AsyncTaskManager(exec_)
+        task_id = await mgr.submit("test.counting", {}, retry_policy=policy)
+        await asyncio.sleep(0.3)
+        info = mgr.get_status(task_id)
+        assert info is not None
+        assert info.status == TaskStatus.COMPLETED
+        assert info.attempt_number == 1
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_retrying(self, failing_executor: Executor) -> None:
+        """TC-017: cancelling while in RETRYING state stops the retry loop."""
+        # Long delay so the task will be in RETRYING when we cancel
+        policy = RetryPolicy(max_retries=5, backoff=BackoffStrategy.FIXED, base_delay_seconds=10.0)
+        mgr = AsyncTaskManager(failing_executor)
+        task_id = await mgr.submit("test.failing", {}, retry_policy=policy)
+
+        # Wait long enough for first attempt to fail and enter RETRYING
+        await asyncio.sleep(0.2)
+        info = mgr.get_status(task_id)
+        assert info is not None
+        assert info.status == TaskStatus.RETRYING
+
+        cancelled = await mgr.cancel(task_id)
+        assert cancelled is True
+        info = mgr.get_status(task_id)
+        assert info is not None
+        assert info.status == TaskStatus.CANCELLED
+
+
+class TestReaper:
+    """TC-018..023: Reaper lifecycle and auto-cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_reaper_removes_terminal_tasks(self, executor: Executor) -> None:
+        """TC-018: terminal tasks are removed automatically after max_age."""
+        mgr = AsyncTaskManager(executor)
+        task_id = await mgr.submit("test.simple", {"x": 1})
+        await asyncio.sleep(0.1)
+        assert mgr.get_status(task_id) is not None
+
+        mgr.start_reaper(interval_seconds=0.05, max_age_seconds=0.0)
+        await asyncio.sleep(0.2)
+        mgr.stop_reaper()
+
+        assert mgr.get_status(task_id) is None
+
+    @pytest.mark.asyncio
+    async def test_reaper_does_not_remove_active_tasks(self, executor: Executor) -> None:
+        """TC-019: active tasks are not removed by the reaper."""
+        reg = Registry()
+        reg.register("test.slow", SlowAsyncModule())
+        exec_ = Executor(registry=reg)
+        mgr = AsyncTaskManager(exec_)
+        task_id = await mgr.submit("test.slow", {"delay": 10.0})
+        await asyncio.sleep(0.05)
+
+        mgr.start_reaper(interval_seconds=0.05, max_age_seconds=0.0)
+        await asyncio.sleep(0.2)
+        mgr.stop_reaper()
+
+        info = mgr.get_status(task_id)
+        assert info is not None
+        assert info.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+        await mgr.cancel(task_id)
+
+    @pytest.mark.asyncio
+    async def test_stop_reaper_halts_cleanup(self, executor: Executor) -> None:
+        """TC-020: stop_reaper() prevents further automatic cleanup."""
+        mgr = AsyncTaskManager(executor)
+        mgr.start_reaper(interval_seconds=0.05, max_age_seconds=0.0)
+        mgr.stop_reaper()
+
+        task_id = await mgr.submit("test.simple", {"x": 1})
+        await asyncio.sleep(0.2)
+
+        # Reaper is stopped; task should still be present
+        assert mgr.get_status(task_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_reaper(self, executor: Executor) -> None:
+        """TC-021: shutdown() stops the reaper without error."""
+        mgr = AsyncTaskManager(executor)
+        mgr.start_reaper(interval_seconds=60.0)
+        await mgr.shutdown()
+        # No exception means reaper was stopped cleanly
+
+    def test_stop_reaper_noop_when_not_running(self, executor: Executor) -> None:
+        """TC-022: stop_reaper() is safe when no reaper is active."""
+        mgr = AsyncTaskManager(executor)
+        mgr.stop_reaper()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_double_start_reaper_raises(self, executor: Executor) -> None:
+        """TC-023: starting the reaper twice raises RuntimeError."""
+        mgr = AsyncTaskManager(executor)
+        mgr.start_reaper(interval_seconds=60.0)
+        with pytest.raises(RuntimeError, match="already running"):
+            mgr.start_reaper(interval_seconds=60.0)
+        mgr.stop_reaper()
+
+
+class TestRegression:
+    """TC-024/025: Ensure existing behaviour is unchanged."""
+
+    def test_all_task_statuses_present(self) -> None:
+        """TC-024: TaskStatus has all six expected values."""
+        expected = {
+            "pending",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "retrying",
+        }
+        actual = {s.value for s in TaskStatus}
+        assert expected == actual
+
+    @pytest.mark.asyncio
+    async def test_existing_api_unchanged(self, executor: Executor) -> None:
+        """TC-025: basic lifecycle without optional args still works."""
+        mgr = AsyncTaskManager(executor)
+        task_id = await mgr.submit("test.simple", {"x": 5})
+        await asyncio.sleep(0.1)
+
+        info = mgr.get_status(task_id)
+        assert info is not None
+        assert info.status == TaskStatus.COMPLETED
+        assert mgr.get_result(task_id) == {"value": 5}
+        assert len(mgr.list_tasks()) == 1
+
+        removed = mgr.cleanup(max_age_seconds=0.0)
+        assert removed == 1
+
+        await mgr.shutdown()

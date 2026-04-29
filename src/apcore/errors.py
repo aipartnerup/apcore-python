@@ -55,6 +55,8 @@ __all__ = [
     "ModuleLoadError",
     "ModuleExecuteError",
     "ReloadFailedError",
+    "ModuleReloadConflictError",
+    "SysModuleRegistrationError",
     "DependencyNotFoundError",
     "DependencyVersionMismatchError",
     "TaskLimitExceededError",
@@ -63,6 +65,7 @@ __all__ = [
     "ModuleIdConflictError",
     "InvalidSegmentError",
     "IdTooLongError",
+    "CircuitOpenError",
     "ErrorCodes",
     "ErrorCodeCollisionError",
     "ErrorCodeRegistry",
@@ -441,6 +444,31 @@ class ModuleTimeoutError(ModuleError):
         return self.details["timeout_ms"]
 
 
+class CircuitOpenError(ModuleError):
+    """Raised when CircuitBreakerMiddleware rejects a call because the circuit is open."""
+
+    _default_retryable: bool | None = True
+
+    def __init__(self, module_id: str, **kwargs: Any) -> None:
+        kwargs.setdefault(
+            "ai_guidance",
+            f"Module '{module_id}' is temporarily unavailable (circuit open). "
+            "The circuit will enter HALF_OPEN after the recovery window elapses. "
+            "Retry the request after a short delay.",
+        )
+        super().__init__(
+            code="CIRCUIT_OPEN",
+            message=f"Circuit open for module '{module_id}' — call rejected",
+            details={"module_id": module_id},
+            **kwargs,
+        )
+
+    @property
+    def module_id(self) -> str:
+        """The module whose circuit is open."""
+        return self.details["module_id"]
+
+
 class SchemaValidationError(ModuleError):
     """Raised when schema validation fails."""
 
@@ -508,9 +536,7 @@ class CallDepthExceededError(ModuleError):
 
     _default_retryable: bool | None = False
 
-    def __init__(
-        self, depth: int, max_depth: int, call_chain: list[str], **kwargs: Any
-    ) -> None:
+    def __init__(self, depth: int, max_depth: int, call_chain: list[str], **kwargs: Any) -> None:
         kwargs.setdefault(
             "ai_guidance",
             f"Call depth {depth} exceeds maximum {max_depth}. "
@@ -620,9 +646,7 @@ class FuncMissingTypeHintError(ModuleError):
 
     _default_retryable: bool | None = False
 
-    def __init__(
-        self, *, function_name: str, parameter_name: str, **kwargs: Any
-    ) -> None:
+    def __init__(self, *, function_name: str, parameter_name: str, **kwargs: Any) -> None:
         super().__init__(
             code="FUNC_MISSING_TYPE_HINT",
             message=(
@@ -945,9 +969,7 @@ class DependencyNotFoundError(ModuleError):
         )
         super().__init__(
             code="DEPENDENCY_NOT_FOUND",
-            message=(
-                f"Module '{module_id}' has unsatisfied required dependency '{dependency_id}'"
-            ),
+            message=(f"Module '{module_id}' has unsatisfied required dependency '{dependency_id}'"),
             details={"module_id": module_id, "dependency_id": dependency_id},
             **kwargs,
         )
@@ -998,6 +1020,33 @@ class ReloadFailedError(ModuleError):
         super().__init__(
             code="RELOAD_FAILED",
             message=f"Failed to reload module '{module_id}': {reason}",
+            details={"module_id": module_id, "reason": reason},
+            **kwargs,
+        )
+
+
+class ModuleReloadConflictError(ModuleError):
+    """Raised when both module_id and path_filter are provided to reload_module."""
+
+    _default_retryable: bool | None = False
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(
+            code="MODULE_RELOAD_CONFLICT",
+            message="'module_id' and 'path_filter' are mutually exclusive",
+            **kwargs,
+        )
+
+
+class SysModuleRegistrationError(ModuleError):
+    """Raised when a system module fails to register and fail_on_error=True."""
+
+    _default_retryable: bool | None = False
+
+    def __init__(self, module_id: str, reason: str, **kwargs: Any) -> None:
+        super().__init__(
+            code="SYS_MODULE_REGISTRATION_FAILED",
+            message=f"System module '{module_id}' failed to register: {reason}",
             details={"module_id": module_id, "reason": reason},
             **kwargs,
         )
@@ -1161,10 +1210,7 @@ class IdTooLongError(ModuleError):
     ) -> None:
         super().__init__(
             code="ID_TOO_LONG",
-            message=(
-                f"Derived module ID in '{file_path}' exceeds 192 characters "
-                f"(length: {len(module_id)})"
-            ),
+            message=(f"Derived module ID in '{file_path}' exceeds 192 characters " f"(length: {len(module_id)})"),
             details={
                 "file_path": file_path,
                 "module_id": module_id,
@@ -1227,6 +1273,7 @@ class ErrorCodes:
     BINDING_FILE_INVALID = "BINDING_FILE_INVALID"
     CIRCULAR_DEPENDENCY = "CIRCULAR_DEPENDENCY"
     MIDDLEWARE_CHAIN_ERROR = "MIDDLEWARE_CHAIN_ERROR"
+    CIRCUIT_OPEN = "CIRCUIT_OPEN"
     APPROVAL_DENIED = "APPROVAL_DENIED"
     APPROVAL_TIMEOUT = "APPROVAL_TIMEOUT"
     APPROVAL_PENDING = "APPROVAL_PENDING"
@@ -1242,6 +1289,8 @@ class ErrorCodes:
     MODULE_ID_CONFLICT = "MODULE_ID_CONFLICT"
     INVALID_SEGMENT = "INVALID_SEGMENT"
     ID_TOO_LONG = "ID_TOO_LONG"
+    MODULE_RELOAD_CONFLICT = "MODULE_RELOAD_CONFLICT"
+    SYS_MODULE_REGISTRATION_FAILED = "SYS_MODULE_REGISTRATION_FAILED"
 
     # Note: this class is intentionally NOT instantiated. All callers access the
     # constants as class attributes (`ErrorCodes.MODULE_NOT_FOUND`). A previous
@@ -1270,6 +1319,7 @@ FRAMEWORK_ERROR_CODE_PREFIXES: frozenset[str] = frozenset(
         "FUNC_",
         "BINDING_",
         "MIDDLEWARE_",
+        "CIRCUIT_",
         "APPROVAL_",
         "VERSION_",
         "ERROR_CODE_",
@@ -1281,9 +1331,7 @@ FRAMEWORK_ERROR_CODE_PREFIXES: frozenset[str] = frozenset(
 def _collect_framework_codes() -> frozenset[str]:
     """Collect all error codes defined on ``ErrorCodes``."""
     return frozenset(
-        value
-        for name, value in vars(ErrorCodes).items()
-        if not name.startswith("_") and isinstance(value, str)
+        value for name, value in vars(ErrorCodes).items() if not name.startswith("_") and isinstance(value, str)
     )
 
 
@@ -1375,14 +1423,10 @@ class ErrorCodeCollisionError(ModuleError):
 
     _default_retryable: bool | None = False
 
-    def __init__(
-        self, code: str, module_id: str, conflict_source: str, **kwargs: Any
-    ) -> None:
+    def __init__(self, code: str, module_id: str, conflict_source: str, **kwargs: Any) -> None:
         super().__init__(
             code="ERROR_CODE_COLLISION",
-            message=(
-                f"Error code '{code}' from module '{module_id}' collides with {conflict_source}"
-            ),
+            message=(f"Error code '{code}' from module '{module_id}' collides with {conflict_source}"),
             details={
                 "error_code": code,
                 "module_id": module_id,

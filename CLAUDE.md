@@ -46,7 +46,7 @@ The core of `apcore` is **task orchestration and execution specifications**. It 
 ### Formatting & Linting
 - After changes, always run:
   - ruff check --fix .
-  - black .
+  - ruff format .
   - pyright .
 - Zero errors/warnings before commit.
 

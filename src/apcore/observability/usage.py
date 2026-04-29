@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from apcore.middleware import Middleware
 __all__ = [
     "CallerUsageSummary",
     "HourlyBucket",
+    "ModulePrometheusStats",
     "ModuleUsageDetail",
     "ModuleUsageSummary",
     "UsageCollector",
@@ -69,6 +71,29 @@ class ModuleUsageDetail(ModuleUsageSummary):
 
     callers: list[CallerUsageSummary] = field(default_factory=list)
     hourly_distribution: list[HourlyBucket] = field(default_factory=list)
+
+
+@dataclass
+class ModulePrometheusStats:
+    """Per-module stats for Prometheus export."""
+
+    module_id: str
+    success_count: int
+    error_count: int
+    error_rate: float
+    p50_latency_ms: float
+    p95_latency_ms: float
+    p99_latency_ms: float
+
+
+def _compute_percentile(latencies: list[float], p: float) -> float:
+    """Compute the p-th percentile from a sorted-or-unsorted list using nearest-rank."""
+    if not latencies:
+        return 0.0
+    sorted_lat = sorted(latencies)
+    rank = math.ceil(p / 100.0 * len(sorted_lat))
+    idx = max(min(rank, len(sorted_lat)) - 1, 0)
+    return sorted_lat[idx]
 
 
 def _parse_period(period: str) -> timedelta:
@@ -130,7 +155,12 @@ class UsageCollector:
         else:
             now = datetime.fromisoformat(timestamp)
         bk = _bucket_key(now)
-        rec = UsageRecord(timestamp=timestamp, caller_id=caller_id, latency_ms=latency_ms, success=success)
+        rec = UsageRecord(
+            timestamp=timestamp,
+            caller_id=caller_id,
+            latency_ms=latency_ms,
+            success=success,
+        )
         with self._lock:
             mod = self._data.setdefault(module_id, {})
             bucket = mod.setdefault(bk, [])
@@ -157,10 +187,18 @@ class UsageCollector:
             return self._build_detail(module_id, cutoff, prev_cutoff, now)
 
     def _collect_records(self, module_id: str, start: datetime, end: datetime) -> list[UsageRecord]:
-        """Collect all records for a module between start and end. Must hold lock."""
+        """Collect all records for a module between start and end. Must hold lock.
+
+        Pre-filters by bucket key (hourly prefix) before checking individual
+        record timestamps to avoid scanning buckets outside the time window.
+        """
         buckets = self._data.get(module_id, {})
+        start_key = _bucket_key(start)
+        end_key = _bucket_key(end)
         records: list[UsageRecord] = []
-        for _bk, recs in buckets.items():
+        for bk, recs in buckets.items():
+            if bk < start_key or bk > end_key:
+                continue
             for r in recs:
                 ts = datetime.fromisoformat(r.timestamp)
                 if start <= ts <= end:
@@ -264,6 +302,79 @@ class UsageCollector:
         expired = [bk for bk in buckets if bk < cutoff_key]
         for bk in expired:
             del buckets[bk]
+
+    def get_module_stats(self) -> list[ModulePrometheusStats]:
+        """Return per-module Prometheus stats (p50/p95/p99) for all tracked modules.
+
+        Holds the lock for the entire computation to avoid TOCTOU races and
+        to be consistent with every other method in this class.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=24)
+        with self._lock:
+            stats: list[ModulePrometheusStats] = []
+            for mid in self._data:
+                records = self._collect_records(mid, cutoff, now)
+                call_count = len(records)
+                error_count = sum(1 for r in records if not r.success)
+                success_count = call_count - error_count
+                error_rate = (error_count / call_count) if call_count else 0.0
+                latencies = [r.latency_ms for r in records]
+                stats.append(
+                    ModulePrometheusStats(
+                        module_id=mid,
+                        success_count=success_count,
+                        error_count=error_count,
+                        error_rate=error_rate,
+                        p50_latency_ms=_compute_percentile(latencies, 50),
+                        p95_latency_ms=_compute_percentile(latencies, 95),
+                        p99_latency_ms=_compute_percentile(latencies, 99),
+                    )
+                )
+        return stats
+
+    def export_prometheus(self) -> str:
+        """Export usage metrics in Prometheus text format.
+
+        Produces five metric families per module:
+          apcore_usage_calls_total{module_id, status}
+          apcore_usage_error_rate{module_id}
+          apcore_usage_p50_latency_ms{module_id}
+          apcore_usage_p95_latency_ms{module_id}
+          apcore_usage_p99_latency_ms{module_id}
+        """
+        all_stats = self.get_module_stats()
+        lines: list[str] = []
+
+        if all_stats:
+            lines.append("# HELP apcore_usage_calls_total Total usage calls by module and status")
+            lines.append("# TYPE apcore_usage_calls_total counter")
+            for s in all_stats:
+                mid = s.module_id
+                lines.append(f'apcore_usage_calls_total{{module_id="{mid}",status="success"}} {s.success_count}')
+                lines.append(f'apcore_usage_calls_total{{module_id="{mid}",status="error"}} {s.error_count}')
+
+            lines.append("# HELP apcore_usage_error_rate Error rate per module (0.0-1.0)")
+            lines.append("# TYPE apcore_usage_error_rate gauge")
+            for s in all_stats:
+                lines.append(f'apcore_usage_error_rate{{module_id="{s.module_id}"}} {s.error_rate}')
+
+            lines.append("# HELP apcore_usage_p50_latency_ms P50 latency in milliseconds")
+            lines.append("# TYPE apcore_usage_p50_latency_ms gauge")
+            for s in all_stats:
+                lines.append(f'apcore_usage_p50_latency_ms{{module_id="{s.module_id}"}} {s.p50_latency_ms}')
+
+            lines.append("# HELP apcore_usage_p95_latency_ms P95 latency in milliseconds")
+            lines.append("# TYPE apcore_usage_p95_latency_ms gauge")
+            for s in all_stats:
+                lines.append(f'apcore_usage_p95_latency_ms{{module_id="{s.module_id}"}} {s.p95_latency_ms}')
+
+            lines.append("# HELP apcore_usage_p99_latency_ms P99 latency in milliseconds")
+            lines.append("# TYPE apcore_usage_p99_latency_ms gauge")
+            for s in all_stats:
+                lines.append(f'apcore_usage_p99_latency_ms{{module_id="{s.module_id}"}} {s.p99_latency_ms}')
+
+        return "\n".join(lines)
 
 
 class UsageMiddleware(Middleware):

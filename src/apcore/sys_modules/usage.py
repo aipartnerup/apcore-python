@@ -68,15 +68,25 @@ class UsageSummaryModule:
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "period": {"type": "string", "description": "Time period for usage data", "default": "24h"},
+            "period": {
+                "type": "string",
+                "description": "Time period for usage data",
+                "default": "24h",
+            },
         },
     }
     output_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "period": {"type": "string", "description": "Requested time period"},
-            "total_calls": {"type": "integer", "description": "Total calls across all modules"},
-            "total_errors": {"type": "integer", "description": "Total errors across all modules"},
+            "total_calls": {
+                "type": "integer",
+                "description": "Total calls across all modules",
+            },
+            "total_errors": {
+                "type": "integer",
+                "description": "Total errors across all modules",
+            },
             "modules": {"type": "array", "description": "Per-module usage entries"},
         },
         "required": ["period", "total_calls", "total_errors", "modules"],
@@ -211,8 +221,15 @@ class UsageModule:
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "module_id": {"type": "string", "description": "ID of the module to inspect"},
-            "period": {"type": "string", "description": "Time period for usage data", "default": "24h"},
+            "module_id": {
+                "type": "string",
+                "description": "ID of the module to inspect",
+            },
+            "period": {
+                "type": "string",
+                "description": "Time period for usage data",
+                "default": "24h",
+            },
         },
         "required": ["module_id"],
     }
@@ -221,13 +238,28 @@ class UsageModule:
         "properties": {
             "module_id": {"type": "string", "description": "Module identifier"},
             "period": {"type": "string", "description": "Requested time period"},
-            "call_count": {"type": "integer", "description": "Total calls in the period"},
-            "error_count": {"type": "integer", "description": "Total errors in the period"},
-            "avg_latency_ms": {"type": "number", "description": "Average latency in milliseconds"},
-            "p99_latency_ms": {"type": "number", "description": "99th percentile latency in milliseconds"},
+            "call_count": {
+                "type": "integer",
+                "description": "Total calls in the period",
+            },
+            "error_count": {
+                "type": "integer",
+                "description": "Total errors in the period",
+            },
+            "avg_latency_ms": {
+                "type": "number",
+                "description": "Average latency in milliseconds",
+            },
+            "p99_latency_ms": {
+                "type": "number",
+                "description": "99th percentile latency in milliseconds",
+            },
             "trend": {"type": "string", "description": "Usage trend indicator"},
             "callers": {"type": "array", "description": "Per-caller usage breakdown"},
-            "hourly_distribution": {"type": "array", "description": "Hourly call/error distribution"},
+            "hourly_distribution": {
+                "type": "array",
+                "description": "Hourly call/error distribution",
+            },
         },
         "required": [
             "module_id",

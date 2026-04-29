@@ -11,7 +11,12 @@ from apcore.observability.error_history import ErrorHistory
 from apcore.observability.metrics import MetricsCollector, estimate_p99_latency_ms
 from apcore.registry.registry import Registry
 
-__all__ = ["HealthSummaryModule", "HealthModule", "HealthModuleModule", "classify_health_status"]
+__all__ = [
+    "HealthSummaryModule",
+    "HealthModule",
+    "HealthModuleModule",
+    "classify_health_status",
+]
 
 # Default thresholds for status classification.
 _DEFAULT_HEALTHY_THRESHOLD = 0.01  # < 1% error rate
@@ -85,7 +90,10 @@ class HealthSummaryModule:
         "type": "object",
         "properties": {
             "project": {"type": "object", "description": "Project information"},
-            "summary": {"type": "object", "description": "Aggregated health counts by status"},
+            "summary": {
+                "type": "object",
+                "description": "Aggregated health counts by status",
+            },
             "modules": {"type": "array", "description": "Per-module health entries"},
         },
         "required": ["project", "summary", "modules"],
@@ -193,8 +201,15 @@ class HealthModule:
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "module_id": {"type": "string", "description": "ID of the module to inspect"},
-            "error_limit": {"type": "integer", "description": "Max number of recent errors to return", "default": 10},
+            "module_id": {
+                "type": "string",
+                "description": "ID of the module to inspect",
+            },
+            "error_limit": {
+                "type": "integer",
+                "description": "Max number of recent errors to return",
+                "default": 10,
+            },
         },
         "required": ["module_id"],
     }
@@ -202,12 +217,24 @@ class HealthModule:
         "type": "object",
         "properties": {
             "module_id": {"type": "string", "description": "Module identifier"},
-            "status": {"type": "string", "description": "Health status: healthy, degraded, error, or unknown"},
+            "status": {
+                "type": "string",
+                "description": "Health status: healthy, degraded, error, or unknown",
+            },
             "total_calls": {"type": "integer", "description": "Total number of calls"},
             "error_count": {"type": "integer", "description": "Total number of errors"},
-            "error_rate": {"type": "number", "description": "Error rate as a float (0.0-1.0)"},
-            "avg_latency_ms": {"type": "number", "description": "Average latency in milliseconds"},
-            "p99_latency_ms": {"type": "number", "description": "99th percentile latency in milliseconds"},
+            "error_rate": {
+                "type": "number",
+                "description": "Error rate as a float (0.0-1.0)",
+            },
+            "avg_latency_ms": {
+                "type": "number",
+                "description": "Average latency in milliseconds",
+            },
+            "p99_latency_ms": {
+                "type": "number",
+                "description": "99th percentile latency in milliseconds",
+            },
             "recent_errors": {"type": "array", "description": "Recent error entries"},
         },
         "required": ["module_id", "status", "total_calls", "error_count", "error_rate"],

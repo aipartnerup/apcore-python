@@ -1,9 +1,13 @@
-"""Event subscribers for webhook and A2A protocol delivery (PRD F9)."""
+"""Event subscribers for webhook, A2A, file, stdout, and filter delivery (PRD F9, Issue #36)."""
 
 from __future__ import annotations
 
 import asyncio
+import fnmatch
+import json
 import logging
+import os
+import sys
 from dataclasses import asdict
 
 try:
@@ -11,9 +15,17 @@ try:
 except ImportError:
     aiohttp = None  # type: ignore[assignment]
 
-from apcore.events.emitter import ApCoreEvent
+from apcore.events.emitter import ApCoreEvent, EventSubscriber
 
-__all__ = ["WebhookSubscriber", "A2ASubscriber"]
+__all__ = [
+    "WebhookSubscriber",
+    "A2ASubscriber",
+    "FileSubscriber",
+    "StdoutSubscriber",
+    "FilterSubscriber",
+]
+
+_SEVERITY_ORDER: dict[str, int] = {"info": 0, "warn": 1, "error": 2, "fatal": 3}
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +101,106 @@ class WebhookSubscriber:
                 attempts,
                 last_error,
             )
+
+
+class FileSubscriber:
+    """Writes events to a local file (built-in type: 'file')."""
+
+    def __init__(
+        self,
+        path: str,
+        append: bool = True,
+        output_format: str = "json",
+        rotate_bytes: int | None = None,
+    ) -> None:
+        self._path = path
+        self._append = append
+        self._format = output_format
+        self._rotate_bytes = rotate_bytes
+
+    async def on_event(self, event: ApCoreEvent) -> None:
+        try:
+            if (
+                self._rotate_bytes is not None
+                and os.path.exists(self._path)
+                and os.path.getsize(self._path) >= self._rotate_bytes
+            ):
+                os.rename(self._path, f"{self._path}.1")
+
+            mode = "a" if self._append else "w"
+            with open(self._path, mode, encoding="utf-8") as fh:
+                if self._format == "json":
+                    fh.write(json.dumps(asdict(event)) + "\n")
+                else:
+                    fh.write(
+                        f"[{event.timestamp}] [{event.severity.upper()}] "
+                        f"{event.event_type} module={event.module_id} data={event.data}\n"
+                    )
+        except Exception:
+            logger.exception(
+                "FileSubscriber failed to write event %s to %s",
+                event.event_type,
+                self._path,
+            )
+
+
+class StdoutSubscriber:
+    """Writes events to stdout (built-in type: 'stdout')."""
+
+    def __init__(
+        self,
+        output_format: str = "text",
+        level_filter: str | None = None,
+    ) -> None:
+        self._format = output_format
+        self._level_filter = level_filter
+
+    async def on_event(self, event: ApCoreEvent) -> None:
+        if self._level_filter is not None:
+            min_level = _SEVERITY_ORDER.get(self._level_filter, 0)
+            event_level = _SEVERITY_ORDER.get(event.severity, 0)
+            if event_level < min_level:
+                return
+
+        if self._format == "json":
+            line = json.dumps(asdict(event))
+        else:
+            line = (
+                f"[{event.timestamp}] [{event.severity.upper()}] "
+                f"{event.event_type} module={event.module_id} data={event.data}"
+            )
+        print(line, file=sys.stdout)
+
+
+class FilterSubscriber:
+    """Wraps a delegate subscriber with event-name filtering (built-in type: 'filter').
+
+    Matching rules:
+    - If include_events is set, forward only events matching any pattern in the list.
+    - Otherwise, if exclude_events is set, discard events matching any pattern.
+    - If neither is set, all events are forwarded.
+    """
+
+    def __init__(
+        self,
+        delegate: EventSubscriber,
+        include_events: list[str] | None = None,
+        exclude_events: list[str] | None = None,
+    ) -> None:
+        self._delegate = delegate
+        self._include_events = include_events
+        self._exclude_events = exclude_events
+
+    async def on_event(self, event: ApCoreEvent) -> None:
+        if self._matches(event.event_type):
+            await self._delegate.on_event(event)
+
+    def _matches(self, event_type: str) -> bool:
+        if self._include_events is not None:
+            return any(fnmatch.fnmatch(event_type, pattern) for pattern in self._include_events)
+        if self._exclude_events is not None:
+            return not any(fnmatch.fnmatch(event_type, pattern) for pattern in self._exclude_events)
+        return True
 
 
 class A2ASubscriber:
