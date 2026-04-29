@@ -103,7 +103,9 @@ A schema-enforced module standard for the AI-Perceivable era.
 | `EventEmitter` | Event system -- subscribe, emit, flush |
 | `WebhookSubscriber` / `A2ASubscriber` | Built-in event subscribers |
 | `ExtensionManager` | Unified extension point management |
-| `AsyncTaskManager` | Background module execution with status tracking |
+| `AsyncTaskManager` | Background module execution with pluggable `TaskStore`, retry, and reaper |
+| `TaskStore` / `InMemoryTaskStore` | Pluggable async task persistence backend |
+| `RetryPolicy` / `BackoffStrategy` | Per-task retry configuration with exponential backoff |
 | `CancelToken` | Cooperative cancellation token |
 | `BindingLoader` | Load modules from YAML binding files |
 | `ErrorCodeRegistry` | Central registry for structured error codes |
