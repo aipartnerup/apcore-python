@@ -115,6 +115,8 @@ A schema-enforced module standard for the AI-Perceivable era.
 
 `AsyncTaskManager` and `ExtensionManager` are available in all three SDKs (Python, TypeScript, and Rust as of v0.19.0).
 
+As of v0.20.0: `CircuitBreakerMiddleware`, `TaskStore`/`InMemoryTaskStore`, `RetryPolicy`, and `PrometheusExporter` are Python-SDK additions implementing PROTOCOL_SPEC v0.20.0 hardening areas (Issues #34, #42, #43, #44, #45). Cross-language parity for these features is tracked in the canonical apcore protocol repository.
+
 ## Configuration
 
 ### Config Bus and Namespace Registration
