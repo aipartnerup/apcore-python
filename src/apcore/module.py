@@ -35,6 +35,18 @@ class Module(Protocol):
 
     At runtime, ``@runtime_checkable`` only checks attribute existence.
     Static type checkers (pyright) will verify the full signature.
+
+    Optional lifecycle hooks (detected via hasattr by the Registry/Executor):
+    - ``on_load()`` — called after module is registered; raise to abort.
+    - ``on_unload()`` — called after module is unregistered.
+    - ``on_suspend()`` — called before hot-reload; returns optional state dict.
+    - ``on_resume(state)`` — called after hot-reload; receives suspended state.
+    - ``preflight(inputs, context)`` — custom validation before execution;
+      return a ``PreflightResult``-compatible object.
+    - ``stream(inputs, context)`` — async generator variant (streaming mode).
+
+    Cross-language parity with apcore-typescript Module interface and
+    apcore-rust Module trait (sync finding A-017).
     """
 
     input_schema: type[BaseModel]
