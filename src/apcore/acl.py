@@ -570,21 +570,34 @@ class ACL:
         with self._lock:
             self._rules.insert(0, rule)
 
-    def remove_rule(self, callers: list[str], targets: list[str]) -> bool:
-        """Remove the first rule matching the given callers and targets.
+    def remove_rule(
+        self,
+        callers: list[str],
+        targets: list[str],
+        conditions: dict | None = None,
+    ) -> bool:
+        """Remove the first rule matching the given callers, targets, and (optional) conditions.
 
         Args:
             callers: The caller patterns to match.
             targets: The target patterns to match.
+            conditions: When provided, also disambiguate by ACLRule.conditions
+                via deep equality. Two rules with identical callers+targets but
+                different conditions can be selectively removed by passing the
+                conditions to match. Cross-language parity with apcore-typescript
+                removeRule (sync finding A-D-026).
 
         Returns:
             True if a rule was found and removed, False otherwise.
         """
         with self._lock:
             for i, rule in enumerate(self._rules):
-                if rule.callers == callers and rule.targets == targets:
-                    self._rules.pop(i)
-                    return True
+                if rule.callers != callers or rule.targets != targets:
+                    continue
+                if conditions is not None and rule.conditions != conditions:
+                    continue
+                self._rules.pop(i)
+                return True
             return False
 
     def reload(self) -> None:
