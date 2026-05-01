@@ -120,7 +120,17 @@ class ACL:
         conditions: dict[str, Any],
         context: Context,
     ) -> bool:
-        """Evaluate all conditions with AND logic. Fail-closed on unknown."""
+        """Evaluate all conditions with AND logic. Fail-closed on unknown.
+
+        When a handler returns an awaitable that completes synchronously (no
+        actual ``await`` is hit before completion — e.g., an ``async def``
+        whose body is a single ``return`` statement), the result is consumed
+        and used. Genuine async handlers that need to suspend are treated as
+        unsatisfied; callers should use :meth:`async_check` for those.
+
+        Cross-language parity with apcore-rust ``ACL::evaluate_conditions``
+        which polls the future once with a noop waker (sync finding A-D-023).
+        """
         for key, value in conditions.items():
             handler = cls._condition_handlers.get(key)
             if handler is None:
@@ -133,12 +143,30 @@ class ACL:
                 _handler_error_var.set(f"{key}: {type(exc).__name__}: {exc}")
                 return False
             if inspect.isawaitable(result):
-                result.close()  # prevent "coroutine never awaited" warning
-                _logger.warning(
-                    "Async condition %r in sync context — treated as unsatisfied. Use async_check().",
-                    key,
-                )
-                return False
+                # Try to advance the coroutine one synchronous step. If the
+                # coroutine returns without hitting an ``await`` (sync-only
+                # body wrapped in async fn), StopIteration carries the value.
+                # Otherwise it suspends — fail closed.
+                try:
+                    result.send(None)  # type: ignore[union-attr]
+                except StopIteration as stop:
+                    result = stop.value
+                except Exception as exc:
+                    _logger.exception(
+                        "Handler for condition %r raised during sync resolution — treated as unsatisfied",
+                        key,
+                    )
+                    _handler_error_var.set(f"{key}: {type(exc).__name__}: {exc}")
+                    return False
+                else:
+                    # Coroutine suspended — genuinely async, can't run in sync path.
+                    result.close()  # type: ignore[union-attr]
+                    _logger.warning(
+                        "Async condition %r suspended in sync context — treated as "
+                        "unsatisfied. Use async_check() for handlers needing await.",
+                        key,
+                    )
+                    return False
             if not result:
                 return False
         return True

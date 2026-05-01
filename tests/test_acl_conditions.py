@@ -285,23 +285,53 @@ class TestFailClosed:
         assert result is False
         assert any("Unknown ACL condition" in r.message for r in caplog.records)
 
-    def test_async_handler_in_sync_context_fails_closed(self, caplog: pytest.LogCaptureFixture) -> None:
-        """AC-014: Sync check() fails-closed on async handlers."""
+    def test_genuine_async_handler_suspends_fails_closed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """AC-014: Sync check() fails-closed when async handler genuinely suspends.
 
-        class _AsyncHandler:
+        Per registry-system.md "Sync handler resolution" cross-language note:
+        a coroutine that hits an await point (genuine async work) is treated
+        as unsatisfied in sync context. Use async_check() for handlers that
+        need real awaits.
+        """
+        import asyncio
+
+        class _GenuinelyAsyncHandler:
             async def evaluate(self, value: Any, context: Context) -> bool:
+                await asyncio.sleep(0)  # forces suspension
                 return True
 
-        ACL.register_condition("_test_async", _AsyncHandler())
+        ACL.register_condition("_test_async_suspend", _GenuinelyAsyncHandler())
         try:
             ctx = _make_context()
-            acl = _make_acl_with_condition("_test_async", True)
+            acl = _make_acl_with_condition("_test_async_suspend", True)
             with caplog.at_level(logging.WARNING):
                 result = acl.check("caller", "target", context=ctx)
             assert result is False
-            assert any("Async condition" in r.message for r in caplog.records)
+            assert any("suspended" in r.message.lower() or "async condition" in r.message.lower() for r in caplog.records)
         finally:
-            del ACL._condition_handlers["_test_async"]
+            del ACL._condition_handlers["_test_async_suspend"]
+
+    def test_sync_body_async_fn_succeeds_in_sync_check(self) -> None:
+        """A-D-023: An ``async def`` whose body completes without ``await`` is
+        used in sync check() (the coroutine returns immediately via send(None)
+        + StopIteration). Cross-language parity with apcore-rust poll-once.
+        """
+
+        class _SyncBodyAsyncHandler:
+            async def evaluate(self, value: Any, context: Context) -> bool:
+                # No await — coroutine completes synchronously
+                return True
+
+        ACL.register_condition("_test_async_sync_body", _SyncBodyAsyncHandler())
+        try:
+            ctx = _make_context()
+            acl = _make_acl_with_condition("_test_async_sync_body", True)
+            result = acl.check("caller", "target", context=ctx)
+            assert result is True
+        finally:
+            del ACL._condition_handlers["_test_async_sync_body"]
 
 
 # ---------------------------------------------------------------------------
