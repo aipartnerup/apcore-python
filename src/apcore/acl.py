@@ -184,6 +184,12 @@ class ACL:
             audit_logger: Optional callback invoked with an AuditEntry for
                 every check() call. Useful for structured audit trails.
         """
+        if default_effect not in {"allow", "deny"}:
+            raise ACLRuleError(
+                f"Invalid default_effect '{default_effect}': must be 'allow' or 'deny'. "
+                "Cross-language parity with apcore-typescript constructor validation (sync A-D-025)."
+            )
+
         self._rules = list(rules) if rules is not None else []
 
         self._default_effect: str = default_effect
