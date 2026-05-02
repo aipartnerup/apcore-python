@@ -32,6 +32,12 @@ _REDACTED = "***REDACTED***"
 # inspected — secrets buried below depth 32 are out of scope.
 _MAX_REDACTION_DEPTH = 32
 
+# Correlation-ID fields that must NEVER be replaced by user-supplied
+# RedactionConfig field patterns.  Removing or scrambling these would break
+# log/trace correlation.  Mirrors the TS PROTECTED_LOG_FIELDS and Rust
+# NEVER_REDACT_FIELDS sets.
+PROTECTED_LOG_FIELDS: frozenset[str] = frozenset({"trace_id", "caller_id", "module_id"})
+
 
 @dataclass
 class RedactionConfig:
@@ -52,9 +58,17 @@ class RedactionConfig:
 
 
 def _apply_redaction_config(data: dict[str, Any], config: RedactionConfig) -> dict[str, Any]:
-    """Return a new dict with fields/values matching RedactionConfig replaced."""
+    """Return a new dict with fields/values matching RedactionConfig replaced.
+
+    Fields named in :data:`PROTECTED_LOG_FIELDS` are exempt from field-pattern
+    matching so user-supplied glob patterns (e.g. ``*_id``) cannot scramble
+    correlation identifiers required for log/trace stitching.
+    """
     result: dict[str, Any] = {}
     for key, value in data.items():
+        if key in PROTECTED_LOG_FIELDS:
+            result[key] = value
+            continue
         field_match = any(fnmatch.fnmatch(key, pattern) for pattern in config.field_patterns)
         value_str = str(value) if not isinstance(value, str) else value
         value_match = any(re.search(pattern, value_str) for pattern in config.value_patterns)
