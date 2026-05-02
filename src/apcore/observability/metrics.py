@@ -191,12 +191,23 @@ class MetricsCollector:
             return "\n".join(lines) + "\n" if lines else ""
 
     @staticmethod
-    def _format_labels(labels: dict[str, str]) -> str:
+    def _escape_label_value(v: str) -> str:
+        """Escape a label value per Prometheus exposition format spec.
+
+        Per the spec, label values are surrounded by double-quotes; the
+        characters that must be escaped are backslash (``\\``), double-quote
+        (``"``) and line-feed (``\\n``).  Order matters: backslash is escaped
+        first to avoid double-escaping the escapes added afterwards.
+        """
+        return v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+    @classmethod
+    def _format_labels(cls, labels: dict[str, str]) -> str:
         if not labels:
             return ""
         # Sort by key, but put 'le' last for histogram buckets
         sorted_items = sorted(labels.items(), key=lambda x: (x[0] == "le", x[0]))
-        pairs = ",".join(f'{k}="{v}"' for k, v in sorted_items)
+        pairs = ",".join(f'{k}="{cls._escape_label_value(str(v))}"' for k, v in sorted_items)
         return "{" + pairs + "}"
 
     # --- Convenience methods ---
