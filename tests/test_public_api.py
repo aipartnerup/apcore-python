@@ -487,6 +487,7 @@ class TestPublicAPIAll:
         "TaskInfo",
         "TaskStore",
         "InMemoryTaskStore",
+        "AsyncRetryConfig",
         "RetryPolicy",
         "BackoffStrategy",
         # Bindings

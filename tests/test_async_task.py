@@ -774,3 +774,63 @@ class TestRegression:
         assert removed == 1
 
         await mgr.shutdown()
+
+
+class TestRetryConfigCanonicalFields:
+    """Cross-language alignment (sync A-002): canonical RetryConfig field names.
+
+    Spec/TS converge on `max_retries`, `retry_delay_ms`, `backoff_multiplier`,
+    `max_retry_delay_ms`. The legacy Python `RetryPolicy` (using `backoff` /
+    `base_delay_seconds`) remains supported as a deprecated alias.
+    """
+
+    def test_retry_config_canonical_field_names(self) -> None:
+        from apcore.async_task import RetryConfig
+
+        cfg = RetryConfig()
+        # Defaults match TS: max_retries=0, retry_delay_ms=1000,
+        # backoff_multiplier=2.0, max_retry_delay_ms=60000.
+        assert cfg.max_retries == 0
+        assert cfg.retry_delay_ms == 1000
+        assert cfg.backoff_multiplier == 2.0
+        assert cfg.max_retry_delay_ms == 60000
+
+        cfg2 = RetryConfig(
+            max_retries=3,
+            retry_delay_ms=500,
+            backoff_multiplier=2.0,
+            max_retry_delay_ms=30000,
+        )
+        assert cfg2.max_retries == 3
+        assert cfg2.retry_delay_ms == 500
+        assert cfg2.backoff_multiplier == 2.0
+        assert cfg2.max_retry_delay_ms == 30000
+
+    def test_retry_config_compute_delay(self) -> None:
+        from apcore.async_task import RetryConfig
+
+        cfg = RetryConfig(retry_delay_ms=100, backoff_multiplier=2.0, max_retry_delay_ms=1000)
+        # attempt 0 -> 100, attempt 1 -> 200, attempt 2 -> 400, attempt 3 -> 800,
+        # attempt 4 -> 1600 capped at 1000.
+        assert cfg.compute_delay_ms(0) == 100
+        assert cfg.compute_delay_ms(1) == 200
+        assert cfg.compute_delay_ms(2) == 400
+        assert cfg.compute_delay_ms(3) == 800
+        assert cfg.compute_delay_ms(4) == 1000
+
+    def test_retry_config_exported_from_async_task_and_apcore(self) -> None:
+        import apcore
+        from apcore.async_task import RetryConfig
+
+        assert RetryConfig is apcore.RetryConfig or hasattr(apcore, "RetryConfig")
+
+    def test_retry_policy_legacy_alias_still_works(self) -> None:
+        """Legacy RetryPolicy(max_retries=..., backoff=..., base_delay_seconds=...) keeps working."""
+        from apcore.async_task import BackoffStrategy, RetryPolicy
+
+        policy = RetryPolicy(max_retries=3, backoff=BackoffStrategy.FIXED, base_delay_seconds=2.0)
+        assert policy.max_retries == 3
+        assert policy.backoff == BackoffStrategy.FIXED
+        assert policy.base_delay_seconds == 2.0
+        # Legacy delay_for(attempt) API unchanged.
+        assert policy.delay_for(1) == 2.0

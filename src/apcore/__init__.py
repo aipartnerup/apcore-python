@@ -149,6 +149,7 @@ from apcore.async_task import (
     AsyncTaskManager,
     BackoffStrategy,
     InMemoryTaskStore,
+    RetryConfig as AsyncRetryConfig,
     RetryPolicy,
     TaskInfo,
     TaskStatus,
@@ -670,6 +671,7 @@ __all__ = [
     "TaskInfo",
     "TaskStore",
     "InMemoryTaskStore",
+    "AsyncRetryConfig",
     "RetryPolicy",
     "BackoffStrategy",
     # Bindings

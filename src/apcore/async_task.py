@@ -18,6 +18,7 @@ __all__ = [
     "TaskInfo",
     "TaskStore",
     "InMemoryTaskStore",
+    "RetryConfig",
     "RetryPolicy",
     "BackoffStrategy",
     "AsyncTaskManager",
@@ -110,7 +111,7 @@ class InMemoryTaskStore:
 
 
 class BackoffStrategy(str, Enum):
-    """Backoff formula applied between retry attempts."""
+    """Backoff formula applied between retry attempts (legacy ``RetryPolicy``)."""
 
     FIXED = "fixed"
     LINEAR = "linear"
@@ -118,8 +119,55 @@ class BackoffStrategy(str, Enum):
 
 
 @dataclass
+class RetryConfig:
+    """Retry configuration for a submitted task (canonical, sync A-002).
+
+    Field names align with TypeScript / Rust / protocol spec:
+    ``max_retries``, ``retry_delay_ms``, ``backoff_multiplier``,
+    ``max_retry_delay_ms``. Delay is computed as
+    ``min(retry_delay_ms * (backoff_multiplier ** attempt), max_retry_delay_ms)``
+    where ``attempt`` is 0-indexed (the first retry uses attempt=0).
+
+    The legacy :class:`RetryPolicy` (using ``backoff`` /
+    ``base_delay_seconds``) remains supported as a deprecated alternative.
+    """
+
+    max_retries: int = 0
+    retry_delay_ms: int = 1000
+    backoff_multiplier: float = 2.0
+    max_retry_delay_ms: int = 60000
+
+    def compute_delay_ms(self, attempt: int) -> float:
+        """Return the delay in milliseconds before retry ``attempt`` (0-indexed).
+
+        Capped at :attr:`max_retry_delay_ms`.
+        """
+        return min(
+            self.retry_delay_ms * (self.backoff_multiplier**attempt),
+            self.max_retry_delay_ms,
+        )
+
+    def delay_for(self, attempt: int) -> float:
+        """Return delay in **seconds** before retry ``attempt`` (1-indexed).
+
+        Adapter that bridges the canonical (0-indexed, ms) API to the legacy
+        :meth:`RetryPolicy.delay_for` (1-indexed, seconds) signature so
+        ``AsyncTaskManager`` can treat both classes uniformly.
+        """
+        # Translate legacy 1-indexed attempt into canonical 0-indexed.
+        zero_indexed = max(attempt - 1, 0)
+        return self.compute_delay_ms(zero_indexed) / 1000.0
+
+
+@dataclass
 class RetryPolicy:
-    """Retry configuration for a submitted task.
+    """Legacy retry configuration for a submitted task.
+
+    .. deprecated:: 0.21.0
+        Use :class:`RetryConfig` for cross-language alignment with
+        TypeScript / Rust / protocol spec field names. ``RetryPolicy`` is
+        retained for backwards compatibility and will be removed in a
+        future major release.
 
     Attributes:
         max_retries: Maximum number of retry attempts (0 = no retry).
@@ -173,7 +221,7 @@ class AsyncTaskManager:
         module_id: str,
         inputs: dict[str, Any],
         context: Context | None = None,
-        retry_policy: RetryPolicy | None = None,
+        retry_policy: "RetryPolicy | RetryConfig | None" = None,
     ) -> str:
         """Submit a module for background execution.
 
@@ -184,7 +232,9 @@ class AsyncTaskManager:
             module_id: The module to execute.
             inputs: Input data for the module.
             context: Optional execution context.
-            retry_policy: Optional retry configuration. None means no retries.
+            retry_policy: Optional retry configuration — either the canonical
+                :class:`RetryConfig` or the legacy :class:`RetryPolicy`.
+                None means no retries.
 
         Returns:
             The generated task_id (UUID4 string).
@@ -338,7 +388,7 @@ class AsyncTaskManager:
         module_id: str,
         inputs: dict[str, Any],
         context: Context | None,
-        retry_policy: RetryPolicy | None,
+        retry_policy: "RetryPolicy | RetryConfig | None",
     ) -> None:
         """Internal coroutine: execute a module with optional retry/backoff."""
         info = self._store.get(task_id)
