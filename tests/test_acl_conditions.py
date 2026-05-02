@@ -285,9 +285,7 @@ class TestFailClosed:
         assert result is False
         assert any("Unknown ACL condition" in r.message for r in caplog.records)
 
-    def test_genuine_async_handler_suspends_fails_closed(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_genuine_async_handler_suspends_fails_closed(self, caplog: pytest.LogCaptureFixture) -> None:
         """AC-014: Sync check() fails-closed when async handler genuinely suspends.
 
         Per registry-system.md "Sync handler resolution" cross-language note:
@@ -309,7 +307,9 @@ class TestFailClosed:
             with caplog.at_level(logging.WARNING):
                 result = acl.check("caller", "target", context=ctx)
             assert result is False
-            assert any("suspended" in r.message.lower() or "async condition" in r.message.lower() for r in caplog.records)
+            assert any(
+                "suspended" in r.message.lower() or "async condition" in r.message.lower() for r in caplog.records
+            )
         finally:
             del ACL._condition_handlers["_test_async_suspend"]
 

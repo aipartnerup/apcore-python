@@ -63,13 +63,9 @@ def _write_module_file(tmp_path: Path, filename: str, class_names: list[str]) ->
     return p
 
 
-def _write_undecorated_file(
-    tmp_path: Path, filename: str, class_names: list[str]
-) -> Path:
+def _write_undecorated_file(tmp_path: Path, filename: str, class_names: list[str]) -> Path:
     """Write a Python file with Module classes that are NOT decorated with @multi_class."""
-    lines = [
-        "class _FakeSchema:\n    @classmethod\n    def model_json_schema(cls): return {}\n"
-    ]
+    lines = ["class _FakeSchema:\n    @classmethod\n    def model_json_schema(cls): return {}\n"]
     for name in class_names:
         lines.append(
             f"class {name}:\n"
@@ -123,9 +119,7 @@ class TestClassNameToSegment:
         assert class_name_to_segment("MyModule") == class_name_to_segment("My_Module")
 
     def test_conflict_pair_http_client(self) -> None:
-        assert class_name_to_segment("HTTPClient") == class_name_to_segment(
-            "Http_Client"
-        )
+        assert class_name_to_segment("HTTPClient") == class_name_to_segment("Http_Client")
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +193,7 @@ class TestGrammarConformance:
         result = discover_multi_class(fp, extensions_root="extensions")
 
         for module_id, _ in result:
-            assert _CANONICAL_ID_RE.match(
-                module_id
-            ), f"'{module_id}' does not match canonical ID grammar"
+            assert _CANONICAL_ID_RE.match(module_id), f"'{module_id}' does not match canonical ID grammar"
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +238,7 @@ class TestDisabledByDefault:
         """Classes without @multi_class are not returned, even if they look like Modules."""
         ext_root = tmp_path / "extensions" / "math"
         ext_root.mkdir(parents=True)
-        fp = _write_undecorated_file(
-            ext_root, "math_ops.py", ["Addition", "Subtraction"]
-        )
+        fp = _write_undecorated_file(ext_root, "math_ops.py", ["Addition", "Subtraction"])
 
         result = discover_multi_class(fp, extensions_root="extensions")
 
@@ -307,9 +297,7 @@ class TestInvalidSegment:
 
     def test_invalid_segment_error_attributes(self) -> None:
         """InvalidSegmentError carries the expected code and details."""
-        err = InvalidSegmentError(
-            file_path="/ext/mod.py", class_name="MyClass", segment=""
-        )
+        err = InvalidSegmentError(file_path="/ext/mod.py", class_name="MyClass", segment="")
         assert err.code == "INVALID_SEGMENT"
         assert err.details["file_path"] == "/ext/mod.py"
         assert err.details["class_name"] == "MyClass"
@@ -332,9 +320,7 @@ class TestIdTooLong:
         deep_path.mkdir(parents=True)
 
         long_stem = "x" * 50
-        fp = _write_module_file(
-            deep_path, f"{long_stem}.py", ["Addition", "Subtraction"]
-        )
+        fp = _write_module_file(deep_path, f"{long_stem}.py", ["Addition", "Subtraction"])
 
         with pytest.raises(IdTooLongError) as exc_info:
             discover_multi_class(fp, extensions_root="extensions")
@@ -386,9 +372,7 @@ class TestPreApprovalHook:
         fp = _write_module_file(ext_root, "math_ops.py", ["Addition"])
 
         seen: list[Path] = []
-        discover_multi_class(
-            fp, extensions_root="extensions", pre_approval_hook=seen.append
-        )
+        discover_multi_class(fp, extensions_root="extensions", pre_approval_hook=seen.append)
 
         assert seen == [fp]
 
@@ -404,9 +388,7 @@ class TestPreApprovalHook:
             raise PermissionError("not allowed")
 
         with pytest.raises(ModuleLoadError):
-            discover_multi_class(
-                fp, extensions_root="extensions", pre_approval_hook=rejecting_hook
-            )
+            discover_multi_class(fp, extensions_root="extensions", pre_approval_hook=rejecting_hook)
 
     def test_no_hook_works_by_default(self, tmp_path: Path) -> None:
         """Omitting pre_approval_hook does not change existing behavior."""

@@ -62,9 +62,7 @@ class TestPluggableStoreDefaultInMemory:
     def test_store_not_settable_after_construction(self) -> None:
         """The store is immutable after construction (no setter)."""
         history = ErrorHistory()
-        assert not hasattr(type(history), "store") or isinstance(
-            getattr(type(history), "store", None), property
-        )
+        assert not hasattr(type(history), "store") or isinstance(getattr(type(history), "store", None), property)
 
 
 # ---------------------------------------------------------------------------
@@ -88,9 +86,7 @@ class TestBatchProcessorBuffersSpans:
                 span = Span(trace_id="t1", name="test", start_time=time.time())
                 processor.on_span_end(span)
 
-            assert (
-                exporter.get_spans() == []
-            ), "No spans should be exported before flush"
+            assert exporter.get_spans() == [], "No spans should be exported before flush"
             assert processor.queue_size == 3
             assert processor.spans_dropped == 0
         finally:
@@ -150,9 +146,7 @@ class TestBatchProcessorDropsOnFullQueue:
                 span = Span(trace_id="t1", name="overflow", start_time=time.time())
                 processor.on_span_end(span)
 
-            assert (
-                processor.queue_size == max_size
-            ), "Queue size must stay at max_queue_size"
+            assert processor.queue_size == max_size, "Queue size must stay at max_queue_size"
             assert processor.spans_dropped == 2
         finally:
             processor.shutdown()
@@ -167,14 +161,10 @@ class TestBatchProcessorDropsOnFullQueue:
         )
         try:
             for _ in range(2):
-                processor.on_span_end(
-                    Span(trace_id="t1", name="ok", start_time=time.time())
-                )
+                processor.on_span_end(Span(trace_id="t1", name="ok", start_time=time.time()))
 
             for _ in range(5):
-                processor.on_span_end(
-                    Span(trace_id="t1", name="over", start_time=time.time())
-                )
+                processor.on_span_end(Span(trace_id="t1", name="over", start_time=time.time()))
 
             assert processor.spans_dropped == 5
         finally:
@@ -315,12 +305,8 @@ class TestFingerprintDifferentErrorsNoCollision:
 
     def test_different_codes_different_fingerprints(self) -> None:
         """Two errors with different codes produce distinct fingerprints."""
-        fp1 = compute_fingerprint(
-            "DB_TIMEOUT", "executor.db.query", "connection timed out"
-        )
-        fp2 = compute_fingerprint(
-            "DB_CONN_REFUSED", "executor.db.query", "connection timed out"
-        )
+        fp1 = compute_fingerprint("DB_TIMEOUT", "executor.db.query", "connection timed out")
+        fp2 = compute_fingerprint("DB_CONN_REFUSED", "executor.db.query", "connection timed out")
         assert fp1 != fp2
 
     def test_different_module_ids_different_fingerprints(self) -> None:
@@ -356,9 +342,7 @@ class TestRedactionFieldPatternMatch:
         from apcore.observability.context_logger import ContextLogger
 
         logger = ContextLogger(name="test", output=buf, output_format="json")
-        mw = ObsLoggingMiddleware(
-            logger=logger, log_inputs=True, redaction_config=config
-        )
+        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
 
         ctx = Context.create()
         ctx.call_chain.append("executor.auth.login")
@@ -383,9 +367,7 @@ class TestRedactionFieldPatternMatch:
         from apcore.observability.context_logger import ContextLogger
 
         logger = ContextLogger(name="test", output=buf)
-        mw = ObsLoggingMiddleware(
-            logger=logger, log_inputs=True, redaction_config=config
-        )
+        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
 
         ctx = Context.create()
         mw.before("mod.a", {"name": "alice", "age": "30"}, ctx)
@@ -414,9 +396,7 @@ class TestRedactionValuePatternMatch:
         from apcore.observability.context_logger import ContextLogger
 
         logger = ContextLogger(name="test", output=buf)
-        mw = ObsLoggingMiddleware(
-            logger=logger, log_inputs=True, redaction_config=config
-        )
+        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
 
         ctx = Context.create()
         mw.before(
@@ -435,16 +415,12 @@ class TestRedactionValuePatternMatch:
 
     def test_non_matching_value_not_redacted(self) -> None:
         """Values not matching any pattern are logged unchanged."""
-        config = RedactionConfig(
-            field_patterns=[], value_patterns=[r"^sk-[A-Za-z0-9]+"]
-        )
+        config = RedactionConfig(field_patterns=[], value_patterns=[r"^sk-[A-Za-z0-9]+"])
         buf = io.StringIO()
         from apcore.observability.context_logger import ContextLogger
 
         logger = ContextLogger(name="test", output=buf)
-        mw = ObsLoggingMiddleware(
-            logger=logger, log_inputs=True, redaction_config=config
-        )
+        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
 
         ctx = Context.create()
         mw.before("mod.a", {"token": "not-an-sk-token"}, ctx)
@@ -465,9 +441,7 @@ class TestPrometheusFormatIncludesRequiredMetrics:
         """export_prometheus() includes all three mandatory apcore metric families."""
         collector = MetricsCollector()
         collector.increment_calls("mod.a", "success")
-        collector.increment_calls(
-            "mod.a", "success"
-        )  # total=2, but we set 42 below via increment
+        collector.increment_calls("mod.a", "success")  # total=2, but we set 42 below via increment
         collector.reset()
         collector.increment(
             "apcore_module_calls_total",
@@ -479,15 +453,9 @@ class TestPrometheusFormatIncludesRequiredMetrics:
             {"module_id": "mod.a", "error_code": "ERR"},
             amount=3,
         )
-        collector.observe(
-            "apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.01
-        )
-        collector.observe(
-            "apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.05
-        )
-        collector.observe(
-            "apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.12
-        )
+        collector.observe("apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.01)
+        collector.observe("apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.05)
+        collector.observe("apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.12)
 
         output = collector.export_prometheus()
 

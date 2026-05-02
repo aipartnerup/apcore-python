@@ -24,9 +24,7 @@ class ObservabilityStore(Protocol):
 
     def record_error(self, entry: Any) -> None: ...
 
-    def get_errors(
-        self, module_id: str | None = None, limit: int | None = None
-    ) -> list[Any]: ...
+    def get_errors(self, module_id: str | None = None, limit: int | None = None) -> list[Any]: ...
 
     def record_metric(self, metric: MetricPoint) -> None: ...
 
@@ -53,15 +51,9 @@ class InMemoryObservabilityStore:
         with self._lock:
             self._errors.append(entry)
 
-    def get_errors(
-        self, module_id: str | None = None, limit: int | None = None
-    ) -> list[Any]:
+    def get_errors(self, module_id: str | None = None, limit: int | None = None) -> list[Any]:
         with self._lock:
-            entries = (
-                self._errors
-                if module_id is None
-                else [e for e in self._errors if e.module_id == module_id]
-            )
+            entries = self._errors if module_id is None else [e for e in self._errors if e.module_id == module_id]
             return list(entries[:limit] if limit is not None else entries)
 
     def record_metric(self, metric: MetricPoint) -> None:

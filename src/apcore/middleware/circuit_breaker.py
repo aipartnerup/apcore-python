@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from apcore.errors import CircuitBreakerOpenError, CircuitOpenError
+from apcore.errors import CircuitBreakerOpenError
 from apcore.middleware.base import Context, Middleware, RetrySignal
 
 __all__ = ["CircuitState", "CircuitBreakerMiddleware"]
@@ -31,9 +31,7 @@ class _CircuitRecord:
     consecutive_failures: int = 0
     last_failure_at: datetime | None = None
     half_open_successes: int = 0
-    lock: threading.Lock = field(
-        default_factory=threading.Lock, compare=False, repr=False
-    )
+    lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
 
 
 class CircuitBreakerMiddleware(Middleware):
@@ -61,9 +59,7 @@ class CircuitBreakerMiddleware(Middleware):
         if failure_threshold < 1:
             raise ValueError(f"failure_threshold must be >= 1, got {failure_threshold}")
         if recovery_window_ms < 0:
-            raise ValueError(
-                f"recovery_window_ms must be >= 0, got {recovery_window_ms}"
-            )
+            raise ValueError(f"recovery_window_ms must be >= 0, got {recovery_window_ms}")
         if success_threshold < 1:
             raise ValueError(f"success_threshold must be >= 1, got {success_threshold}")
         self._failure_threshold = failure_threshold
@@ -96,9 +92,7 @@ class CircuitBreakerMiddleware(Middleware):
     # Middleware hooks
     # ------------------------------------------------------------------
 
-    def before(
-        self, module_id: str, inputs: dict[str, Any], context: Context
-    ) -> dict[str, Any] | None:
+    def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
         record = self._get_record(module_id)
         with record.lock:
             self._maybe_transition_to_half_open(record, module_id)
@@ -142,21 +136,15 @@ class CircuitBreakerMiddleware(Middleware):
                 self._circuits[module_id] = _CircuitRecord()
             return self._circuits[module_id]
 
-    def _maybe_transition_to_half_open(
-        self, record: _CircuitRecord, module_id: str
-    ) -> None:
+    def _maybe_transition_to_half_open(self, record: _CircuitRecord, module_id: str) -> None:
         """Transition OPEN → HALF_OPEN if recovery window has elapsed. Caller holds record.lock."""
         if record.state != CircuitState.OPEN or record.last_failure_at is None:
             return
-        elapsed_ms = (
-            datetime.now(timezone.utc) - record.last_failure_at
-        ).total_seconds() * 1000
+        elapsed_ms = (datetime.now(timezone.utc) - record.last_failure_at).total_seconds() * 1000
         if elapsed_ms >= self._recovery_window_ms:
             record.state = CircuitState.HALF_OPEN
             record.half_open_successes = 0
-            _logger.info(
-                "Circuit HALF_OPEN for module '%s' after recovery window", module_id
-            )
+            _logger.info("Circuit HALF_OPEN for module '%s' after recovery window", module_id)
 
     def _record_success(self, record: _CircuitRecord) -> None:
         """Update state on success. Caller holds record.lock."""
@@ -174,8 +162,7 @@ class CircuitBreakerMiddleware(Middleware):
         record.last_failure_at = datetime.now(timezone.utc)
 
         opens = record.state == CircuitState.HALF_OPEN or (
-            record.state == CircuitState.CLOSED
-            and record.consecutive_failures >= self._failure_threshold
+            record.state == CircuitState.CLOSED and record.consecutive_failures >= self._failure_threshold
         )
         if opens:
             record.state = CircuitState.OPEN

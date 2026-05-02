@@ -305,9 +305,7 @@ class TestAuditEntryRecordsChange:
         dummy.output_schema = {"type": "object", "properties": {}}
         registry.register_internal("risky.module", dummy)
 
-        mod = _make_toggle_module(
-            registry, toggle_state=toggle_state, audit_store=audit_store
-        )
+        mod = _make_toggle_module(registry, toggle_state=toggle_state, audit_store=audit_store)
         context = _make_context(identity_id="svc-deploy-agent", identity_type="service")
 
         mod.execute(
@@ -341,9 +339,7 @@ class TestAuditEntryRecordsChange:
         dummy.output_schema = {"type": "object", "properties": {}}
         registry.register_internal("risky.module", dummy)
 
-        mod = _make_toggle_module(
-            registry, toggle_state=toggle_state, audit_store=audit_store
-        )
+        mod = _make_toggle_module(registry, toggle_state=toggle_state, audit_store=audit_store)
 
         mod.execute(
             {"module_id": "risky.module", "enabled": True, "reason": "re-enable"},
@@ -370,9 +366,7 @@ class TestPrometheusUsageExportsCallsTotal:
             collector.record("math.add", "caller", 10.0, success=True)
 
         output = collector.export_prometheus()
-        assert (
-            'apcore_usage_calls_total{module_id="math.add",status="success"}' in output
-        )
+        assert 'apcore_usage_calls_total{module_id="math.add",status="success"}' in output
 
     def test_export_contains_calls_total_error(self) -> None:
         """export_prometheus includes apcore_usage_calls_total with status=error."""
@@ -708,9 +702,7 @@ class TestStartupFailOnErrorFalseContinues:
             original_register(module_id, module)
 
         with patch.object(registry, "register_internal", side_effect=failing_register):
-            with caplog.at_level(
-                logging.ERROR, logger="apcore.sys_modules.registration"
-            ):
+            with caplog.at_level(logging.ERROR, logger="apcore.sys_modules.registration"):
                 register_sys_modules(
                     registry=registry,
                     executor=executor,

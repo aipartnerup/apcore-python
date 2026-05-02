@@ -161,9 +161,7 @@ def test_circuit_transitions_to_half_open_after_recovery_window() -> None:
 
 
 def test_circuit_closes_after_success_in_half_open() -> None:
-    cb = CircuitBreakerMiddleware(
-        failure_threshold=1, recovery_window_ms=0, success_threshold=1
-    )
+    cb = CircuitBreakerMiddleware(failure_threshold=1, recovery_window_ms=0, success_threshold=1)
     _call_before(cb)
     _call_on_error(cb)
     time.sleep(0.001)
@@ -174,9 +172,7 @@ def test_circuit_closes_after_success_in_half_open() -> None:
 
 
 def test_circuit_closes_after_multiple_successes_in_half_open() -> None:
-    cb = CircuitBreakerMiddleware(
-        failure_threshold=1, recovery_window_ms=0, success_threshold=2
-    )
+    cb = CircuitBreakerMiddleware(failure_threshold=1, recovery_window_ms=0, success_threshold=2)
     _call_before(cb)
     _call_on_error(cb)
     time.sleep(0.001)
@@ -193,9 +189,7 @@ def test_circuit_closes_after_multiple_successes_in_half_open() -> None:
 def test_failure_in_half_open_reopens_circuit() -> None:
     """Failure during HALF_OPEN re-opens the circuit and rejects the next call."""
     # Drive into HALF_OPEN via zero recovery window
-    cb = CircuitBreakerMiddleware(
-        failure_threshold=1, recovery_window_ms=0, success_threshold=1
-    )
+    cb = CircuitBreakerMiddleware(failure_threshold=1, recovery_window_ms=0, success_threshold=1)
     _call_before(cb)
     _call_on_error(cb)
     time.sleep(0.001)

@@ -47,13 +47,11 @@ class TestUnionFixture:
         expected = tc["expected"]
         result = validate_schema_dict(data, schema)
         assert result.valid == expected["valid"], (
-            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. "
-            f"errors={result.errors}"
+            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
         )
         if expected.get("error_code"):
             assert result.error_code == expected["error_code"], (
-                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, "
-                f"expected {expected['error_code']!r}"
+                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, " f"expected {expected['error_code']!r}"
             )
 
 
@@ -78,13 +76,11 @@ class TestRecursiveFixture:
         expected = tc["expected"]
         result = validate_schema_dict(data, schema)
         assert result.valid == expected["valid"], (
-            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. "
-            f"errors={result.errors}"
+            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
         )
         if expected.get("error_code"):
             assert result.error_code == expected["error_code"], (
-                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, "
-                f"expected {expected['error_code']!r}"
+                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, " f"expected {expected['error_code']!r}"
             )
 
 
@@ -109,13 +105,11 @@ class TestConstraintsFixture:
         expected = tc["expected"]
         result = validate_schema_dict(data, schema)
         assert result.valid == expected["valid"], (
-            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. "
-            f"errors={result.errors}"
+            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
         )
         if expected.get("error_code"):
             assert result.error_code == expected["error_code"], (
-                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, "
-                f"expected {expected['error_code']!r}"
+                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, " f"expected {expected['error_code']!r}"
             )
 
 
@@ -134,9 +128,7 @@ class TestFormatsFixture:
         _fixture["test_cases"],
         ids=lambda tc: tc["id"],
     )
-    def test_validate_formats(
-        self, tc: dict[str, Any], caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_validate_formats(self, tc: dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
         schema: dict[str, Any] = tc["schema"]
         data = tc["input"]
         expected = tc["expected"]
@@ -145,14 +137,12 @@ class TestFormatsFixture:
             result = validate_schema_dict(data, schema)
 
         assert result.valid == expected["valid"], (
-            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. "
-            f"errors={result.errors}"
+            f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
         )
 
         if expected.get("error_code"):
             assert result.error_code == expected["error_code"], (
-                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, "
-                f"expected {expected['error_code']!r}"
+                f"[{tc['id']}] error_code mismatch: got {result.error_code!r}, " f"expected {expected['error_code']!r}"
             )
 
         expected_warn = expected.get("warn_logged", False)

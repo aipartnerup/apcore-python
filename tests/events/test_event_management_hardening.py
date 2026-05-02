@@ -238,11 +238,7 @@ class TestCircuitOpenAfterThreshold:
         assert cb.state == CircuitState.OPEN
         assert cb.consecutive_failures == 3
 
-        circuit_opened = [
-            e
-            for e in emitted_events
-            if e.event_type == "apcore.subscriber.circuit_opened"
-        ]
+        circuit_opened = [e for e in emitted_events if e.event_type == "apcore.subscriber.circuit_opened"]
         assert len(circuit_opened) == 1
         assert circuit_opened[0].data["consecutive_failures"] == 3
 
@@ -360,11 +356,7 @@ class TestCircuitClosesOnSuccess:
         assert cb.state == CircuitState.CLOSED
         assert cb.consecutive_failures == 0
 
-        circuit_closed = [
-            e
-            for e in emitted_events
-            if e.event_type == "apcore.subscriber.circuit_closed"
-        ]
+        circuit_closed = [e for e in emitted_events if e.event_type == "apcore.subscriber.circuit_closed"]
         assert len(circuit_closed) == 1
         assert circuit_closed[0].severity == "info"
 
@@ -396,11 +388,7 @@ class TestCircuitHalfOpenFailureReopens:
         await cb.on_event(_make_event())
 
         assert cb.state == CircuitState.OPEN
-        circuit_opened = [
-            e
-            for e in emitted_events
-            if e.event_type == "apcore.subscriber.circuit_opened"
-        ]
+        circuit_opened = [e for e in emitted_events if e.event_type == "apcore.subscriber.circuit_opened"]
         assert len(circuit_opened) == 1
 
 
@@ -465,9 +453,7 @@ class TestStdoutSubscriberOutput:
         from apcore.events.subscribers import StdoutSubscriber
 
         sub = StdoutSubscriber(output_format="json")
-        await sub.on_event(
-            _make_event(event_type="apcore.config.updated", severity="info")
-        )
+        await sub.on_event(_make_event(event_type="apcore.config.updated", severity="info"))
 
         captured = capsys.readouterr()
         import json

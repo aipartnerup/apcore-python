@@ -48,9 +48,7 @@ class PrometheusExporter:
             RuntimeError: If the server is already running. Call ``stop()`` first.
         """
         if self._server is not None:
-            raise RuntimeError(
-                "PrometheusExporter is already running. Call stop() before start()."
-            )
+            raise RuntimeError("PrometheusExporter is already running. Call stop() before start().")
         exporter = self
 
         class _Handler(BaseHTTPRequestHandler):
@@ -58,9 +56,7 @@ class PrometheusExporter:
                 if self.path == path:
                     body = exporter.export().encode("utf-8")
                     self.send_response(200)
-                    self.send_header(
-                        "Content-Type", "text/plain; version=0.0.4; charset=utf-8"
-                    )
+                    self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)

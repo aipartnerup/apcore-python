@@ -70,11 +70,7 @@ def _is_multi_class_candidate(cls: type) -> bool:
     """Return True if cls is @multi_class-decorated and looks like a Module."""
     if not getattr(cls, _MULTI_CLASS_ATTR, False):
         return False
-    return (
-        hasattr(cls, "input_schema")
-        and hasattr(cls, "output_schema")
-        and callable(getattr(cls, "execute", None))
-    )
+    return hasattr(cls, "input_schema") and hasattr(cls, "output_schema") and callable(getattr(cls, "execute", None))
 
 
 def _compute_base_id(file_path: Path, extensions_root: str) -> str:

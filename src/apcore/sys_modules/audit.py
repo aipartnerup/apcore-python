@@ -75,8 +75,6 @@ class InMemoryAuditStore:
             entries = [e for e in entries if e.actor_id == actor_id]
         if since is not None:
             since_dt = datetime.fromisoformat(since)
-            entries = [
-                e for e in entries if datetime.fromisoformat(e.timestamp) >= since_dt
-            ]
+            entries = [e for e in entries if datetime.fromisoformat(e.timestamp) >= since_dt]
 
         return entries

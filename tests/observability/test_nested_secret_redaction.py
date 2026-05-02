@@ -67,9 +67,9 @@ class TestNestedSecretRedaction:
         cur = entry["extra"]
         for _ in range(33):
             cur = cur["n"]
-        assert cur.get("_secret_x") == "should_remain", (
-            "Recursion must stop at depth 32 — secrets deeper than that are out of scope"
-        )
+        assert (
+            cur.get("_secret_x") == "should_remain"
+        ), "Recursion must stop at depth 32 — secrets deeper than that are out of scope"
 
     def test_recursion_reaches_depth_32(self) -> None:
         """At exactly depth 32 redaction still applies."""

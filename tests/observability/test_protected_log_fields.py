@@ -39,9 +39,7 @@ class TestProtectedLogFields:
         )
         buf = io.StringIO()
         logger = ContextLogger(name="t", output=buf)
-        mw = ObsLoggingMiddleware(
-            logger=logger, log_inputs=True, redaction_config=config
-        )
+        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
         ctx = Context.create()
         ctx.call_chain.append("executor.x")
         mw.before(
@@ -66,9 +64,7 @@ class TestProtectedLogFields:
         )
         buf = io.StringIO()
         logger = ContextLogger(name="t", output=buf)
-        mw = ObsLoggingMiddleware(
-            logger=logger, log_inputs=True, redaction_config=config
-        )
+        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
         ctx = Context.create()
         mw.before("mod.a", {"trace_id": "kept", "other": "v"}, ctx)
         entry = json.loads(buf.getvalue().strip())

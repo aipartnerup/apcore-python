@@ -140,9 +140,7 @@ class TestContinueOnIgnoredError:
             _TrackingStep("step_c"),
         ]
         strategy = ExecutionStrategy("test", steps)
-        ctx = PipelineContext(
-            module_id="demo.process", inputs={}, context=None, output={"result": 42}
-        )
+        ctx = PipelineContext(module_id="demo.process", inputs={}, context=None, output={"result": 42})
         engine = PipelineEngine()
 
         result, trace = await engine.run(strategy, ctx)

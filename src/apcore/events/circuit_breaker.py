@@ -69,9 +69,7 @@ class CircuitBreakerWrapper:
         try:
             self._check_recovery()
         except Exception:
-            logger.exception(
-                "CircuitBreakerWrapper._check_recovery raised unexpectedly"
-            )
+            logger.exception("CircuitBreakerWrapper._check_recovery raised unexpectedly")
             return
 
         with self._lock:
@@ -104,9 +102,7 @@ class CircuitBreakerWrapper:
         with self._lock:
             if self._state != CircuitState.OPEN or self._last_failure_at is None:
                 return
-            elapsed_ms = (
-                datetime.now(timezone.utc) - self._last_failure_at
-            ).total_seconds() * 1000
+            elapsed_ms = (datetime.now(timezone.utc) - self._last_failure_at).total_seconds() * 1000
             if elapsed_ms >= self._recovery_window_ms:
                 self._state = CircuitState.HALF_OPEN
 
@@ -132,8 +128,7 @@ class CircuitBreakerWrapper:
             self._last_failure_at = datetime.now(timezone.utc)
 
             opens = self._state == CircuitState.HALF_OPEN or (
-                self._state == CircuitState.CLOSED
-                and self._consecutive_failures >= self._open_threshold
+                self._state == CircuitState.CLOSED and self._consecutive_failures >= self._open_threshold
             )
             if opens:
                 self._state = CircuitState.OPEN
@@ -153,9 +148,7 @@ class CircuitBreakerWrapper:
                 )
             return None
 
-    def _make_event(
-        self, event_type: str, severity: str, data: dict[str, Any]
-    ) -> ApCoreEvent:
+    def _make_event(self, event_type: str, severity: str, data: dict[str, Any]) -> ApCoreEvent:
         return ApCoreEvent(
             event_type=event_type,
             module_id=None,

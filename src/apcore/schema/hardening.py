@@ -124,9 +124,7 @@ def validate_schema_dict(data: Any, schema: dict[str, Any]) -> SchemaValidationR
     if raw_errors:
         error_code = _map_error_code(raw_errors)
         details = [_error_to_detail(e) for e in raw_errors]
-        return SchemaValidationResult(
-            valid=False, errors=details, error_code=error_code
-        )
+        return SchemaValidationResult(valid=False, errors=details, error_code=error_code)
 
     _check_formats_and_warn(data, schema)
     return SchemaValidationResult(valid=True, errors=[])
