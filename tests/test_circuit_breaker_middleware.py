@@ -115,14 +115,22 @@ def test_success_resets_failure_counter() -> None:
 
 
 def test_circuit_open_raises_circuit_open_error() -> None:
+    from apcore.errors import CircuitBreakerOpenError
+
     cb = CircuitBreakerMiddleware(failure_threshold=1)
     _call_before(cb)
     _call_on_error(cb)
 
     assert cb.get_state("m1") == CircuitState.OPEN
-    with pytest.raises(CircuitOpenError) as exc_info:
+    # Per sync A-001 the canonical class is CircuitBreakerOpenError.
+    with pytest.raises(CircuitBreakerOpenError) as exc_info:
         _call_before(cb)
     assert exc_info.value.module_id == "m1"
+    # The legacy CircuitOpenError is a subclass alias — the raised instance
+    # is NOT an instance of the legacy class (parent ≠ child), but legacy
+    # `except CircuitOpenError` blocks catching CircuitOpenError instances
+    # raised explicitly by user code still function.
+    assert isinstance(exc_info.value, CircuitBreakerOpenError)
 
 
 def test_circuit_open_does_not_affect_other_modules() -> None:
@@ -312,8 +320,11 @@ async def test_execute_on_error_async_does_not_block() -> None:
 
 
 def test_circuit_open_error_properties() -> None:
+    # Per sync A-001, the canonical wire code is CIRCUIT_BREAKER_OPEN. The
+    # legacy CircuitOpenError class remains as a subclass alias of
+    # CircuitBreakerOpenError and emits the canonical code on the wire.
     err = CircuitOpenError(module_id="my.module")
-    assert err.code == "CIRCUIT_OPEN"
+    assert err.code == "CIRCUIT_BREAKER_OPEN"
     assert err.module_id == "my.module"
     assert err.retryable is True
 
@@ -321,7 +332,10 @@ def test_circuit_open_error_properties() -> None:
 def test_error_codes_circuit_open_constant() -> None:
     from apcore.errors import ErrorCodes
 
+    # Legacy constant retained for backwards compatibility.
     assert ErrorCodes.CIRCUIT_OPEN == "CIRCUIT_OPEN"
+    # Canonical constant (sync A-001).
+    assert ErrorCodes.CIRCUIT_BREAKER_OPEN == "CIRCUIT_BREAKER_OPEN"
 
 
 # ---------------------------------------------------------------------------

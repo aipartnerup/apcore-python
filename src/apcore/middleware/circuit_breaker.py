@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from apcore.errors import CircuitOpenError
+from apcore.errors import CircuitBreakerOpenError, CircuitOpenError
 from apcore.middleware.base import Context, Middleware, RetrySignal
 
 __all__ = ["CircuitState", "CircuitBreakerMiddleware"]
@@ -45,7 +45,7 @@ class CircuitBreakerMiddleware(Middleware):
         HALF_OPEN → (half_open_successes >= success_threshold) → CLOSED
         HALF_OPEN → failure → OPEN
 
-    When the circuit is OPEN the ``before()`` hook raises :class:`~apcore.errors.CircuitOpenError`,
+    When the circuit is OPEN the ``before()`` hook raises :class:`~apcore.errors.CircuitBreakerOpenError`,
     short-circuiting module execution entirely.
     """
 
@@ -103,7 +103,7 @@ class CircuitBreakerMiddleware(Middleware):
         with record.lock:
             self._maybe_transition_to_half_open(record, module_id)
             if record.state == CircuitState.OPEN:
-                raise CircuitOpenError(module_id=module_id)
+                raise CircuitBreakerOpenError(module_id=module_id)
         return None
 
     def after(
@@ -125,7 +125,7 @@ class CircuitBreakerMiddleware(Middleware):
         error: Exception,
         context: Context,
     ) -> dict[str, Any] | RetrySignal | None:
-        if isinstance(error, CircuitOpenError):
+        if isinstance(error, CircuitBreakerOpenError):
             return None
         record = self._get_record(module_id)
         with record.lock:

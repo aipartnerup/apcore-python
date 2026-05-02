@@ -321,3 +321,35 @@ class TestAiGuidanceDefaults:
         custom_guidance = "custom AI guidance message"
         err = cls(**kwargs, ai_guidance=custom_guidance)
         assert err.ai_guidance == custom_guidance
+
+
+class TestCircuitBreakerOpenError:
+    """Cross-language alignment (sync A-001): canonical name CircuitBreakerOpenError, code CIRCUIT_BREAKER_OPEN."""
+
+    def test_circuit_breaker_open_error_canonical_name_and_code(self) -> None:
+        from apcore.errors import CircuitBreakerOpenError, CircuitOpenError, ErrorCodes
+
+        # Canonical class exists and exposes the new code constant
+        assert hasattr(ErrorCodes, "CIRCUIT_BREAKER_OPEN")
+        assert ErrorCodes.CIRCUIT_BREAKER_OPEN == "CIRCUIT_BREAKER_OPEN"
+
+        err = CircuitBreakerOpenError(module_id="my.module")
+        assert err.code == "CIRCUIT_BREAKER_OPEN"
+        assert err.retryable is True
+        assert err.module_id == "my.module"
+
+        # Backwards-compatible alias: existing user code that catches
+        # CircuitOpenError must still work — it is a subclass of the new
+        # canonical class so isinstance checks pass both ways.
+        legacy = CircuitOpenError(module_id="legacy.module")
+        assert isinstance(legacy, CircuitBreakerOpenError)
+        assert isinstance(CircuitBreakerOpenError(module_id="x"), CircuitBreakerOpenError)
+
+    def test_circuit_breaker_open_error_exported_from_apcore(self) -> None:
+        import apcore
+
+        assert hasattr(apcore, "CircuitBreakerOpenError")
+        assert apcore.CircuitBreakerOpenError is not None
+        # Legacy alias still exported
+        assert hasattr(apcore, "CircuitOpenError")
+        assert issubclass(apcore.CircuitOpenError, apcore.CircuitBreakerOpenError)

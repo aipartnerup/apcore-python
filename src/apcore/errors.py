@@ -65,6 +65,7 @@ __all__ = [
     "ModuleIdConflictError",
     "InvalidSegmentError",
     "IdTooLongError",
+    "CircuitBreakerOpenError",
     "CircuitOpenError",
     "ErrorCodes",
     "ErrorCodeCollisionError",
@@ -444,8 +445,14 @@ class ModuleTimeoutError(ModuleError):
         return self.details["timeout_ms"]
 
 
-class CircuitOpenError(ModuleError):
-    """Raised when CircuitBreakerMiddleware rejects a call because the circuit is open."""
+class CircuitBreakerOpenError(ModuleError):
+    """Raised when CircuitBreakerMiddleware rejects a call because the circuit is open.
+
+    Canonical name and code per cross-language spec (sync A-001):
+    Python/TypeScript/Rust converge on ``CircuitBreakerOpenError`` /
+    ``CIRCUIT_BREAKER_OPEN``. The legacy :class:`CircuitOpenError` is
+    retained as a backwards-compatible subclass alias.
+    """
 
     _default_retryable: bool | None = True
 
@@ -456,8 +463,11 @@ class CircuitOpenError(ModuleError):
             "The circuit will enter HALF_OPEN after the recovery window elapses. "
             "Retry the request after a short delay.",
         )
+        # Allow subclasses (e.g. CircuitOpenError legacy alias) to override
+        # the wire code via kwargs without breaking signature compatibility.
+        code = kwargs.pop("code", "CIRCUIT_BREAKER_OPEN")
         super().__init__(
-            code="CIRCUIT_OPEN",
+            code=code,
             message=f"Circuit open for module '{module_id}' — call rejected",
             details={"module_id": module_id},
             **kwargs,
@@ -467,6 +477,19 @@ class CircuitOpenError(ModuleError):
     def module_id(self) -> str:
         """The module whose circuit is open."""
         return self.details["module_id"]
+
+
+class CircuitOpenError(CircuitBreakerOpenError):
+    """Deprecated alias for :class:`CircuitBreakerOpenError` (sync A-001).
+
+    Kept as a subclass so existing ``except CircuitOpenError`` blocks continue
+    to work. New code SHOULD raise and catch :class:`CircuitBreakerOpenError`
+    directly. Will be removed in a future major release.
+
+    Note: instances of this legacy class still emit the canonical
+    ``CIRCUIT_BREAKER_OPEN`` error code on the wire — only the Python class
+    name is retained for backwards compatibility.
+    """
 
 
 class SchemaValidationError(ModuleError):
@@ -1273,7 +1296,8 @@ class ErrorCodes:
     BINDING_FILE_INVALID = "BINDING_FILE_INVALID"
     CIRCULAR_DEPENDENCY = "CIRCULAR_DEPENDENCY"
     MIDDLEWARE_CHAIN_ERROR = "MIDDLEWARE_CHAIN_ERROR"
-    CIRCUIT_OPEN = "CIRCUIT_OPEN"
+    CIRCUIT_OPEN = "CIRCUIT_OPEN"  # Deprecated: use CIRCUIT_BREAKER_OPEN (sync A-001)
+    CIRCUIT_BREAKER_OPEN = "CIRCUIT_BREAKER_OPEN"
     APPROVAL_DENIED = "APPROVAL_DENIED"
     APPROVAL_TIMEOUT = "APPROVAL_TIMEOUT"
     APPROVAL_PENDING = "APPROVAL_PENDING"

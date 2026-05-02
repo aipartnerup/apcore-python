@@ -437,6 +437,7 @@ class TestPublicAPIAll:
         "BindingStrictSchemaIncompatibleError",
         "CallDepthExceededError",
         "CallFrequencyExceededError",
+        "CircuitBreakerOpenError",
         "CircuitOpenError",
         "CircularCallError",
         "CircularDependencyError",
