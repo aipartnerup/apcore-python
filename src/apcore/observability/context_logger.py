@@ -26,6 +26,12 @@ _LEVELS = {
 
 _REDACTED = "***REDACTED***"
 
+# Maximum recursion depth for nested redaction.  Matches the spec's schema
+# validation depth limit (32) so the redactor can never run away on
+# adversarial / cyclic-looking input.  Deeper structures stop being
+# inspected — secrets buried below depth 32 are out of scope.
+_MAX_REDACTION_DEPTH = 32
+
 
 @dataclass
 class RedactionConfig:
@@ -54,6 +60,31 @@ def _apply_redaction_config(data: dict[str, Any], config: RedactionConfig) -> di
         value_match = any(re.search(pattern, value_str) for pattern in config.value_patterns)
         result[key] = config.replacement if (field_match or value_match) else value
     return result
+
+
+def _redact_secrets_recursive(value: Any, depth: int = 0) -> Any:
+    """Recursively redact ``_secret_*``-prefixed keys up to ``_MAX_REDACTION_DEPTH``.
+
+    Returns a structurally-equal copy of *value* in which any dict entry whose
+    key starts with ``"_secret_"`` has its value replaced by :data:`_REDACTED`.
+    Recursion descends into nested dicts and lists.  When *depth* exceeds
+    :data:`_MAX_REDACTION_DEPTH` the current node is returned as-is — secrets
+    deeper than that threshold are not inspected (defensive bound matching the
+    schema validation depth limit).
+    """
+    if depth > _MAX_REDACTION_DEPTH:
+        return value
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if isinstance(k, str) and k.startswith("_secret_"):
+                out[k] = _REDACTED
+            else:
+                out[k] = _redact_secrets_recursive(v, depth + 1)
+        return out
+    if isinstance(value, list):
+        return [_redact_secrets_recursive(item, depth + 1) for item in value]
+    return value
 
 
 class ContextLogger:
@@ -95,7 +126,9 @@ class ContextLogger:
 
         redacted_extra = extra
         if extra is not None and self._redact_sensitive:
-            redacted_extra = {k: (_REDACTED if k.startswith("_secret_") else v) for k, v in extra.items()}
+            # Recursive defense-in-depth: redact any nested _secret_* keys up
+            # to _MAX_REDACTION_DEPTH (matches schema validation depth limit).
+            redacted_extra = _redact_secrets_recursive(extra)
 
         now = datetime.now(timezone.utc)
         entry = {
