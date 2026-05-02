@@ -17,7 +17,7 @@ from apcore.errors import (
     InvalidInputError,
     ModuleNotFoundError,
 )
-from apcore.registry.conflicts import detect_id_conflicts
+from apcore.registry.conflicts import ConflictSeverity, detect_id_conflicts
 from apcore.registry.dependencies import resolve_dependencies
 from apcore.registry.entry_point import resolve_entry_point
 from apcore.registry.metadata import (
@@ -1557,12 +1557,24 @@ class Registry:
         merged_meta = merge_module_metadata(module, {})
 
         with self._lock:
-            if module_id in self._modules:
-                # Aligned with apcore-typescript / apcore-rust and the canonical
-                # message produced by detect_id_conflicts for the public
-                # `register()` path.
+            # Sync finding A-D-002: use detect_id_conflicts with an empty
+            # reserved-words set so case-collision detection still runs on
+            # the sys/internal path. Apcore-rust's register_core (called by
+            # register_internal) does this; previously Python+TS used a bare
+            # `module_id in self._modules` check, losing case-collision
+            # symmetry. The lowercase-only EBNF pattern enforced by
+            # _validate_module_id makes the case mismatch unreachable today,
+            # but keeping the contract surface aligned across SDKs preserves
+            # the invariant for future relaxations.
+            conflict = detect_id_conflicts(
+                module_id,
+                set(self._modules.keys()),
+                reserved_words=frozenset(),
+                lowercase_map=self._lowercase_map,
+            )
+            if conflict is not None and conflict.severity == ConflictSeverity.ERROR:
                 raise InvalidInputError(
-                    message=f"Module ID '{module_id}' is already registered",
+                    message=conflict.message,
                     code=ErrorCodes.DUPLICATE_MODULE_ID,
                 )
             self._modules[module_id] = module

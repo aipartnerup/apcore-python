@@ -152,6 +152,54 @@ class TestFormatsFixture:
             f"log records: {[r.message for r in caplog.records]}"
         )
 
+    # Regression: sync finding A-D-032 — format checks must recurse into
+    # nested objects and arrays. Previously the Python walker only iterated
+    # top-level `properties` while apcore-typescript and apcore-rust both
+    # recursed; same input + schema produced different warning sets.
+    def test_format_violation_in_nested_object_emits_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "created_at": {"type": "string", "format": "date-time"},
+                    },
+                },
+            },
+        }
+        data = {"user": {"created_at": "not-a-real-date-time"}}
+        with caplog.at_level(logging.WARNING, logger="apcore.schema.hardening"):
+            validate_schema_dict(data, schema)
+        messages = [r.message for r in caplog.records]
+        assert any(
+            "Format violation" in m and "date-time" in m and "not-a-real-date-time" in m
+            for m in messages
+        ), f"expected nested format violation warning, got {messages}"
+
+    def test_format_violation_in_array_items_emits_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string", "format": "uuid"},
+                },
+            },
+        }
+        data = {"ids": ["not-a-uuid", "also-not-a-uuid"]}
+        with caplog.at_level(logging.WARNING, logger="apcore.schema.hardening"):
+            validate_schema_dict(data, schema)
+        warnings = [r.message for r in caplog.records if "Format violation" in r.message]
+        # Both array items should emit a warning.
+        assert len(warnings) == 2, (
+            f"expected 2 array-item format violations (one per non-uuid string), got {warnings}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Fixture 5: Content-addressable cache (SHA-256 deduplication)

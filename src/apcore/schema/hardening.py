@@ -156,25 +156,58 @@ def _error_to_detail(error: JsonschemaError) -> SchemaValidationErrorDetail:
     )
 
 
-def _check_formats_and_warn(data: Any, schema: Any) -> None:
-    """Walk the data/schema tree and log warnings for format violations."""
-    if not isinstance(schema, dict) or not isinstance(data, dict):
+def _check_formats_and_warn(data: Any, schema: Any, _path: str = "") -> None:
+    """Walk the data/schema tree and log warnings for format violations.
+
+    Sync finding A-D-032: previously this function only iterated
+    ``schema['properties']`` at the top level — nested invalid date-time /
+    uuid / etc. formats at e.g. ``/user/created_at`` emitted no warning
+    in Python while apcore-typescript and apcore-rust did warn. The
+    walker now recurses into nested ``properties`` AND ``items`` so
+    cross-language conformance fixtures see the same warning set.
+    """
+    if not isinstance(schema, dict):
         return
 
-    properties = schema.get("properties", {})
-    for prop_name, prop_schema in properties.items():
-        if not isinstance(prop_schema, dict):
-            continue
-        value = data.get(prop_name)
-        if value is None:
-            continue
-        fmt = prop_schema.get("format")
-        if fmt and isinstance(value, str):
-            checker = _FORMAT_CHECKERS.get(fmt)
-            if checker is not None and not checker(value):
-                logger.warning(
-                    "Format violation (non-fatal): field %r declared format=%r but value %r is not conformant",
-                    prop_name,
-                    fmt,
-                    value,
-                )
+    # Object: walk each property + recurse on its sub-schema
+    if isinstance(data, dict):
+        properties = schema.get("properties", {})
+        if isinstance(properties, dict):
+            for prop_name, prop_schema in properties.items():
+                if not isinstance(prop_schema, dict):
+                    continue
+                value = data.get(prop_name)
+                if value is None:
+                    continue
+                child_path = f"{_path}/{prop_name}" if _path else f"/{prop_name}"
+                fmt = prop_schema.get("format")
+                if fmt and isinstance(value, str):
+                    checker = _FORMAT_CHECKERS.get(fmt)
+                    if checker is not None and not checker(value):
+                        logger.warning(
+                            "Format violation (non-fatal): field %r declared format=%r but value %r is not conformant",
+                            child_path,
+                            fmt,
+                            value,
+                        )
+                # Recurse into nested objects and arrays.
+                _check_formats_and_warn(value, prop_schema, child_path)
+
+    # Array: walk each element against the schema's `items` declaration.
+    if isinstance(data, list):
+        items_schema = schema.get("items")
+        if isinstance(items_schema, dict):
+            for idx, value in enumerate(data):
+                child_path = f"{_path}[{idx}]"
+                if isinstance(value, str):
+                    fmt = items_schema.get("format")
+                    if fmt:
+                        checker = _FORMAT_CHECKERS.get(fmt)
+                        if checker is not None and not checker(value):
+                            logger.warning(
+                                "Format violation (non-fatal): field %r declared format=%r but value %r is not conformant",
+                                child_path,
+                                fmt,
+                                value,
+                            )
+                _check_formats_and_warn(value, items_schema, child_path)
