@@ -531,6 +531,9 @@ class TestPublicAPIAll:
         "ApCoreEvent",
         "WebhookSubscriber",
         "A2ASubscriber",
+        "FileSubscriber",
+        "StdoutSubscriber",
+        "FilterSubscriber",
         "on",
         "off",
         # Toggle
