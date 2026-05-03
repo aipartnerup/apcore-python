@@ -636,6 +636,10 @@ class TestPublicAPIAll:
         "ReloadModule",
         "ToggleFeatureModule",
         "ToggleState",
+        # Overrides Store (cross-language alignment with TS / Rust)
+        "OverridesStore",
+        "InMemoryOverridesStore",
+        "FileOverridesStore",
         # System Modules context type
         "SysModulesContext",
         # System module registration

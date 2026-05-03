@@ -29,6 +29,7 @@ from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.module import ModuleAnnotations
 from apcore.registry.registry import Registry
 from apcore.sys_modules.audit import AuditEntry, AuditStore
+from apcore.sys_modules.overrides import OverridesStore
 
 __all__ = [
     "UpdateConfigModule",
@@ -106,6 +107,23 @@ def _get_overrides_lock(overrides_path: str) -> threading.Lock:
         if overrides_path not in _overrides_locks:
             _overrides_locks[overrides_path] = threading.Lock()
         return _overrides_locks[overrides_path]
+
+
+def _persist_via_store(store: OverridesStore, key: str, value: Any) -> None:
+    """Read-modify-write a single override key through a pluggable store.
+
+    Errors are logged but never propagated — persistence failures must not
+    cause the in-memory mutation (already applied) to surface as a runtime
+    exception, mirroring the legacy ``_write_overrides`` semantics.
+    """
+    try:
+        existing = store.load() or {}
+        if not isinstance(existing, dict):
+            existing = {}
+        existing[key] = value
+        store.save(existing)
+    except Exception as exc:
+        logger.error("Failed to persist override for key '%s' via store: %s", key, exc)
 
 
 def _write_overrides(overrides_path: str, key: str, value: Any) -> None:
@@ -243,11 +261,13 @@ class UpdateConfigModule:
         event_emitter: EventEmitter,
         overrides_path: str | None = None,
         audit_store: AuditStore | None = None,
+        overrides_store: OverridesStore | None = None,
     ) -> None:
         self._config = config
         self._emitter = event_emitter
         self._overrides_path = overrides_path
         self._audit_store = audit_store
+        self._overrides_store = overrides_store
 
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
         """Update a config value, emit event, and optionally persist + audit."""
@@ -262,7 +282,9 @@ class UpdateConfigModule:
         self._emit_event(key, old_value, value, context)
         self._log_change(key, old_value, value, reason)
 
-        if self._overrides_path:
+        if self._overrides_store is not None:
+            _persist_via_store(self._overrides_store, key, value)
+        elif self._overrides_path:
             _write_overrides(self._overrides_path, key, value)
 
         redacted = self._is_sensitive_key(key)
@@ -738,12 +760,14 @@ class ToggleFeatureModule:
         toggle_state: ToggleState | None = None,
         overrides_path: str | None = None,
         audit_store: AuditStore | None = None,
+        overrides_store: OverridesStore | None = None,
     ) -> None:
         self._registry = registry
         self._emitter = event_emitter
         self._toggle_state = toggle_state or _default_toggle_state
         self._overrides_path = overrides_path
         self._audit_store = audit_store
+        self._overrides_store = overrides_store
 
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
         """Toggle a module's enabled/disabled state."""
@@ -755,7 +779,13 @@ class ToggleFeatureModule:
         self._emit_event(module_id, enabled, context)
         self._log_toggle(module_id, enabled, reason)
 
-        if self._overrides_path:
+        if self._overrides_store is not None:
+            _persist_via_store(
+                self._overrides_store,
+                f"toggle.{module_id}",
+                enabled,
+            )
+        elif self._overrides_path:
             _write_overrides(
                 self._overrides_path,
                 f"toggle.{module_id}",

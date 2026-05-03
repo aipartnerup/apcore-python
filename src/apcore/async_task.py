@@ -493,7 +493,7 @@ class AsyncTaskManager:
         self,
         *,
         ttl_seconds: float | int = 3600.0,
-        sweep_interval_ms: float | int = 3_600_000,
+        sweep_interval_ms: float | int = 300_000,
         interval_seconds: Any = _UNSET,
         max_age_seconds: Any = _UNSET,
     ) -> ReaperHandle:
@@ -501,11 +501,14 @@ class AsyncTaskManager:
 
         Cross-language signature alignment (Issue #34 D-11): TS and Rust
         SDKs expose ``ttl_seconds`` (seconds) and ``sweep_interval_ms``
-        (milliseconds) and return a :class:`ReaperHandle`.
+        (milliseconds) and return a :class:`ReaperHandle`. The default
+        sweep cadence is **300_000 ms (5 minutes)**, matching TS and Rust.
 
         Args:
-            ttl_seconds: Terminal tasks older than this are removed (seconds).
+            ttl_seconds: Terminal tasks older than this are removed
+                (seconds). Default 3600.0 (1 hour).
             sweep_interval_ms: How often to run cleanup (milliseconds).
+                Default 300_000 (5 minutes).
             interval_seconds: **Deprecated** alias for ``sweep_interval_ms``
                 expressed in seconds; emits ``DeprecationWarning``.
             max_age_seconds: **Deprecated** alias for ``ttl_seconds``; emits
@@ -522,7 +525,7 @@ class AsyncTaskManager:
         """
         # Resolve legacy aliases with explicit conflict checks.
         if interval_seconds is not _UNSET:
-            if sweep_interval_ms != 3_600_000:
+            if sweep_interval_ms != 300_000:
                 raise TypeError(
                     "start_reaper() received both 'sweep_interval_ms' and "
                     "deprecated 'interval_seconds'; pass only one."
