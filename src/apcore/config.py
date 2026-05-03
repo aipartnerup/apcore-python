@@ -1220,6 +1220,7 @@ _DEFAULT_OBS_REDACTION_SENSITIVE_KEYS: list[str] = [
     "token",
     "api_key",
     "apikey",
+    "apiKey",
     "access_key",
     "private_key",
     "authorization",
