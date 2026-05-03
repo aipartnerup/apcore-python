@@ -166,7 +166,14 @@ class MiddlewareManager:
         inputs: dict[str, Any],
         context: Context,
     ) -> tuple[dict[str, Any], list[Middleware]]:
-        """Async-aware execute_before: awaits coroutine middlewares, calls sync ones directly."""
+        """Async-aware execute_before.
+
+        Issue #42: gate on the **return value** (``inspect.isawaitable``)
+        instead of ``inspect.iscoroutinefunction(mw.before)``. The latter
+        misses ``functools.partial`` wrappers and any decorator that hides
+        the underlying ``async def`` (no ``__wrapped__``), silently dropping
+        the awaited result.
+        """
         current_inputs = inputs
         executed_middlewares: list[Middleware] = []
         middlewares = self.snapshot()
@@ -174,10 +181,8 @@ class MiddlewareManager:
         for mw in middlewares:
             executed_middlewares.append(mw)
             try:
-                if inspect.iscoroutinefunction(mw.before):
-                    result = await mw.before(module_id, current_inputs, context)
-                else:
-                    result = mw.before(module_id, current_inputs, context)
+                ret = mw.before(module_id, current_inputs, context)
+                result = await ret if inspect.isawaitable(ret) else ret
             except Exception as e:
                 raise MiddlewareChainError(original=e, executed_middlewares=executed_middlewares) from e
             if result is not None:
@@ -192,15 +197,17 @@ class MiddlewareManager:
         output: dict[str, Any],
         context: Context,
     ) -> dict[str, Any]:
-        """Async-aware execute_after: awaits coroutine middlewares, calls sync ones directly."""
+        """Async-aware execute_after.
+
+        Issue #42: gate on ``inspect.isawaitable(return_value)`` rather than
+        ``iscoroutinefunction`` to handle decorated/partial async handlers.
+        """
         current_output = output
         middlewares = self.snapshot()
 
         for mw in reversed(middlewares):
-            if inspect.iscoroutinefunction(mw.after):
-                result = await mw.after(module_id, inputs, current_output, context)
-            else:
-                result = mw.after(module_id, inputs, current_output, context)
+            ret = mw.after(module_id, inputs, current_output, context)
+            result = await ret if inspect.isawaitable(ret) else ret
             if result is not None:
                 current_output = result
 
@@ -216,9 +223,16 @@ class MiddlewareManager:
     ) -> dict[str, Any] | RetrySignal | None:
         """Async-aware on_error chain.
 
-        Sync ``on_error`` handlers are run via ``asyncio.to_thread`` so that
-        blocking operations (e.g. ``time.sleep`` in :class:`RetryMiddleware`)
-        do not stall the event loop. Async handlers are awaited directly.
+        Issue #42: gate on the return value with ``inspect.isawaitable``.
+        ``inspect.iscoroutinefunction(mw.on_error)`` returns False for
+        ``functools.partial`` wrappers and decorated callables that hide
+        ``__wrapped__``, which previously caused the recovery coroutine to
+        be silently dropped (the ``isinstance(recovery, dict)`` test then
+        evaluated against an un-awaited coroutine).
+
+        Truly synchronous ``on_error`` handlers still run via
+        ``asyncio.to_thread`` so blocking operations (e.g. ``time.sleep`` in
+        :class:`RetryMiddleware`) do not stall the event loop.
 
         Matches the sync contract: returns a recovery ``dict``, a
         :class:`RetrySignal`, or ``None``.
@@ -228,7 +242,13 @@ class MiddlewareManager:
                 if inspect.iscoroutinefunction(mw.on_error):
                     recovery = await mw.on_error(module_id, inputs, error, context)
                 else:
-                    recovery = await asyncio.to_thread(mw.on_error, module_id, inputs, error, context)
+                    # Run in thread first; if the sync callable actually
+                    # returned a coroutine/awaitable (partial / decorator
+                    # over ``async def``) await it on this loop.
+                    ret = await asyncio.to_thread(
+                        mw.on_error, module_id, inputs, error, context
+                    )
+                    recovery = await ret if inspect.isawaitable(ret) else ret
                 if isinstance(recovery, RetrySignal):
                     return recovery
                 if isinstance(recovery, dict):

@@ -8,9 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Granular reload via `path_filter` input in `ReloadModule` (#45.4) — `Registry.discover(path_filter=...)` accepts a glob string or list of patterns and only walks matching files; previously-registered modules outside the filter remain untouched. Patterns are matched (via `pathlib.PurePath.match`) against both the absolute file path and its path relative to each configured extension root.
+- Error fingerprinting in `ErrorHistory` — dedup by (error_code, top-frame hash, sanitized message template) (#43 §4). New `compute_error_fingerprint(error, module_id)` folds the deepest stack-frame `file:lineno:func` (basename only, for cross-machine stability) into the SHA-256 digest in addition to the existing code/module/normalized-message inputs. Long hex runs (≥ 8 chars) are now collapsed to `<HEX>` alongside the existing UUID/timestamp/integer placeholders. Legacy 3-arg `compute_fingerprint` retained.
+- Configurable redaction via `obs.redaction.regex_patterns` and `obs.redaction.sensitive_keys` Config keys (#43 §5). New `obs` namespace ships with sensible defaults (`password`, `secret`, `token`, `api_key`, `authorization`, `cookie`, `_secret_*`, …); operators can override via `apcore.yaml`. `RedactionConfig.from_config(config)` / `RedactionConfig.default()` build the runtime config; `_secret_` prefix matching becomes a default entry rather than a hard-coded rule. Field-name match is case-insensitive substring with `-`/`_`/space normalization (so `"X-API-Key"` matches `"api_key"`); value-regex match is case-insensitive. `apcore.utils.redaction.redact_sensitive` accepts new keyword overrides (`sensitive_keys`, `regex_patterns`, `replacement`).
+
 ### Changed
 
 - **Cross-language alignment (sync A-001)** — Renamed `CircuitOpenError` (code `CIRCUIT_OPEN`) to canonical `CircuitBreakerOpenError` (code `CIRCUIT_BREAKER_OPEN`) to match TypeScript and Rust SDKs and the protocol spec. The legacy `CircuitOpenError` class is retained as a deprecated subclass alias of `CircuitBreakerOpenError` so existing `except CircuitOpenError:` blocks raising the legacy class continue to work; the legacy class will be removed in a future major release. The wire error code emitted by `CircuitBreakerMiddleware` is now `CIRCUIT_BREAKER_OPEN` for both classes. New `ErrorCodes.CIRCUIT_BREAKER_OPEN` constant added; `ErrorCodes.CIRCUIT_OPEN` retained as a deprecated alias. `CircuitBreakerOpenError` is exported from the top-level `apcore` package.
+- `AsyncTaskManager.start_reaper` aligned with TS / Rust D-11 surface — accepts `ttl_seconds` (seconds) and `sweep_interval_ms` (milliseconds) keyword arguments and returns a new `ReaperHandle` (with `stop()` / `is_running()`). The legacy `interval_seconds` / `max_age_seconds` arguments still work but emit `DeprecationWarning`; passing both legacy and new aliases for the same value raises `TypeError`. `ReaperHandle` is exported from `apcore.async_task`.
+
+### Fixed
+
+- Async `on_error` middleware now detects awaitable **return values** via `inspect.isawaitable(...)` rather than `inspect.iscoroutinefunction(mw.on_error)` (#42). The previous gate missed `functools.partial` wrappers and decorator-wrapped async handlers (no `__wrapped__`), causing the recovery coroutine to be silently dropped — `isinstance(recovery, dict)` then evaluated against an un-awaited coroutine and the chain aborted. The same fix applies to `execute_before` and `execute_after`. Truly synchronous handlers continue to run through `asyncio.to_thread` so blocking calls (`time.sleep` in `RetryMiddleware`) do not stall the event loop.
 
 
 ## [0.20.0] - 2026-04-29

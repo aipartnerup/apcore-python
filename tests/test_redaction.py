@@ -81,19 +81,26 @@ class TestRedactSensitiveArray:
     """Tests for array item redaction."""
 
     def test_array_items_redacted(self) -> None:
-        """Array items with x-sensitive on items schema are redacted."""
-        data = {"tokens": ["abc", "def"]}
+        """Array items with x-sensitive on items schema are redacted.
+
+        Use a field name that does NOT collide with the default
+        ``obs.redaction.sensitive_keys`` substring list (Issue #43 §5)
+        so the test isolates schema-driven array-item redaction.
+        """
+        data = {"items": ["abc", "def"]}
         schema = {
             "type": "object",
             "properties": {
-                "tokens": {
+                "items": {
                     "type": "array",
                     "items": {"type": "string", "x-sensitive": True},
                 },
             },
         }
-        result = redact_sensitive(data, schema)
-        assert result["tokens"] == ["***REDACTED***", "***REDACTED***"]
+        # Pass an empty sensitive_keys list to keep this test focused on
+        # the schema-level redaction codepath only.
+        result = redact_sensitive(data, schema, sensitive_keys=[])
+        assert result["items"] == ["***REDACTED***", "***REDACTED***"]
 
 
 class TestRedactSensitiveNullAndMissing:
