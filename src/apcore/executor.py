@@ -902,7 +902,14 @@ class Executor:
             s for s in self._strategy.steps if s.name in ("output_validation", "middleware_after", "return_result")
         ]
         if post_steps:
-            post_strategy = ExecutionStrategy("post_stream", post_steps)
+            # The post-stream sub-strategy is a slice of an already-validated
+            # parent strategy; its ``requires`` keys (e.g. ``module``,
+            # ``output``) are seeded by the streaming pre-flight, not by
+            # earlier steps in this sub-strategy. Skip the strict §2.1
+            # dependency check that would otherwise reject the slice.
+            post_strategy = ExecutionStrategy(
+                "post_stream", post_steps, validate_dependencies=False
+            )
             try:
                 await self._pipeline_engine.run(post_strategy, pipe_ctx)
             except Exception as post_exc:

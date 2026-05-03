@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from collections.abc import Sequence
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from apcore.errors import ModuleError
 from apcore.utils.pattern import match_pattern
@@ -139,6 +140,39 @@ class PipelineState:
     context: PipelineContext
 
 
+@runtime_checkable
+class StepMiddleware(Protocol):
+    """Protocol for pipeline step middlewares (Issue #33 §2.2).
+
+    Step middlewares wrap individual pipeline steps the same way module
+    middlewares wrap whole module calls.  All three hooks are optional and
+    each method may be either synchronous or ``async``.
+
+    Hook semantics:
+
+    * ``before_step(step_name, state)`` — invoked just before the step runs.
+    * ``after_step(step_name, state, result)`` — invoked after a successful step.
+    * ``on_step_error(step_name, state, error)`` — invoked when a step raises.
+      Returning a truthy value is treated as a *recovery result* (a
+      :class:`StepResult`) and execution continues normally.  Returning
+      ``None`` lets the original exception propagate.
+
+    Both sync and async returns are supported: the engine awaits any return
+    value that ``inspect.isawaitable()`` reports as awaitable, mirroring the
+    pattern used by Issue #42's async ``on_error`` fix.
+    """
+
+    def before_step(self, step_name: str, state: "PipelineState") -> Any: ...
+
+    def after_step(
+        self, step_name: str, state: "PipelineState", result: "StepResult"
+    ) -> Any: ...
+
+    def on_step_error(
+        self, step_name: str, state: "PipelineState", error: Exception
+    ) -> Any: ...
+
+
 @dataclass
 class StrategyInfo:
     """AI-introspectable description of an execution strategy."""
@@ -155,32 +189,70 @@ class StrategyInfo:
 class ExecutionStrategy:
     """An ordered sequence of steps that defines how a module is executed."""
 
-    def __init__(self, name: str, steps: Sequence[Step]) -> None:
+    def __init__(
+        self,
+        name: str,
+        steps: Sequence[Step],
+        *,
+        validate_dependencies: bool = True,
+    ) -> None:
+        """Construct an :class:`ExecutionStrategy`.
+
+        Args:
+            name: A human-readable name for the strategy (used in traces).
+            steps: The ordered sequence of :class:`Step` instances.
+            validate_dependencies: When ``True`` (default), a step whose
+                ``requires`` keys are not provided by a preceding step's
+                ``provides`` triggers a :class:`PipelineDependencyError`
+                (Issue #33 §2.1). Internal callers that assemble derived
+                strategies from a parent strategy already known to be
+                consistent (e.g. the streaming executor splitting validation
+                steps into a post-stream sub-strategy) may pass ``False`` to
+                skip this check.
+        """
         self.name = name
         self.steps = list(steps)
+        # StepMiddlewares attached to this strategy (Issue #33 §2.2).
+        # Lazily mutated via ``add_step_middleware``.
+        self.step_middlewares: list[StepMiddleware] = []
         # Validate unique step names
         names = [s.name for s in self.steps]
         if len(names) != len(set(names)):
             dupes = [n for n in names if names.count(n) > 1]
             raise StepNameDuplicateError(f"Duplicate step names: {set(dupes)}")
         self._rebuild_index()
-        self._validate_dependencies()
+        self._validate_dependencies_enabled = validate_dependencies
+        if validate_dependencies:
+            self._validate_dependencies()
+
+    def add_step_middleware(self, middleware: StepMiddleware) -> None:
+        """Register a :class:`StepMiddleware` for this strategy.
+
+        Middlewares are invoked in registration order for ``before_step`` and
+        ``on_step_error``, and in reverse order for ``after_step`` (onion
+        semantics).
+        """
+        self.step_middlewares.append(middleware)
 
     def _rebuild_index(self) -> None:
         """Rebuild the O(1) name→index map. Called after any mutation."""
         self._name_to_idx: dict[str, int] = {s.name: i for i, s in enumerate(self.steps)}
 
     def _validate_dependencies(self) -> None:
-        """Warn if any step's requires are not provided by a preceding step."""
+        """Raise :class:`PipelineDependencyError` if a step's ``requires`` are
+        not satisfied by any preceding step's ``provides`` (Issue #33 §2.1).
+
+        This is fail-fast: a misconfigured strategy must not silently produce
+        runtime errors deep inside step execution.
+        """
         provided: set[str] = set()
         for step in self.steps:
             requires: tuple[str, ...] = getattr(step, "requires", ())
             missing = set(requires) - provided
             if missing:
-                _logger.warning(
-                    "Step '%s' requires %s, but no preceding step provides them. This may cause runtime errors.",
-                    step.name,
-                    missing,
+                raise PipelineDependencyError(
+                    step_name=step.name,
+                    missing=tuple(sorted(missing)),
                 )
             provides: tuple[str, ...] = getattr(step, "provides", ())
             provided.update(provides)
@@ -194,7 +266,8 @@ class ExecutionStrategy:
             raise StepNotFoundError(f"Anchor step '{anchor}' not found")
         self.steps.insert(anchor_idx + 1, step)
         self._rebuild_index()
-        self._validate_dependencies()
+        if self._validate_dependencies_enabled:
+            self._validate_dependencies()
 
     def insert_before(self, anchor: str, step: Step) -> None:
         """Insert a step before the named anchor step."""
@@ -205,7 +278,8 @@ class ExecutionStrategy:
             raise StepNotFoundError(f"Anchor step '{anchor}' not found")
         self.steps.insert(anchor_idx, step)
         self._rebuild_index()
-        self._validate_dependencies()
+        if self._validate_dependencies_enabled:
+            self._validate_dependencies()
 
     def remove(self, step_name: str) -> None:
         """Remove a step by name. Raises if the step is not removable."""
@@ -255,6 +329,38 @@ class ExecutionStrategy:
         )
 
 
+async def _invoke_step_mw_hook(
+    middlewares: Sequence[StepMiddleware],
+    hook: str,
+    *args: Any,
+    reverse: bool = False,
+) -> Any:
+    """Invoke ``hook`` on each middleware that defines it, awaiting awaitables.
+
+    Returns the first non-None return value seen (used by ``on_step_error``
+    for recovery); for ``before_step``/``after_step`` callers ignore the
+    return.
+    """
+    iterable = reversed(middlewares) if reverse else middlewares
+    last_value: Any = None
+    for mw in iterable:
+        fn = getattr(mw, hook, None)
+        if fn is None:
+            continue
+        try:
+            value = fn(*args)
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception:
+            _logger.exception(
+                "StepMiddleware %r raised in %s", type(mw).__name__, hook
+            )
+            continue
+        if value is not None:
+            last_value = value
+    return last_value
+
+
 class PipelineEngine:
     """Executes a pipeline strategy step by step."""
 
@@ -272,6 +378,7 @@ class PipelineEngine:
         )
         start = time.monotonic()
         steps = strategy.steps
+        step_mws = strategy.step_middlewares
         name_to_idx = strategy._name_to_idx  # O(1) step lookup (§1.5)
         step_outputs: dict[str, Any] = {}
         effective_run_until = run_until or ctx.run_until
@@ -317,6 +424,16 @@ class PipelineEngine:
 
             # (3) Execute with optional per-step timeout
             step_start = time.monotonic()
+
+            # ── Step middleware: before_step ──
+            if step_mws:
+                pre_state = PipelineState(
+                    step_name=step.name,
+                    outputs=step_outputs,
+                    context=ctx,
+                )
+                await _invoke_step_mw_hook(step_mws, "before_step", step.name, pre_state)
+
             try:
                 if timeout_ms > 0:
                     result = await asyncio.wait_for(
@@ -365,32 +482,58 @@ class PipelineEngine:
                 )
             except Exception as exc:
                 duration = (time.monotonic() - step_start) * 1000
-                # (4) ignore_errors: log and continue
-                if ignore_errors:
-                    _logger.warning("Step '%s' failed (ignored): %s", step.name, exc)
+
+                # ── Step middleware: on_step_error ──
+                # A non-None return is a recovery value (treated as the step's
+                # ``StepResult``); None means propagate.
+                recovery: Any = None
+                if step_mws:
+                    err_state = PipelineState(
+                        step_name=step.name,
+                        outputs=step_outputs,
+                        context=ctx,
+                    )
+                    recovery = await _invoke_step_mw_hook(
+                        step_mws, "on_step_error", step.name, err_state, exc
+                    )
+
+                if recovery is not None:
+                    # Coerce non-StepResult recoveries (e.g. plain dicts) into
+                    # a continue StepResult, matching middleware-on-error semantics.
+                    if not isinstance(recovery, StepResult):
+                        recovery = StepResult(
+                            action="continue",
+                            explanation=f"Recovered from {type(exc).__name__}",
+                        )
+                    result = recovery
+                    # Fall through to the success path below.
+                else:
+                    # (4) ignore_errors: log and continue
+                    if ignore_errors:
+                        _logger.warning("Step '%s' failed (ignored): %s", step.name, exc)
+                        trace.steps.append(
+                            StepTrace(
+                                name=step.name,
+                                duration_ms=duration,
+                                result=StepResult(
+                                    action="continue",
+                                    explanation=str(exc),
+                                ),
+                                skip_reason="error_ignored",
+                            )
+                        )
+                        i += 1
+                        continue
+                    # Fail-fast (§1.1): wrap in PipelineStepError with step name and cause
                     trace.steps.append(
                         StepTrace(
                             name=step.name,
                             duration_ms=duration,
-                            result=StepResult(
-                                action="continue",
-                                explanation=str(exc),
-                            ),
-                            skip_reason="error_ignored",
+                            result=StepResult(action="abort", explanation=str(exc)),
                         )
                     )
-                    i += 1
-                    continue
-                # Fail-fast (§1.1): wrap in PipelineStepError with step name and cause
-                trace.steps.append(
-                    StepTrace(
-                        name=step.name,
-                        duration_ms=duration,
-                        result=StepResult(action="abort", explanation=str(exc)),
-                    )
-                )
-                trace.total_duration_ms = (time.monotonic() - start) * 1000
-                raise PipelineStepError(step_name=step.name, cause=exc, trace=trace) from exc
+                    trace.total_duration_ms = (time.monotonic() - start) * 1000
+                    raise PipelineStepError(step_name=step.name, cause=exc, trace=trace) from exc
 
             # (5) Record successful step trace
             step_trace = StepTrace(
@@ -404,6 +547,17 @@ class PipelineEngine:
             # (6) Snapshot output for run_until predicates (shallow copy prevents
             # later in-place mutations from altering the historical record)
             step_outputs[step.name] = dict(ctx.output) if ctx.output is not None else None
+
+            # ── Step middleware: after_step (reverse order, onion semantics) ──
+            if step_mws:
+                post_state = PipelineState(
+                    step_name=step.name,
+                    outputs=step_outputs,
+                    context=ctx,
+                )
+                await _invoke_step_mw_hook(
+                    step_mws, "after_step", step.name, post_state, result, reverse=True
+                )
 
             if result.action == "abort":
                 trace.total_duration_ms = (time.monotonic() - start) * 1000
@@ -579,3 +733,45 @@ class PipelineStepNotFoundError(ModuleError):
             **kwargs,
         )
         self.step_name = step_name
+
+
+class ConfigurationError(ModuleError):
+    """Raised when pipeline YAML configuration is invalid (Issue #33 §1.2).
+
+    Replaces the prior warning-and-continue behaviour: when YAML refers to a
+    step name that does not exist (in ``remove``, ``configure``, or
+    ``insert.before``/``insert.after``), or assigns an unknown field via
+    ``configure``, a :class:`ConfigurationError` is raised so the misconfig
+    surfaces at start-up rather than at runtime.
+    """
+
+    def __init__(self, message: str = "", **kwargs: Any) -> None:
+        super().__init__(code="PIPELINE_CONFIGURATION_ERROR", message=message, **kwargs)
+
+
+class PipelineDependencyError(ModuleError):
+    """Raised when a step's ``requires`` are not satisfied by preceding
+    ``provides`` (Issue #33 §2.1).
+
+    The error names the offending step and the missing keys so the operator
+    can correct the strategy assembly.
+    """
+
+    def __init__(
+        self,
+        step_name: str = "",
+        missing: tuple[str, ...] = (),
+        **kwargs: Any,
+    ) -> None:
+        msg = (
+            f"Pipeline step '{step_name}' requires {set(missing)}, "
+            f"but no preceding step provides them."
+        )
+        super().__init__(
+            code="PIPELINE_DEPENDENCY_ERROR",
+            message=msg,
+            details={"step_name": step_name, "missing": list(missing)},
+            **kwargs,
+        )
+        self.step_name = step_name
+        self.missing = missing

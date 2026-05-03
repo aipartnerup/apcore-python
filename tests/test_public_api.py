@@ -579,6 +579,9 @@ class TestPublicAPIAll:
         "StepNotReplaceableError",
         "StepNameDuplicateError",
         "StrategyNotFoundError",
+        "StepMiddleware",
+        "ConfigurationError",
+        "PipelineDependencyError",
         # Pipeline Configuration (0.17.0)
         "register_step_type",
         "unregister_step_type",
