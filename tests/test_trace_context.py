@@ -7,7 +7,12 @@ import re
 import pytest
 
 from apcore.context import Context
-from apcore.trace_context import TraceContext, TraceParent
+from apcore.trace_context import (
+    TraceContext,
+    TraceParent,
+    format_tracestate,
+    parse_tracestate,
+)
 
 _TRACEPARENT_FORMAT = re.compile(r"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
 
@@ -164,6 +169,10 @@ class TestTraceParentDataclass:
         tp2 = TraceParent(version="00", trace_id="a" * 32, parent_id="b" * 16, trace_flags="01")
         assert tp1 == tp2
 
+    def test_trace_parent_tracestate_defaults_to_empty(self):
+        tp = TraceParent(version="00", trace_id="a" * 32, parent_id="b" * 16, trace_flags="01")
+        assert tp.tracestate == ()
+
 
 class TestRoundTrip:
     """inject() -> extract() round-trip preserves trace_id."""
@@ -233,3 +242,180 @@ class TestContextCreateWithTraceParent:
 
         restored = Context.create(trace_parent=parsed)
         assert restored.trace_id == original.trace_id
+
+
+class TestParseTracestate:
+    """parse_tracestate() handles W3C tracestate header format."""
+
+    def test_parse_simple_single_entry(self):
+        assert parse_tracestate("vendor=value") == [("vendor", "value")]
+
+    def test_parse_multiple_entries(self):
+        assert parse_tracestate("a=1,b=2,c=3") == [
+            ("a", "1"),
+            ("b", "2"),
+            ("c", "3"),
+        ]
+
+    def test_parse_trims_whitespace(self):
+        assert parse_tracestate(" a = 1 , b = 2 ") == [("a", "1"), ("b", "2")]
+
+    def test_parse_empty_string(self):
+        assert parse_tracestate("") == []
+
+    def test_parse_drops_malformed_entries_without_equals(self):
+        # "novalue" lacks '=' and is dropped; valid entry kept.
+        assert parse_tracestate("novalue,a=1") == [("a", "1")]
+
+    def test_parse_drops_entries_with_empty_key(self):
+        assert parse_tracestate("=v,a=1") == [("a", "1")]
+
+    def test_parse_caps_at_32_entries(self):
+        raw = ",".join(f"k{i}=v{i}" for i in range(40))
+        result = parse_tracestate(raw)
+        assert len(result) == 32
+        assert result[0] == ("k0", "v0")
+        assert result[31] == ("k31", "v31")
+
+    def test_parse_value_may_contain_equals(self):
+        # Per W3C, value may contain '=' — split only on the first '='.
+        assert parse_tracestate("vendor=key=val") == [("vendor", "key=val")]
+
+
+class TestFormatTracestate:
+    """format_tracestate() serializes back to W3C header format."""
+
+    def test_format_empty_list(self):
+        assert format_tracestate([]) == ""
+
+    def test_format_single_entry(self):
+        assert format_tracestate([("vendor", "value")]) == "vendor=value"
+
+    def test_format_multiple_entries_comma_separated(self):
+        assert format_tracestate([("a", "1"), ("b", "2")]) == "a=1,b=2"
+
+    def test_round_trip_parse_format(self):
+        raw = "a=1,b=2,c=3"
+        assert format_tracestate(parse_tracestate(raw)) == raw
+
+
+class TestExtractTracestate:
+    """TraceContext.extract() also reads tracestate header."""
+
+    def test_extract_populates_tracestate_when_present(self):
+        headers = {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "tracestate": "vendor1=val1,vendor2=val2",
+        }
+        result = TraceContext.extract(headers)
+        assert result is not None
+        assert list(result.tracestate) == [("vendor1", "val1"), ("vendor2", "val2")]
+
+    def test_extract_tracestate_empty_when_header_missing(self):
+        headers = {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+        result = TraceContext.extract(headers)
+        assert result is not None
+        assert list(result.tracestate) == []
+
+
+class TestCaseInsensitiveHeaders:
+    """extract() must lookup headers case-insensitively."""
+
+    def test_extract_with_capitalized_traceparent_key(self):
+        headers = {"Traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+        result = TraceContext.extract(headers)
+        assert result is not None
+        assert result.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+    def test_extract_with_uppercase_traceparent_key(self):
+        headers = {"TRACEPARENT": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+        result = TraceContext.extract(headers)
+        assert result is not None
+        assert result.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+    def test_extract_with_capitalized_tracestate_key(self):
+        headers = {
+            "Traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "TraceState": "vendor=value",
+        }
+        result = TraceContext.extract(headers)
+        assert result is not None
+        assert list(result.tracestate) == [("vendor", "value")]
+
+
+class TestDynamicSamplingFlags:
+    """inject() must propagate trace_flags rather than hardcoding '01'."""
+
+    def test_unsampled_flag_round_trips(self):
+        # Inbound traceparent has flags=00; downstream inject must preserve.
+        headers_in = {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+        }
+        parsed = TraceContext.extract(headers_in)
+        assert parsed is not None
+        assert parsed.trace_flags == "00"
+
+        ctx = Context.create(trace_parent=parsed)
+        headers_out = TraceContext.inject(ctx)
+        assert headers_out["traceparent"].endswith("-00")
+
+    def test_sampled_flag_round_trips(self):
+        headers_in = {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        }
+        parsed = TraceContext.extract(headers_in)
+        assert parsed is not None
+        ctx = Context.create(trace_parent=parsed)
+        headers_out = TraceContext.inject(ctx)
+        assert headers_out["traceparent"].endswith("-01")
+
+    def test_inject_root_context_defaults_to_sampled(self):
+        # No inbound traceparent -> default flags 01 for new roots.
+        ctx = Context.create()
+        headers = TraceContext.inject(ctx)
+        assert headers["traceparent"].endswith("-01")
+
+
+class TestInjectTracestate:
+    """inject() returns tracestate header alongside traceparent."""
+
+    def test_inject_round_trips_tracestate(self):
+        headers_in = {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "tracestate": "vendor1=val1,vendor2=val2",
+        }
+        parsed = TraceContext.extract(headers_in)
+        assert parsed is not None
+        ctx = Context.create(trace_parent=parsed)
+        headers_out = TraceContext.inject(ctx)
+        assert headers_out.get("tracestate") == "vendor1=val1,vendor2=val2"
+
+    def test_inject_omits_tracestate_when_absent(self):
+        ctx = Context.create()
+        headers = TraceContext.inject(ctx)
+        assert "tracestate" not in headers
+
+
+class TestInjectParentIdOverride:
+    """inject(context, parent_id=...) accepts an explicit parent_id."""
+
+    def test_explicit_parent_id_used_verbatim(self):
+        ctx = Context.create()
+        headers = TraceContext.inject(ctx, parent_id="aaaaaaaaaaaaaaaa")
+        parts = headers["traceparent"].split("-")
+        assert parts[2] == "aaaaaaaaaaaaaaaa"
+
+    def test_explicit_parent_id_rejects_malformed(self):
+        ctx = Context.create()
+        with pytest.raises(ValueError):
+            TraceContext.inject(ctx, parent_id="not-hex")
+
+    def test_explicit_parent_id_rejects_wrong_length(self):
+        ctx = Context.create()
+        with pytest.raises(ValueError):
+            TraceContext.inject(ctx, parent_id="abcdef")
+
+    def test_explicit_parent_id_rejects_uppercase(self):
+        ctx = Context.create()
+        with pytest.raises(ValueError):
+            TraceContext.inject(ctx, parent_id="AAAAAAAAAAAAAAAA")
