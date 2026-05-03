@@ -470,8 +470,20 @@ class Registry:
     ) -> int:
         """Run discovery using the default file-system scanning logic.
 
-        Orchestrates 7 named stages; per-stage logic lives in the dedicated
-        helpers below. Mirrors the structure of
+        Orchestrates 8 named stages; per-stage logic lives in the dedicated
+        helpers below:
+
+        1. ``_scan_roots`` -- walk extension root(s) for candidate files.
+        2. ``_apply_path_filter`` -- narrow the candidate set (optional).
+        3. ``_apply_id_map_overrides`` -- apply explicit ID overrides.
+        4. ``_load_all_metadata`` -- read each module's metadata block.
+        5. ``_resolve_all_entry_points`` -- import the entry-point classes.
+        6. ``_validate_all`` -- structural / schema validation.
+        7. ``_resolve_load_order`` -- dependency-aware ordering.
+        8. ``_filter_id_conflicts`` then ``_register_in_order`` --
+           deduplicate and register in order.
+
+        Mirrors the structure of
         ``apcore-typescript/src/registry/registry.ts:_discoverDefault``.
         """
         max_depth, follow_symlinks = self._scan_params()
