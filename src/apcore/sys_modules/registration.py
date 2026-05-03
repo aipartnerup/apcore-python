@@ -34,6 +34,7 @@ from apcore.sys_modules.control import (
     UpdateConfigModule,
 )
 from apcore.sys_modules.health import HealthModule, HealthSummaryModule
+from apcore.sys_modules.overrides import FileOverridesStore, OverridesStore
 from apcore.sys_modules.manifest import ManifestFullModule, ManifestModule
 from apcore.sys_modules.usage import UsageModule, UsageSummaryModule
 from apcore.observability.usage import UsageCollector, UsageMiddleware
@@ -225,49 +226,88 @@ def _cfg_get(sys_cfg: dict[str, Any] | None, config: Config, sub_key: str, defau
     return config.get(f"sys_modules.{sub_key}", default)
 
 
+def _apply_overrides(
+    config: Config,
+    overrides: dict[str, Any],
+    toggle_state: Any | None = None,
+    source: str = "<store>",
+) -> None:
+    """Apply an overrides mapping to ``config`` (and optionally ``toggle_state``).
+
+    Keys prefixed with ``toggle.`` are applied to the toggle_state (if provided)
+    rather than the config. All other keys are set as config dot-paths.
+    Keys starting with ``_`` are reserved/ignored.
+    """
+    config_count = 0
+    toggle_count = 0
+    for key, value in overrides.items():
+        if not isinstance(key, str):
+            continue
+        if key.startswith("toggle.") and toggle_state is not None:
+            module_id = key[len("toggle.") :]
+            if isinstance(value, bool):
+                if value:
+                    toggle_state.enable(module_id)
+                else:
+                    toggle_state.disable(module_id)
+                toggle_count += 1
+        elif not key.startswith("_"):
+            try:
+                config.set(key, value)
+                config_count += 1
+            except Exception as exc:
+                logger.warning(
+                    "Skipping override %s=%r from %s: %s",
+                    key,
+                    value,
+                    source,
+                    exc,
+                )
+    if config_count or toggle_count:
+        logger.info(
+            "Applied %d config overrides and %d toggle overrides from %s",
+            config_count,
+            toggle_count,
+            source,
+        )
+
+
+def _load_overrides_from_store(
+    config: Config,
+    store: OverridesStore,
+    toggle_state: Any | None = None,
+) -> None:
+    """Load overrides from a pluggable :class:`OverridesStore` and apply them."""
+    try:
+        overrides: Any = store.load()
+    except Exception as exc:
+        logger.error("Failed to load overrides from store %r: %s", store, exc)
+        return
+    if not isinstance(overrides, dict):
+        logger.warning(
+            "Overrides store %r did not return a mapping; skipping", store
+        )
+        return
+    _apply_overrides(config, overrides, toggle_state=toggle_state, source=repr(store))
+
+
 def _load_overrides(
     config: Config,
     overrides_path: str,
     toggle_state: Any | None = None,
 ) -> None:
-    """Load YAML overrides file and apply each key to config (in-memory only).
+    """Backwards-compatible disk loader — delegates to :class:`FileOverridesStore`.
 
-    Keys prefixed with ``toggle.`` are applied to the toggle_state (if provided)
-    rather than the config. All other keys are set as config dot-paths.
+    Retained because external code paths (legacy callers, tests) still
+    reference this helper. New code should prefer
+    :func:`_load_overrides_from_store` with an explicit
+    :class:`OverridesStore` instance.
     """
     p = Path(overrides_path)
     if not p.exists():
         return
-    try:
-        with p.open("r", encoding="utf-8") as f:
-            overrides: Any = yaml.safe_load(f)
-        if not isinstance(overrides, dict):
-            logger.warning("Overrides file %s did not contain a mapping; skipping", overrides_path)
-            return
-        config_count = 0
-        toggle_count = 0
-        for key, value in overrides.items():
-            if not isinstance(key, str):
-                continue
-            if key.startswith("toggle.") and toggle_state is not None:
-                module_id = key[len("toggle.") :]
-                if isinstance(value, bool):
-                    if value:
-                        toggle_state.enable(module_id)
-                    else:
-                        toggle_state.disable(module_id)
-                    toggle_count += 1
-            elif not key.startswith("_"):
-                config.set(key, value)
-                config_count += 1
-        logger.info(
-            "Loaded %d config overrides and %d toggle overrides from %s",
-            config_count,
-            toggle_count,
-            overrides_path,
-        )
-    except Exception as exc:
-        logger.error("Failed to load overrides from %s: %s", overrides_path, exc)
+    store = FileOverridesStore(p)
+    _load_overrides_from_store(config, store, toggle_state=toggle_state)
 
 
 def register_sys_modules(
@@ -277,6 +317,7 @@ def register_sys_modules(
     metrics_collector: MetricsCollector | None = None,
     fail_on_error: bool = False,
     audit_store: AuditStore | None = None,
+    overrides_store: OverridesStore | None = None,
 ) -> dict[str, Any]:
     """Auto-register all sys.* modules and middleware based on config.
 
@@ -289,6 +330,15 @@ def register_sys_modules(
             SysModuleRegistrationError immediately. When False (default),
             failures are logged at ERROR level and execution continues.
         audit_store: Optional audit store for control module audit trails.
+        overrides_store: Optional :class:`OverridesStore` for runtime
+            config + toggle override persistence. When provided, overrides
+            are loaded at startup and persisted after every successful
+            ``update_config`` / ``toggle_feature`` call. Cross-language
+            counterpart to TypeScript ``OverridesStore`` and Rust
+            ``OverridesStore`` traits. When ``None``, the legacy
+            ``sys_modules.control.overrides_path`` config key is honored
+            via an auto-constructed :class:`FileOverridesStore` for
+            backwards compatibility.
 
     Returns:
         Dict with references to created components for testing/inspection.
@@ -301,10 +351,23 @@ def register_sys_modules(
     if not _cfg_get(sys_cfg, config, "enabled", False):
         return result
 
-    # Load overrides from disk before registering modules
+    # Resolve overrides store: explicit kwarg wins; else fall back to the
+    # legacy ``control.overrides_path`` config key by constructing a
+    # FileOverridesStore. ``overrides_path`` is also retained for
+    # downstream callers that still want the bare path (logging, audit).
     overrides_path: str | None = _cfg_get(sys_cfg, config, "control.overrides_path", None)
-    if overrides_path:
-        _load_overrides(config, overrides_path)
+    effective_store: OverridesStore | None = overrides_store
+    if effective_store is None and overrides_path:
+        effective_store = FileOverridesStore(overrides_path)
+    result["overrides_store"] = effective_store
+
+    # Apply config-level overrides BEFORE module registration so that any
+    # config-driven decisions made during registration see the override
+    # values. ``toggle.*`` keys are deferred — they require the
+    # ``ToggleState`` instance owned by ``toggle_feature``, which is only
+    # created in ``_setup_events`` (and only when events are enabled).
+    if effective_store is not None:
+        _load_overrides_from_store(config, effective_store, toggle_state=None)
 
     error_history = _create_error_history(config, sys_cfg)
     result["error_history"] = error_history
@@ -340,6 +403,7 @@ def register_sys_modules(
             usage_collector,
             result,
             overrides_path=overrides_path,
+            overrides_store=effective_store,
             audit_store=audit_store,
             fail_on_error=fail_on_error,
         )
@@ -449,6 +513,7 @@ def _setup_events(
     usage_collector: UsageCollector,
     result: dict[str, Any],
     overrides_path: str | None = None,
+    overrides_store: OverridesStore | None = None,
     audit_store: AuditStore | None = None,
     fail_on_error: bool = False,
 ) -> None:
@@ -467,14 +532,21 @@ def _setup_events(
     executor.use(pn_middleware)
     result["platform_notify_middleware"] = pn_middleware
 
-    _register_control_modules(
+    toggle_state = _register_control_modules(
         registry,
         config,
         event_emitter,
         overrides_path=overrides_path,
+        overrides_store=overrides_store,
         audit_store=audit_store,
         fail_on_error=fail_on_error,
     )
+    result["toggle_state"] = toggle_state
+
+    # Apply persisted overrides AFTER control modules are registered so the
+    # toggle_feature module's ToggleState is available for ``toggle.*`` keys.
+    if overrides_store is not None:
+        _load_overrides_from_store(config, overrides_store, toggle_state=toggle_state)
 
     _instantiate_subscribers(config, sys_cfg, event_emitter)
     _bridge_registry_events(registry, event_emitter)
@@ -485,13 +557,17 @@ def _register_control_modules(
     config: Config,
     event_emitter: EventEmitter,
     overrides_path: str | None = None,
+    overrides_store: OverridesStore | None = None,
     audit_store: AuditStore | None = None,
     fail_on_error: bool = False,
-) -> None:
+) -> ToggleState:
     """Register control sys modules that require an EventEmitter.
 
     A fresh ToggleState is created per call so multiple Registry instances
     in the same process do not share toggle state.
+
+    Returns the ``ToggleState`` instance owned by ``toggle_feature`` so the
+    caller can apply persisted ``toggle.*`` overrides to it.
     """
     toggle_state = ToggleState()
 
@@ -503,6 +579,7 @@ def _register_control_modules(
             event_emitter=event_emitter,
             overrides_path=overrides_path,
             audit_store=audit_store,
+            overrides_store=overrides_store,
         ),
         fail_on_error=fail_on_error,
     )
@@ -527,9 +604,12 @@ def _register_control_modules(
             toggle_state=toggle_state,
             overrides_path=overrides_path,
             audit_store=audit_store,
+            overrides_store=overrides_store,
         ),
         fail_on_error=fail_on_error,
     )
+
+    return toggle_state
 
 
 def _instantiate_subscribers(config: Config, sys_cfg: dict[str, Any] | None, event_emitter: EventEmitter) -> None:

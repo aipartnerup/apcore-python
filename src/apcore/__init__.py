@@ -316,6 +316,11 @@ from apcore.sys_modules.control import (
     ToggleState,
     UpdateConfigModule,
 )
+from apcore.sys_modules.overrides import (
+    FileOverridesStore,
+    InMemoryOverridesStore,
+    OverridesStore,
+)
 
 # ---------------------------------------------------------------------------
 # Default client for simplified global access
@@ -798,4 +803,8 @@ __all__ = [
     "ReloadModule",
     "ToggleFeatureModule",
     "ToggleState",
+    # Overrides Store (cross-language alignment with TS / Rust)
+    "OverridesStore",
+    "InMemoryOverridesStore",
+    "FileOverridesStore",
 ]
