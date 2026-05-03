@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
@@ -47,20 +48,55 @@ class ExecutorProtocol(Protocol):
 _logger = logging.getLogger(__name__)
 
 
-class TaskStatus(str, Enum):
-    """Status of an async task."""
+def _emit_retrying_deprecation() -> None:
+    warnings.warn(
+        "TaskStatus.RETRYING is deprecated and removed in cross-language alignment "
+        "(D-12); during retry backoff the status is now TaskStatus.PENDING. "
+        "Use TaskStatus.PENDING in new code.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+class _TaskStatusMeta(type(Enum)):  # type: ignore[misc]
+    """Metaclass that intercepts ``TaskStatus.RETRYING`` access for one-version
+    deprecation: returns ``TaskStatus.PENDING`` with a ``DeprecationWarning``.
+    """
+
+    def __getattr__(cls, name: str) -> Any:
+        if name == "RETRYING":
+            _emit_retrying_deprecation()
+            return cls.PENDING  # type: ignore[attr-defined]
+        raise AttributeError(name)
+
+
+class TaskStatus(str, Enum, metaclass=_TaskStatusMeta):
+    """Status of an async task.
+
+    .. note::
+        ``RETRYING`` was removed in the cross-language alignment (D-12).
+        Tasks waiting between retry attempts are now reported as
+        :attr:`PENDING` to match the TypeScript and Rust SDKs.  The legacy
+        ``TaskStatus.RETRYING`` attribute remains accessible for one minor
+        release as a deprecated alias for ``PENDING``.
+    """
 
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
-    RETRYING = "retrying"
 
 
 @dataclass
 class TaskInfo:
-    """Metadata and result tracking for a submitted async task."""
+    """Metadata and result tracking for a submitted async task.
+
+    .. note::
+        The ``attempt_number`` field was renamed to ``retry_count`` for
+        cross-language alignment (D-13).  ``attempt_number`` is kept as a
+        deprecated property accessor for one minor release.
+    """
 
     task_id: str
     module_id: str
@@ -70,8 +106,34 @@ class TaskInfo:
     completed_at: float | None = None
     result: Any = None
     error: str | None = None
-    attempt_number: int = 0
+    retry_count: int = 0
     max_retries: int = 0
+
+    # ----- Deprecated aliases (D-13) -----
+
+    @property
+    def attempt_number(self) -> int:
+        """Deprecated alias for :attr:`retry_count`.
+
+        .. deprecated:: 0.21.0
+            Use :attr:`retry_count` instead.  Will be removed in a future
+            release.
+        """
+        warnings.warn(
+            "TaskInfo.attempt_number is deprecated; use retry_count instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.retry_count
+
+    @attempt_number.setter
+    def attempt_number(self, value: int) -> None:
+        warnings.warn(
+            "TaskInfo.attempt_number is deprecated; use retry_count instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.retry_count = value
 
 
 @runtime_checkable
@@ -81,12 +143,17 @@ class TaskStore(Protocol):
     The default implementation is :class:`InMemoryTaskStore`. Users may
     supply a custom store (e.g. Redis, DB) via ``AsyncTaskManager(store=...)``.
     All methods are synchronous; async stores must wrap I/O in a sync adapter.
+
+    .. note::
+        The canonical write method is :meth:`save`.  ``put`` is retained as
+        a deprecated shim for one minor release (D-10).
     """
 
     def get(self, task_id: str) -> TaskInfo | None: ...
-    def put(self, info: TaskInfo) -> None: ...
+    def save(self, info: TaskInfo) -> None: ...
     def delete(self, task_id: str) -> None: ...
     def list(self, status: TaskStatus | None = None) -> list[TaskInfo]: ...
+    def list_expired(self, before_timestamp: float) -> list[TaskInfo]: ...
 
 
 class InMemoryTaskStore:
@@ -98,8 +165,22 @@ class InMemoryTaskStore:
     def get(self, task_id: str) -> TaskInfo | None:
         return self._data.get(task_id)
 
-    def put(self, info: TaskInfo) -> None:
+    def save(self, info: TaskInfo) -> None:
         self._data[info.task_id] = info
+
+    def put(self, info: TaskInfo) -> None:
+        """Deprecated alias for :meth:`save` (D-10).
+
+        .. deprecated:: 0.21.0
+            Use :meth:`save`.  Retained for one minor release for
+            backward compatibility.
+        """
+        warnings.warn(
+            "TaskStore.put() is deprecated; use save() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.save(info)
 
     def delete(self, task_id: str) -> None:
         self._data.pop(task_id, None)
@@ -108,6 +189,26 @@ class InMemoryTaskStore:
         if status is None:
             return list(self._data.values())
         return [t for t in self._data.values() if t.status == status]
+
+    def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
+        """Return terminal-state tasks whose ``completed_at`` precedes
+        ``before_timestamp`` (D-10).
+
+        Non-terminal tasks (PENDING, RUNNING) are never returned —
+        ``list_expired`` is intended to drive TTL-based cleanup of
+        finished work, not to interrupt running tasks.
+        """
+        # Terminal set is duplicated locally to avoid a forward reference to
+        # the module-level ``_TERMINAL_STATUSES`` constant defined below.
+        terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+        result: list[TaskInfo] = []
+        for info in self._data.values():
+            if info.status not in terminal:
+                continue
+            ref = info.completed_at if info.completed_at is not None else info.submitted_at
+            if ref < before_timestamp:
+                result.append(info)
+        return result
 
 
 class BackoffStrategy(str, Enum):
@@ -189,7 +290,7 @@ class RetryPolicy:
         return self.base_delay_seconds * (2 ** (attempt - 1))
 
 
-_ACTIVE_STATUSES = frozenset({TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.RETRYING})
+_ACTIVE_STATUSES = frozenset({TaskStatus.PENDING, TaskStatus.RUNNING})
 _TERMINAL_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
 
 
@@ -215,6 +316,19 @@ class AsyncTaskManager:
         self._reaper_task: asyncio.Task[Any] | None = None
         self._reaper_interval: float = 3600.0
         self._reaper_max_age: float = 3600.0
+
+    def _save(self, info: TaskInfo) -> None:
+        """Persist ``info`` via the configured store.
+
+        Prefers the canonical :meth:`TaskStore.save` method.  Falls back to
+        the deprecated :meth:`put` for legacy custom stores that have not
+        yet been updated to the post-D-10 API.
+        """
+        save = getattr(self._store, "save", None)
+        if callable(save):
+            save(info)
+        else:  # pragma: no cover - legacy custom stores
+            self._store.put(info)  # type: ignore[attr-defined]
 
     async def submit(
         self,
@@ -251,7 +365,7 @@ class AsyncTaskManager:
             submitted_at=time.time(),
             max_retries=retry_policy.max_retries if retry_policy is not None else 0,
         )
-        self._store.put(info)
+        self._save(info)
 
         async_task = asyncio.create_task(self._run(task_id, module_id, inputs, context, retry_policy))
         async_task.add_done_callback(lambda _: self._async_tasks.pop(task_id, None))
@@ -309,7 +423,7 @@ class AsyncTaskManager:
         if info.status in _ACTIVE_STATUSES:
             info.status = TaskStatus.CANCELLED
             info.completed_at = time.time()
-            self._store.put(info)
+            self._save(info)
 
         return True
 
@@ -403,33 +517,35 @@ class AsyncTaskManager:
                     info.status = TaskStatus.RUNNING
                     if info.started_at is None:
                         info.started_at = time.time()
-                    self._store.put(info)
+                    self._save(info)
 
                     result = await self._executor.call_async(module_id, inputs, context)
 
                     info.status = TaskStatus.COMPLETED
                     info.completed_at = time.time()
                     info.result = result
-                    self._store.put(info)
+                    self._save(info)
                     return
 
             except asyncio.CancelledError:
                 info.status = TaskStatus.CANCELLED
                 info.completed_at = time.time()
-                self._store.put(info)
+                self._save(info)
                 _logger.info("Task %s cancelled", task_id)
                 return
 
             except Exception as exc:
-                if retry_policy is not None and info.attempt_number < max_retries:
-                    info.attempt_number += 1
-                    delay = retry_policy.delay_for(info.attempt_number)
-                    info.status = TaskStatus.RETRYING
-                    self._store.put(info)
+                if retry_policy is not None and info.retry_count < max_retries:
+                    info.retry_count += 1
+                    delay = retry_policy.delay_for(info.retry_count)
+                    # D-12: backoff state is PENDING (was RETRYING) — matches
+                    # TypeScript and Rust SDKs.
+                    info.status = TaskStatus.PENDING
+                    self._save(info)
                     _logger.info(
                         "Task %s failed (attempt %d/%d), retrying in %.3fs",
                         task_id,
-                        info.attempt_number,
+                        info.retry_count,
                         max_retries,
                         delay,
                     )
@@ -438,13 +554,13 @@ class AsyncTaskManager:
                     except asyncio.CancelledError:
                         info.status = TaskStatus.CANCELLED
                         info.completed_at = time.time()
-                        self._store.put(info)
+                        self._save(info)
                         _logger.info("Task %s cancelled during backoff", task_id)
                         return
                 else:
                     info.status = TaskStatus.FAILED
                     info.completed_at = time.time()
                     info.error = str(exc)
-                    self._store.put(info)
+                    self._save(info)
                     _logger.error("Task %s failed: %s", task_id, exc, exc_info=True)
                     return

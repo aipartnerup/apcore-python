@@ -11,6 +11,7 @@ from typing import Any
 
 from apcore.context_keys import USAGE_STARTS
 from apcore.middleware import Middleware
+from apcore.observability.storage import StorageBackend
 
 __all__ = [
     "CallerUsageSummary",
@@ -133,9 +134,11 @@ class UsageCollector:
         self,
         retention_hours: int = 168,
         max_records_per_bucket: int = 10000,
+        storage: StorageBackend | None = None,
     ) -> None:
         self.retention_hours = retention_hours
         self._max_records_per_bucket = max_records_per_bucket
+        self._storage: StorageBackend | None = storage
         self._lock = threading.Lock()
         # module_id -> bucket_key -> list[UsageRecord]
         self._data: dict[str, dict[str, list[UsageRecord]]] = {}

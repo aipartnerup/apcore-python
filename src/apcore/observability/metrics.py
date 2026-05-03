@@ -9,6 +9,7 @@ from typing import Any
 from apcore.context_keys import METRICS_STARTS
 from apcore.errors import ModuleError
 from apcore.middleware.base import Middleware
+from apcore.observability.storage import StorageBackend
 from apcore.observability.store import ObservabilityStore
 
 METRIC_CALLS_TOTAL = "apcore_module_calls_total"
@@ -87,11 +88,13 @@ class MetricsCollector:
         self,
         buckets: list[float] | None = None,
         store: ObservabilityStore | None = None,
+        storage: StorageBackend | None = None,
     ) -> None:
         from apcore.observability.store import InMemoryObservabilityStore
 
         self._buckets = sorted(buckets) if buckets is not None else list(self.DEFAULT_BUCKETS)
         self._store: ObservabilityStore = store if store is not None else InMemoryObservabilityStore()
+        self._storage: StorageBackend | None = storage
         self._lock = threading.Lock()
         self._counters: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
         self._histogram_sums: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}

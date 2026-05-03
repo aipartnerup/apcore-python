@@ -101,7 +101,12 @@ class TestObservabilityPackageExports:
             "normalize_message",
             "compute_fingerprint",
         }
-        expected = original | hardening_additions
+        # Issue #43 §1: generic pluggable StorageBackend.
+        storage_additions = {
+            "StorageBackend",
+            "InMemoryStorageBackend",
+        }
+        expected = original | hardening_additions | storage_additions
         assert set(obs.__all__) == expected
 
     def test_all_entries_are_attributes(self):
