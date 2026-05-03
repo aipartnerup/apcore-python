@@ -156,9 +156,7 @@ class TestFormatsFixture:
     # nested objects and arrays. Previously the Python walker only iterated
     # top-level `properties` while apcore-typescript and apcore-rust both
     # recursed; same input + schema produced different warning sets.
-    def test_format_violation_in_nested_object_emits_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_format_violation_in_nested_object_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         schema = {
             "type": "object",
             "properties": {
@@ -175,13 +173,10 @@ class TestFormatsFixture:
             validate_schema_dict(data, schema)
         messages = [r.message for r in caplog.records]
         assert any(
-            "Format violation" in m and "date-time" in m and "not-a-real-date-time" in m
-            for m in messages
+            "Format violation" in m and "date-time" in m and "not-a-real-date-time" in m for m in messages
         ), f"expected nested format violation warning, got {messages}"
 
-    def test_format_violation_in_array_items_emits_warning(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_format_violation_in_array_items_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         schema = {
             "type": "object",
             "properties": {
@@ -196,9 +191,7 @@ class TestFormatsFixture:
             validate_schema_dict(data, schema)
         warnings = [r.message for r in caplog.records if "Format violation" in r.message]
         # Both array items should emit a warning.
-        assert len(warnings) == 2, (
-            f"expected 2 array-item format violations (one per non-uuid string), got {warnings}"
-        )
+        assert len(warnings) == 2, f"expected 2 array-item format violations (one per non-uuid string), got {warnings}"
 
 
 # ---------------------------------------------------------------------------
