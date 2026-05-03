@@ -161,6 +161,54 @@ def _build_audit_entry(
     )
 
 
+# ---------------------------------------------------------------------------
+# Contextual identity extraction — Issue #45.2
+# ---------------------------------------------------------------------------
+
+
+def _extract_caller_id(context: Any) -> str:
+    """Return ``context.caller_id`` if set, else the spec sentinel ``@external``.
+
+    Used to attach the requester's identity to audit-event payloads emitted
+    by control modules (``update_config``, ``toggle_feature``, ``reload_module``).
+    """
+    if context is None:
+        return "@external"
+    caller_id = getattr(context, "caller_id", None)
+    if not caller_id:
+        return "@external"
+    return str(caller_id)
+
+
+def _extract_identity_dict(context: Any) -> dict[str, Any] | None:
+    """Return a redacted-safe dict view of ``context.identity`` or ``None``.
+
+    The dict only includes ``id``, ``type``, and ``roles`` — the
+    free-form ``attrs`` map is omitted to avoid leaking sensitive
+    attributes into audit-event payloads. Callers that need the full
+    identity should consult the ``AuditStore`` entry, not the event.
+    """
+    if context is None:
+        return None
+    identity = getattr(context, "identity", None)
+    if identity is None:
+        return None
+    return {
+        "id": getattr(identity, "id", None),
+        "type": getattr(identity, "type", None),
+        "roles": list(getattr(identity, "roles", ()) or ()),
+    }
+
+
+def _audit_payload_extras(context: Any) -> dict[str, Any]:
+    """Build the ``caller_id`` (+ optional ``identity``) fragment for audit events."""
+    extras: dict[str, Any] = {"caller_id": _extract_caller_id(context)}
+    identity_dict = _extract_identity_dict(context)
+    if identity_dict is not None:
+        extras["identity"] = identity_dict
+    return extras
+
+
 class UpdateConfigModule:
     """Update a runtime configuration value by dot-path key."""
 
@@ -211,7 +259,7 @@ class UpdateConfigModule:
 
         self._validate_post_set(key, value, old_value)
 
-        self._emit_event(key, old_value, value)
+        self._emit_event(key, old_value, value, context)
         self._log_change(key, old_value, value, reason)
 
         if self._overrides_path:
@@ -277,20 +325,23 @@ class UpdateConfigModule:
                 details={"key": key, "value": value},
             )
 
-    def _emit_event(self, key: str, old_value: Any, new_value: Any) -> None:
-        """Emit ``apcore.config.updated`` (canonical event)."""
+    def _emit_event(self, key: str, old_value: Any, new_value: Any, context: Any = None) -> None:
+        """Emit ``apcore.config.updated`` (canonical event) with caller identity."""
         redacted = self._is_sensitive_key(key)
+        data: dict[str, Any] = {
+            "key": key,
+            "old_value": REDACTED_VALUE if redacted else old_value,
+            "new_value": REDACTED_VALUE if redacted else new_value,
+        }
+        # Issue #45.2 — attach requester identity to the audit event payload.
+        data.update(_audit_payload_extras(context))
         self._emitter.emit(
             ApCoreEvent(
                 event_type="apcore.config.updated",
                 module_id="system.control.update_config",
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 severity="info",
-                data={
-                    "key": key,
-                    "old_value": REDACTED_VALUE if redacted else old_value,
-                    "new_value": REDACTED_VALUE if redacted else new_value,
-                },
+                data=data,
             )
         )
 
@@ -437,7 +488,7 @@ class ReloadModule:
         elapsed_ms = (time.monotonic() - start) * 1000.0
         new_version = getattr(new_module, "version", "1.0.0")
 
-        self._emit_module_reloaded(module_id, previous_version, new_version)
+        self._emit_module_reloaded(module_id, previous_version, new_version, context)
         self._log_reload(module_id, previous_version, new_version, reason)
 
         if self._audit_store is not None:
@@ -582,18 +633,27 @@ class ReloadModule:
         """Re-register a module instance after reload."""
         self._registry.register_internal(module_id, module)
 
-    def _emit_module_reloaded(self, module_id: str, previous_version: str, new_version: str) -> None:
-        """Emit ``apcore.module.reloaded`` (canonical event)."""
+    def _emit_module_reloaded(
+        self,
+        module_id: str,
+        previous_version: str,
+        new_version: str,
+        context: Any = None,
+    ) -> None:
+        """Emit ``apcore.module.reloaded`` (canonical event) with caller identity."""
+        data: dict[str, Any] = {
+            "previous_version": previous_version,
+            "new_version": new_version,
+        }
+        # Issue #45.2 — attach requester identity to the audit event payload.
+        data.update(_audit_payload_extras(context))
         self._emitter.emit(
             ApCoreEvent(
                 event_type="apcore.module.reloaded",
                 module_id=module_id,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 severity="info",
-                data={
-                    "previous_version": previous_version,
-                    "new_version": new_version,
-                },
+                data=data,
             )
         )
 
@@ -692,7 +752,7 @@ class ToggleFeatureModule:
 
         before = not self._toggle_state.is_disabled(module_id)
         self._apply_toggle(module_id, enabled)
-        self._emit_event(module_id, enabled)
+        self._emit_event(module_id, enabled, context)
         self._log_toggle(module_id, enabled, reason)
 
         if self._overrides_path:
@@ -750,15 +810,18 @@ class ToggleFeatureModule:
         else:
             self._toggle_state.disable(module_id)
 
-    def _emit_event(self, module_id: str, enabled: bool) -> None:
-        """Emit ``apcore.module.toggled`` (canonical event)."""
+    def _emit_event(self, module_id: str, enabled: bool, context: Any = None) -> None:
+        """Emit ``apcore.module.toggled`` (canonical event) with caller identity."""
+        data: dict[str, Any] = {"enabled": enabled}
+        # Issue #45.2 — attach requester identity to the audit event payload.
+        data.update(_audit_payload_extras(context))
         self._emitter.emit(
             ApCoreEvent(
                 event_type="apcore.module.toggled",
                 module_id=module_id,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 severity="info",
-                data={"enabled": enabled},
+                data=data,
             )
         )
 

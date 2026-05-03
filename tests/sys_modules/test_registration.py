@@ -348,9 +348,14 @@ class TestEventsEnabled:
         # Wait for background delivery to complete
         emitter.flush()
 
-        assert len(events_received) >= 1
-        assert events_received[0].event_type == "module_registered"
+        # Dual-emit: canonical apcore.registry.module_registered + legacy alias.
+        # Canonical event is emitted first (Issue #36).
+        assert len(events_received) >= 2
+        assert events_received[0].event_type == "apcore.registry.module_registered"
         assert events_received[0].module_id == "test.bridged"
+        legacy = [e for e in events_received if e.event_type == "module_registered"]
+        assert len(legacy) == 1
+        assert legacy[0].data.get("deprecated") is True
 
 
 class TestReturnContext:
