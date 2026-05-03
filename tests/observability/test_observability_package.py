@@ -106,7 +106,18 @@ class TestObservabilityPackageExports:
             "StorageBackend",
             "InMemoryStorageBackend",
         }
-        expected = original | hardening_additions | storage_additions
+        # Issue #45 §3: push-style UsageExporter interface.
+        usage_exporter_additions = {
+            "UsageExporter",
+            "NoopUsageExporter",
+            "PeriodicUsageExporter",
+        }
+        expected = (
+            original
+            | hardening_additions
+            | storage_additions
+            | usage_exporter_additions
+        )
         assert set(obs.__all__) == expected
 
     def test_all_entries_are_attributes(self):

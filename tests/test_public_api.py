@@ -558,7 +558,10 @@ class TestPublicAPIAll:
         "StorageBackend",
         "InMemoryStorageBackend",
         "UsageCollector",
+        "UsageExporter",
         "UsageMiddleware",
+        "NoopUsageExporter",
+        "PeriodicUsageExporter",
         "PlatformNotifyMiddleware",
         # System Modules
         "register_sys_modules",

@@ -57,6 +57,11 @@ from apcore.observability.tracing import (
     create_span,
 )
 from apcore.observability.usage import UsageCollector, UsageMiddleware
+from apcore.observability.usage_exporter import (
+    NoopUsageExporter,
+    PeriodicUsageExporter,
+    UsageExporter,
+)
 
 __all__ = [
     "BatchSpanProcessor",
@@ -71,10 +76,12 @@ __all__ = [
     "MetricPoint",
     "MetricsCollector",
     "MetricsMiddleware",
+    "NoopUsageExporter",
     "normalize_message",
     "ObsLoggingMiddleware",
     "ObservabilityStore",
     "OTLPExporter",
+    "PeriodicUsageExporter",
     "PrometheusExporter",
     "StorageBackend",
     "RedactionConfig",
@@ -85,6 +92,7 @@ __all__ = [
     "StdoutExporter",
     "TracingMiddleware",
     "UsageCollector",
+    "UsageExporter",
     "UsageMiddleware",
     "create_span",
 ]
