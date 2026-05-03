@@ -121,33 +121,57 @@ class PlatformNotifyMiddleware(Middleware):
         return estimate_p99_latency_ms(hist_name, labels_key, bucket_data, total_count)
 
     def _check_error_rate_threshold(self, module_id: str) -> None:
-        """Emit error_threshold_exceeded if rate is above threshold (with hysteresis)."""
+        """Emit ``apcore.health.error_threshold_exceeded`` (and legacy alias) if the rate is above threshold."""
         error_rate = self._compute_error_rate(module_id)
         with self._alert_lock:
             if error_rate >= self._error_rate_threshold and "error_rate" not in self._alerted[module_id]:
+                ts = datetime.now(timezone.utc).isoformat()
+                payload = {"error_rate": error_rate, "threshold": self._error_rate_threshold}
+                self._emitter.emit(
+                    ApCoreEvent(
+                        event_type="apcore.health.error_threshold_exceeded",
+                        module_id=module_id,
+                        timestamp=ts,
+                        severity="error",
+                        data=dict(payload),
+                    )
+                )
+                # Legacy alias (Issue #36) — removed in v0.22.0
                 self._emitter.emit(
                     ApCoreEvent(
                         event_type="error_threshold_exceeded",
                         module_id=module_id,
-                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        timestamp=ts,
                         severity="error",
-                        data={"error_rate": error_rate, "threshold": self._error_rate_threshold},
+                        data={**payload, "deprecated": True},
                     )
                 )
                 self._alerted[module_id].add("error_rate")
 
     def _check_latency_threshold(self, module_id: str) -> None:
-        """Emit latency_threshold_exceeded if p99 is above threshold (with hysteresis)."""
+        """Emit ``apcore.health.latency_threshold_exceeded`` (and legacy alias) if p99 is above threshold."""
         p99_ms = self._estimate_p99_ms(module_id)
         with self._alert_lock:
             if p99_ms >= self._latency_p99_threshold_ms and "latency" not in self._alerted[module_id]:
+                ts = datetime.now(timezone.utc).isoformat()
+                payload = {"p99_latency_ms": p99_ms, "threshold": self._latency_p99_threshold_ms}
+                self._emitter.emit(
+                    ApCoreEvent(
+                        event_type="apcore.health.latency_threshold_exceeded",
+                        module_id=module_id,
+                        timestamp=ts,
+                        severity="warn",
+                        data=dict(payload),
+                    )
+                )
+                # Legacy alias (Issue #36) — removed in v0.22.0
                 self._emitter.emit(
                     ApCoreEvent(
                         event_type="latency_threshold_exceeded",
                         module_id=module_id,
-                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        timestamp=ts,
                         severity="warn",
-                        data={"p99_latency_ms": p99_ms, "threshold": self._latency_p99_threshold_ms},
+                        data={**payload, "deprecated": True},
                     )
                 )
                 self._alerted[module_id].add("latency")

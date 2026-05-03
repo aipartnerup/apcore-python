@@ -8,8 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Public `SubscriberFactory` API (Issue #36)** — `apcore.events.register_subscriber_factory(type_name, factory)` and `apcore.events.create_subscriber_from_config(config)` (also re-exported from `apcore`) bring Python to parity with TypeScript's `createSubscriberFromConfig` / `registerSubscriberFactory` and Rust's `create_subscriber` / `register_factory`. Built-in factory types (`webhook`, `a2a`, `file`, `stdout`, `filter`) are auto-registered on import. The previously-private `_create_subscriber` helper remains for back-compat.
+
 ### Changed
 
+- **Event names normalized to `apcore.<subsystem>.<event>` form (#36)** — Four legacy event types (`module_registered`, `module_unregistered`, `error_threshold_exceeded`, `latency_threshold_exceeded`) now also emit canonical aliases `apcore.registry.module_registered`, `apcore.registry.module_unregistered`, `apcore.health.error_threshold_exceeded`, `apcore.health.latency_threshold_exceeded`. Both forms are emitted during the deprecation window so existing subscribers keep working; the legacy emission carries `deprecated: true` in `data`. Glob subscribers using `apcore.registry.*` and `apcore.health.*` now match correctly. **Deprecation:** legacy bare names will be removed in v0.22.0.
+- **Contextual auditing for system control modules (Issue #45.2)** — Audit events emitted by `system.control.update_config` (`apcore.config.updated`), `system.control.toggle_feature` (`apcore.module.toggled`), and `system.control.reload_module` (`apcore.module.reloaded`) now include the requester's `caller_id` from `context.caller_id` (defaults to the `@external` sentinel when unset) and a redacted `identity` dict (`id`, `type`, `roles`) when `context.identity` is present.
 - **Cross-language alignment (sync A-001)** — Renamed `CircuitOpenError` (code `CIRCUIT_OPEN`) to canonical `CircuitBreakerOpenError` (code `CIRCUIT_BREAKER_OPEN`) to match TypeScript and Rust SDKs and the protocol spec. The legacy `CircuitOpenError` class is retained as a deprecated subclass alias of `CircuitBreakerOpenError` so existing `except CircuitOpenError:` blocks raising the legacy class continue to work; the legacy class will be removed in a future major release. The wire error code emitted by `CircuitBreakerMiddleware` is now `CIRCUIT_BREAKER_OPEN` for both classes. New `ErrorCodes.CIRCUIT_BREAKER_OPEN` constant added; `ErrorCodes.CIRCUIT_OPEN` retained as a deprecated alias. `CircuitBreakerOpenError` is exported from the top-level `apcore` package.
 
 

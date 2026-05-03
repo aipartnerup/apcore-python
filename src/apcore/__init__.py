@@ -220,6 +220,8 @@ from apcore.events import (
     FilterSubscriber,
     StdoutSubscriber,
     WebhookSubscriber,
+    create_subscriber_from_config,
+    register_subscriber_factory,
 )
 
 # Pipeline
@@ -721,6 +723,8 @@ __all__ = [
     "FileSubscriber",
     "StdoutSubscriber",
     "FilterSubscriber",
+    "register_subscriber_factory",
+    "create_subscriber_from_config",
     # Trace Context
     "TraceContext",
     "TraceParent",

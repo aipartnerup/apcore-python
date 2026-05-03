@@ -45,6 +45,8 @@ __all__ = [
     "register_subscriber_type",
     "unregister_subscriber_type",
     "reset_subscriber_registry",
+    "register_subscriber_factory",
+    "create_subscriber_from_config",
     "SysModulesContext",
 ]
 
@@ -147,6 +149,46 @@ def reset_subscriber_registry() -> None:
     """Reset the subscriber registry to built-in types only."""
     _subscriber_factories.clear()
     _subscriber_factories.update(_BUILTIN_FACTORIES)
+
+
+# ---------------------------------------------------------------------------
+# Public SubscriberFactory API — parity with apcore-typescript
+# (``createSubscriberFromConfig``) and apcore-rust (``create_subscriber`` /
+# ``register_factory``). Issue #36.
+# ---------------------------------------------------------------------------
+
+
+def register_subscriber_factory(
+    type_name: str,
+    factory: Callable[[dict[str, Any]], EventSubscriber],
+) -> None:
+    """Register a custom subscriber-type factory.
+
+    Public, cross-language counterpart to TypeScript's
+    ``registerSubscriberFactory`` / Rust's ``register_factory``.
+
+    Args:
+        type_name: The ``type`` string used in subscriber config dicts.
+        factory: Callable that takes the config dict and returns an
+            :class:`EventSubscriber` instance.
+    """
+    register_subscriber_type(type_name, factory)
+
+
+def create_subscriber_from_config(config: dict[str, Any]) -> EventSubscriber:
+    """Instantiate an :class:`EventSubscriber` from a config dict.
+
+    Public, cross-language counterpart to TypeScript's
+    ``createSubscriberFromConfig`` / Rust's ``create_subscriber``.
+
+    Looks up the factory registered for ``config['type']`` and invokes it
+    with the full config. Built-in types (``webhook``, ``a2a``, ``file``,
+    ``stdout``, ``filter``) are auto-registered on import.
+
+    Raises:
+        ValueError: If ``config['type']`` is not in the factory registry.
+    """
+    return _create_subscriber(config)
 
 
 # ---------------------------------------------------------------------------
@@ -528,27 +570,58 @@ def _create_subscriber(sub_cfg: dict[str, Any]) -> EventSubscriber:
 
 
 def _bridge_registry_events(registry: Registry, emitter: EventEmitter) -> None:
-    """Bridge registry register/unregister events to the EventEmitter."""
+    """Bridge registry register/unregister events to the EventEmitter.
+
+    Emits both the canonical ``apcore.registry.module_registered`` /
+    ``apcore.registry.module_unregistered`` event types and, for the
+    deprecation window, the legacy bare names with ``deprecated: true``
+    in the payload. Legacy names are scheduled for removal in v0.22.0
+    (Issue #36).
+    """
+
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
 
     def on_register(module_id: str, module: Any) -> None:
+        ts = _now()
         emitter.emit(
             ApCoreEvent(
-                event_type="module_registered",
+                event_type="apcore.registry.module_registered",
                 module_id=module_id,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=ts,
                 severity="info",
                 data={},
             )
         )
+        # Legacy alias — deprecated, kept for back-compat subscribers
+        emitter.emit(
+            ApCoreEvent(
+                event_type="module_registered",
+                module_id=module_id,
+                timestamp=ts,
+                severity="info",
+                data={"deprecated": True},
+            )
+        )
 
     def on_unregister(module_id: str, module: Any) -> None:
+        ts = _now()
+        emitter.emit(
+            ApCoreEvent(
+                event_type="apcore.registry.module_unregistered",
+                module_id=module_id,
+                timestamp=ts,
+                severity="info",
+                data={},
+            )
+        )
         emitter.emit(
             ApCoreEvent(
                 event_type="module_unregistered",
                 module_id=module_id,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=ts,
                 severity="info",
-                data={},
+                data={"deprecated": True},
             )
         )
 

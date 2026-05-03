@@ -536,6 +536,8 @@ class TestPublicAPIAll:
         "FileSubscriber",
         "StdoutSubscriber",
         "FilterSubscriber",
+        "register_subscriber_factory",
+        "create_subscriber_from_config",
         "on",
         "off",
         # Toggle
