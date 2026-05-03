@@ -81,13 +81,24 @@ class Context(Generic[T]):
                 trace_id = uuid.uuid4().hex
         else:
             trace_id = uuid.uuid4().hex
+        ctx_data: dict[str, Any] = data if data is not None else {}
+        # Carry W3C trace_flags and tracestate through the request lifecycle so
+        # downstream TraceContext.inject() can propagate the inbound sampling
+        # decision and vendor state instead of hardcoding "01".
+        if trace_parent is not None:
+            flags = getattr(trace_parent, "trace_flags", None)
+            if isinstance(flags, str) and len(flags) == 2:
+                ctx_data.setdefault("_apcore.trace.flags", flags)
+            tracestate = getattr(trace_parent, "tracestate", ())
+            if tracestate:
+                ctx_data.setdefault("_apcore.trace.state", tuple(tracestate))
         return cls(
             trace_id=trace_id,
             caller_id=None,
             call_chain=[],
             executor=executor,
             identity=identity,
-            data=data if data is not None else {},
+            data=ctx_data,
             services=services,  # type: ignore[arg-type]
         )
 
