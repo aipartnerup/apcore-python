@@ -202,122 +202,15 @@ class OTLPExporter:
 # ---------------------------------------------------------------------------
 
 
-@runtime_checkable
-class SpanProcessor(Protocol):
-    """Protocol for span processor implementations.
-
-    Both ``SimpleSpanProcessor`` and ``BatchSpanProcessor`` satisfy this
-    protocol, as do any user-defined processors.
-    """
-
-    def on_span_end(self, span: Span) -> None:
-        """Called when a span has finished; may export synchronously or queue it."""
-        ...
-
-    def shutdown(self) -> None:
-        """Flush and release resources; called once when the processor is discarded."""
-        ...
-
-
-class SimpleSpanProcessor:
-    """Synchronous span processor: exports each span immediately on the calling thread.
-
-    Use in development and testing environments where blocking is acceptable.
-    """
-
-    def __init__(self, exporter: SpanExporter) -> None:
-        self._exporter = exporter
-
-    def on_span_end(self, span: Span) -> None:
-        """Export the span synchronously."""
-        self._exporter.export(span)
-
-    def shutdown(self) -> None:
-        """No-op for the simple processor."""
-
-
-class BatchSpanProcessor:
-    """Non-blocking span processor that buffers spans and exports in background batches.
-
-    Spans are enqueued immediately without blocking the caller. A background thread
-    periodically drains the queue up to ``max_export_batch_size`` spans per flush.
-    When the queue is full, new spans are dropped and ``spans_dropped`` is incremented.
-
-    Args:
-        exporter: The SpanExporter to deliver batches to.
-        max_queue_size: Maximum buffer capacity before drops occur (default 2048).
-        schedule_delay_ms: Milliseconds between successive flush attempts (default 5000).
-        max_export_batch_size: Maximum spans per flush call (default 512).
-        export_timeout_ms: Shutdown flush deadline in milliseconds (default 30000).
-    """
-
-    def __init__(
-        self,
-        exporter: SpanExporter,
-        max_queue_size: int = 2048,
-        schedule_delay_ms: int = 5000,
-        max_export_batch_size: int = 512,
-        export_timeout_ms: int = 30000,
-    ) -> None:
-        self._exporter = exporter
-        self._max_queue_size = max_queue_size
-        self._schedule_delay_ms = schedule_delay_ms
-        self._max_export_batch_size = max_export_batch_size
-        self._export_timeout_ms = export_timeout_ms
-        self._queue: queue.Queue[Span] = queue.Queue(maxsize=max_queue_size)
-        self._spans_dropped = 0
-        self._dropped_lock = threading.Lock()
-        self._shutdown_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    @property
-    def spans_dropped(self) -> int:
-        with self._dropped_lock:
-            return self._spans_dropped
-
-    @property
-    def queue_size(self) -> int:
-        return self._queue.qsize()
-
-    def on_span_end(self, span: Span) -> None:
-        """Enqueue span or drop (non-blocking) if the queue is at capacity."""
-        try:
-            self._queue.put_nowait(span)
-        except queue.Full:
-            with self._dropped_lock:
-                self._spans_dropped += 1
-
-    def _flush(self) -> None:
-        """Drain up to max_export_batch_size spans and export them."""
-        batch: list[Span] = []
-        try:
-            while len(batch) < self._max_export_batch_size:
-                batch.append(self._queue.get_nowait())
-        except queue.Empty:
-            pass
-        for span in batch:
-            try:
-                self._exporter.export(span)
-            except Exception:
-                _tracing_logger.exception("BatchSpanProcessor: export failed")
-
-    def _run(self) -> None:
-        """Background worker: flush on each schedule_delay_ms tick, then on shutdown."""
-        delay = self._schedule_delay_ms / 1000.0
-        while True:
-            shutdown_signaled = self._shutdown_event.wait(timeout=delay)
-            self._flush()
-            if shutdown_signaled:
-                break
-
-    def shutdown(self) -> None:
-        """Signal shutdown; flush remaining spans within export_timeout_ms deadline."""
-        self._shutdown_event.set()
-        timeout = self._export_timeout_ms / 1000.0
-        self._thread.join(timeout=timeout)
-        # Final drain for any spans that arrived after the last flush
-        self._flush()
+# Span processor implementations live in their own module (Issue #43 §1.2)
+# to mirror the layout of the TypeScript and Rust SDKs.  They are re-exported
+# here for backward compatibility with code that imports them from this
+# module.
+from apcore.observability.batch_span_processor import (  # noqa: E402
+    BatchSpanProcessor,
+    SimpleSpanProcessor,
+    SpanProcessor,
+)
 
 
 # ---------------------------------------------------------------------------

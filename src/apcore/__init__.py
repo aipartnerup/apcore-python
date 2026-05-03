@@ -225,15 +225,18 @@ from apcore.events import (
 # Pipeline
 from apcore.pipeline import (
     BaseStep,
+    ConfigurationError,
     ExecutionStrategy,
     PipelineAbortError,
     PipelineContext,
+    PipelineDependencyError,
     PipelineEngine,
     PipelineState,
     PipelineStepError,
     PipelineStepNotFoundError,
     PipelineTrace,
     Step,
+    StepMiddleware,
     StepNameDuplicateError,
     StepNotFoundError,
     StepNotRemovableError,
@@ -730,6 +733,7 @@ __all__ = [
     # Pipeline
     "Step",
     "BaseStep",
+    "StepMiddleware",
     "StepResult",
     "PipelineContext",
     "PipelineEngine",
@@ -746,6 +750,8 @@ __all__ = [
     "StepNotReplaceableError",
     "StepNameDuplicateError",
     "StrategyNotFoundError",
+    "ConfigurationError",
+    "PipelineDependencyError",
     # Pipeline Configuration
     "register_step_type",
     "unregister_step_type",

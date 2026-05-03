@@ -5,7 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from apcore.pipeline import BaseStep
+from apcore.pipeline import (
+    BaseStep,
+    ConfigurationError,
+    StepNotFoundError,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -172,37 +176,48 @@ def build_strategy_from_config(
         executor=executor,
     )
 
-    # (1) Remove steps
+    # (1) Remove steps — fail-fast (Issue #33 §1.2)
     for step_name in pipeline_config.get("remove", []):
         try:
             strategy.remove(step_name)
-        except Exception as exc:
-            _logger.warning("Cannot remove step '%s': %s", step_name, exc)
+        except StepNotFoundError as exc:
+            raise ConfigurationError(
+                f"Cannot remove step '{step_name}': step not found in strategy"
+            ) from exc
 
-    # (2) Configure existing step fields
-    for step_name, overrides in pipeline_config.get("configure", {}).items():
-        for step in strategy.steps:
-            if step.name == step_name:
-                for key, value in overrides.items():
-                    if hasattr(step, key):
-                        setattr(step, key, value)
-                    else:
-                        _logger.warning("Step '%s' has no field '%s'", step_name, key)
-                break
+    # (2) Configure existing step fields — fail-fast (Issue #33 §1.2)
+    configure_section = pipeline_config.get("configure", {}) or {}
+    for step_name, overrides in configure_section.items():
+        target = next((s for s in strategy.steps if s.name == step_name), None)
+        if target is None:
+            raise ConfigurationError(
+                f"Cannot configure step '{step_name}': step not found in strategy"
+            )
+        for key, value in overrides.items():
+            if not hasattr(target, key):
+                raise ConfigurationError(
+                    f"Cannot configure step '{step_name}': unknown field '{key}'"
+                )
+            setattr(target, key, value)
 
-    # (3) Resolve and insert custom steps
+    # (3) Resolve and insert custom steps — fail-fast (Issue #33 §1.2)
     for step_def in pipeline_config.get("steps", []):
-        step = _resolve_step(step_def)
         after = step_def.get("after")
         before = step_def.get("before")
-        if after:
-            strategy.insert_after(after, step)
-        elif before:
-            strategy.insert_before(before, step)
-        else:
-            _logger.warning(
-                "Step '%s' has neither 'after' nor 'before' — skipping",
-                step.name,
+        if not after and not before:
+            raise ConfigurationError(
+                f"Step '{step_def.get('name', '<unnamed>')}' must declare an 'after' or 'before' anchor"
             )
+        step = _resolve_step(step_def)
+        try:
+            if after:
+                strategy.insert_after(after, step)
+            else:
+                strategy.insert_before(before, step)
+        except StepNotFoundError as exc:
+            anchor = after or before
+            raise ConfigurationError(
+                f"Cannot insert step '{step.name}': anchor step '{anchor}' not found"
+            ) from exc
 
     return strategy
