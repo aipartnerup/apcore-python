@@ -450,7 +450,11 @@ class TestAsyncTaskAutoCleanup:
 
 
 class _SpyStore:
-    """TaskStore spy that records status at the time of each put() call."""
+    """TaskStore spy that records status at the time of each save() call.
+
+    Implements the post-D-10 surface (``save``, ``list_expired``) and keeps
+    ``put`` as a back-compat shim for tests that still call it.
+    """
 
     def __init__(self) -> None:
         self._data: dict[str, TaskInfo] = {}
@@ -459,9 +463,12 @@ class _SpyStore:
     def get(self, task_id: str) -> TaskInfo | None:
         return self._data.get(task_id)
 
-    def put(self, info: TaskInfo) -> None:
+    def save(self, info: TaskInfo) -> None:
         self._data[info.task_id] = info
         self.put_statuses.append(info.status)
+
+    def put(self, info: TaskInfo) -> None:
+        self.save(info)
 
     def delete(self, task_id: str) -> None:
         self._data.pop(task_id, None)
@@ -470,6 +477,15 @@ class _SpyStore:
         if status is None:
             return list(self._data.values())
         return [t for t in self._data.values() if t.status == status]
+
+    def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
+        terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+        return [
+            t
+            for t in self._data.values()
+            if t.status in terminal
+            and (t.completed_at if t.completed_at is not None else t.submitted_at) < before_timestamp
+        ]
 
 
 class _CountingModule:
@@ -618,19 +634,26 @@ class TestRetryLifecycle:
         assert info.max_retries == 2
 
     @pytest.mark.asyncio
-    async def test_status_sequence_includes_retrying(self, failing_executor: Executor) -> None:
-        """TC-015: status transitions include RETRYING between attempts."""
+    async def test_status_sequence_includes_pending_during_backoff(self, failing_executor: Executor) -> None:
+        """TC-015 (post-D-12): backoff state is PENDING (was RETRYING).
+
+        Cross-language alignment: TypeScript and Rust SDKs use PENDING for
+        the wait-between-attempts state.  Python now matches.
+        """
         spy = _SpyStore()
         policy = RetryPolicy(max_retries=1, backoff=BackoffStrategy.FIXED, base_delay_seconds=0.01)
         mgr = AsyncTaskManager(failing_executor, store=spy)
         await mgr.submit("test.failing", {}, retry_policy=policy)
         await asyncio.sleep(0.3)
 
-        assert TaskStatus.RETRYING in spy.put_statuses
-        # Verify ordering: first RUNNING before first RETRYING
+        # No "retrying" string value should ever be persisted.
+        assert all(s.value != "retrying" for s in spy.put_statuses)
+        # PENDING appears at submit AND during backoff.
+        assert spy.put_statuses.count(TaskStatus.PENDING) >= 2
+        # First RUNNING happens after the initial PENDING.
+        first_pending = spy.put_statuses.index(TaskStatus.PENDING)
         first_running = spy.put_statuses.index(TaskStatus.RUNNING)
-        first_retrying = spy.put_statuses.index(TaskStatus.RETRYING)
-        assert first_running < first_retrying
+        assert first_pending < first_running
 
     @pytest.mark.asyncio
     async def test_succeeds_on_retry(self, executor: Executor) -> None:
@@ -650,17 +673,19 @@ class TestRetryLifecycle:
 
     @pytest.mark.asyncio
     async def test_cancel_during_retrying(self, failing_executor: Executor) -> None:
-        """TC-017: cancelling while in RETRYING state stops the retry loop."""
-        # Long delay so the task will be in RETRYING when we cancel
+        """TC-017 (post-D-12): cancelling while in PENDING (backoff) state
+        stops the retry loop.  PENDING is the cross-language status for
+        between-attempt waiting; the legacy "retrying" enum was removed."""
+        # Long delay so the task will still be in backoff (PENDING) when we cancel.
         policy = RetryPolicy(max_retries=5, backoff=BackoffStrategy.FIXED, base_delay_seconds=10.0)
         mgr = AsyncTaskManager(failing_executor)
         task_id = await mgr.submit("test.failing", {}, retry_policy=policy)
 
-        # Wait long enough for first attempt to fail and enter RETRYING
+        # Wait long enough for first attempt to fail and enter backoff (PENDING).
         await asyncio.sleep(0.2)
         info = mgr.get_status(task_id)
         assert info is not None
-        assert info.status == TaskStatus.RETRYING
+        assert info.status == TaskStatus.PENDING
 
         cancelled = await mgr.cancel(task_id)
         assert cancelled is True
@@ -745,14 +770,14 @@ class TestRegression:
     """TC-024/025: Ensure existing behaviour is unchanged."""
 
     def test_all_task_statuses_present(self) -> None:
-        """TC-024: TaskStatus has all six expected values."""
+        """TC-024: TaskStatus has the five canonical cross-language values
+        post-D-12.  ``RETRYING`` was removed; backoff is now ``PENDING``."""
         expected = {
             "pending",
             "running",
             "completed",
             "failed",
             "cancelled",
-            "retrying",
         }
         actual = {s.value for s in TaskStatus}
         assert expected == actual

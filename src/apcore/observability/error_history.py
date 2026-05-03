@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from apcore.errors import ModuleError
+from apcore.observability.storage import StorageBackend
 from apcore.observability.store import ObservabilityStore
 
 
@@ -86,12 +87,17 @@ class ErrorHistory:
         max_entries_per_module: int = 50,
         max_total_entries: int = 1000,
         store: ObservabilityStore | None = None,
+        storage: StorageBackend | None = None,
     ) -> None:
         from apcore.observability.store import InMemoryObservabilityStore
 
         self._max_entries_per_module = max_entries_per_module
         self._max_total_entries = max_total_entries
         self._store: ObservabilityStore = store if store is not None else InMemoryObservabilityStore()
+        # Optional generic storage backend (Issue #43 §1).  When supplied,
+        # error entries are mirrored to the ``"errors"`` namespace using the
+        # fingerprint as the key, enabling cross-process persistence.
+        self._storage: StorageBackend | None = storage
         self._lock = threading.Lock()
         self._fp_index: dict[str, ErrorEntry] = {}
         self._module_index: dict[str, deque[ErrorEntry]] = {}
@@ -102,6 +108,10 @@ class ErrorHistory:
     @property
     def store(self) -> ObservabilityStore:
         return self._store
+
+    @property
+    def storage(self) -> StorageBackend | None:
+        return self._storage
 
     def record(self, module_id: str, error: ModuleError) -> None:
         """Record an error, deduplicating by fingerprint."""
@@ -136,6 +146,22 @@ class ErrorHistory:
                 entry_to_notify = entry
         # Notify store outside the internal lock to avoid lock-ordering issues.
         self._store.record_error(entry_to_notify)
+        if self._storage is not None:
+            self._storage.save(
+                "errors",
+                entry_to_notify.fingerprint,
+                {
+                    "module_id": entry_to_notify.module_id,
+                    "code": entry_to_notify.code,
+                    "message": entry_to_notify.message,
+                    "ai_guidance": entry_to_notify.ai_guidance,
+                    "timestamp": entry_to_notify.timestamp,
+                    "count": entry_to_notify.count,
+                    "first_occurred": entry_to_notify.first_occurred,
+                    "last_occurred": entry_to_notify.last_occurred,
+                    "fingerprint": entry_to_notify.fingerprint,
+                },
+            )
 
     def get(self, module_id: str, limit: int | None = None) -> list[ErrorEntry]:
         """Return entries for a module, newest first (by insertion order)."""

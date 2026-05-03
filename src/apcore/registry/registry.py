@@ -370,6 +370,41 @@ class Registry:
             return self._discover_custom()
         return self._discover_default()
 
+    def discover_multi_class(
+        self,
+        file_path: "str | Path",
+        extensions_root: str = "extensions",
+    ) -> "list[tuple[str, type]]":
+        """Discover ``@multi_class`` Module classes in a single file (D-15).
+
+        Method-shaped wrapper around :func:`apcore.registry.multi_class.discover_multi_class`
+        so the multi-class discovery surface matches the protocol spec
+        Registry contract.  The free function remains importable for
+        existing callers; new code SHOULD prefer this method.
+
+        The optional ``pre_approval_hook`` configured on the registry is
+        forwarded to the underlying scanner so signature-verification and
+        audit policies apply uniformly across discovery paths.
+
+        Args:
+            file_path: Path to the Python file to scan.
+            extensions_root: Root directory name used by Algorithm A01 to
+                derive the base module ID.
+
+        Returns:
+            List of ``(module_id, class_ref)`` pairs, one per qualifying
+            class.  Single-class files return ``[(base_id, cls)]`` (no
+            segment appended).
+        """
+        # Lazy import to avoid a circular import at module load time.
+        from apcore.registry.multi_class import discover_multi_class as _discover_multi_class
+
+        return _discover_multi_class(
+            file_path,
+            extensions_root=extensions_root,
+            pre_approval_hook=self._pre_approval_hook,
+        )
+
     def _discover_custom(self) -> int:
         """Run discovery using the custom discoverer."""
         assert self._custom_discoverer is not None  # noqa: S101

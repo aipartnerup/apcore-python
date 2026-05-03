@@ -555,6 +555,8 @@ class TestPublicAPIAll:
         "ErrorEntry",
         "ErrorHistory",
         "ErrorHistoryMiddleware",
+        "StorageBackend",
+        "InMemoryStorageBackend",
         "UsageCollector",
         "UsageMiddleware",
         "PlatformNotifyMiddleware",
