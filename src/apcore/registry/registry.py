@@ -351,13 +351,26 @@ class Registry:
 
     # ----- Discovery -----
 
-    def discover(self) -> int:
+    def discover(
+        self,
+        path_filter: str | list[str] | None = None,
+    ) -> int:
         """Discover and register modules from configured extension directories.
 
         If a custom discoverer is set via ``set_discoverer()``, it is used
         instead of the default file-system scanning logic.  If a custom
         validator is set via ``set_validator()``, it replaces the built-in
         ``validate_module()`` check.
+
+        Args:
+            path_filter: Optional glob pattern (string) or list of patterns
+                applied to each candidate module file's path.  Only files
+                whose path matches at least one pattern are walked through
+                discovery (Issue #45 §4 — granular reload).  Already-
+                registered modules outside the filter are *not* touched.
+                Patterns are matched against both the absolute file path
+                and its path relative to the extension root, using
+                ``pathlib.PurePath.match``.
 
         Returns:
             Number of modules successfully registered in this discovery pass.
@@ -368,7 +381,7 @@ class Registry:
         """
         if self._custom_discoverer is not None:
             return self._discover_custom()
-        return self._discover_default()
+        return self._discover_default(path_filter=path_filter)
 
     def discover_multi_class(
         self,
@@ -451,7 +464,10 @@ class Registry:
 
         return registered_count
 
-    def _discover_default(self) -> int:
+    def _discover_default(
+        self,
+        path_filter: str | list[str] | None = None,
+    ) -> int:
         """Run discovery using the default file-system scanning logic.
 
         Orchestrates 7 named stages; per-stage logic lives in the dedicated
@@ -460,6 +476,8 @@ class Registry:
         """
         max_depth, follow_symlinks = self._scan_params()
         discovered = self._scan_roots(max_depth, follow_symlinks)
+        if path_filter is not None:
+            discovered = self._apply_path_filter(discovered, path_filter)
         self._apply_id_map_overrides(discovered)
         raw_metadata = self._load_all_metadata(discovered)
         resolved_classes = self._resolve_all_entry_points(discovered, raw_metadata)
@@ -516,6 +534,46 @@ class Registry:
             max_depth=max_depth,
             follow_symlinks=follow_symlinks,
         )
+
+    def _apply_path_filter(
+        self,
+        discovered: list[Any],
+        path_filter: str | list[str],
+    ) -> list[Any]:
+        """Filter ``discovered`` entries to those matching ``path_filter``.
+
+        Each entry's ``file_path`` is tested against the supplied glob
+        pattern(s) using :meth:`pathlib.PurePath.match`.  The match is tried
+        against both the absolute path and the path relative to each
+        configured extension root so that patterns like ``"*alpha*"`` work
+        as expected (PurePath.match anchors on the right-most segments).
+        """
+        from pathlib import PurePath
+
+        patterns: list[str]
+        if isinstance(path_filter, str):
+            patterns = [path_filter]
+        else:
+            patterns = list(path_filter)
+        if not patterns:
+            return discovered
+
+        resolved_roots = [Path(r["root"]).resolve() for r in self._extension_roots]
+
+        def _matches(path: Path) -> bool:
+            candidates: list[PurePath] = [PurePath(str(path))]
+            for root in resolved_roots:
+                try:
+                    candidates.append(PurePath(str(path.relative_to(root))))
+                except ValueError:
+                    continue
+            for cand in candidates:
+                for pat in patterns:
+                    if cand.match(pat):
+                        return True
+            return False
+
+        return [dm for dm in discovered if _matches(dm.file_path)]
 
     def _apply_id_map_overrides(self, discovered: list[Any]) -> None:
         """Stage 2 — rewrite ``canonical_id`` for files listed in the ID map."""

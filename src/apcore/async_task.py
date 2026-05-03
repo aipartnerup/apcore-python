@@ -24,7 +24,35 @@ __all__ = [
     "BackoffStrategy",
     "AsyncTaskManager",
     "ExecutorProtocol",
+    "ReaperHandle",
 ]
+
+
+_UNSET = object()
+
+
+class ReaperHandle:
+    """Handle returned by :meth:`AsyncTaskManager.start_reaper`.
+
+    Mirrors the TS / Rust ``ReaperHandle`` surface (Issue #34 D-11).  Owners
+    call :meth:`stop` to cancel the periodic cleanup loop; :meth:`is_running`
+    reports whether the underlying ``asyncio.Task`` is still active.
+    Idempotent: ``stop()`` after the loop has already finished is a no-op.
+    """
+
+    __slots__ = ("_manager",)
+
+    def __init__(self, manager: "AsyncTaskManager") -> None:
+        self._manager = manager
+
+    def stop(self) -> None:
+        """Cancel the periodic reap loop (idempotent)."""
+        self._manager.stop_reaper()
+
+    def is_running(self) -> bool:
+        """Return True if the reaper task exists and has not finished."""
+        task = self._manager._reaper_task
+        return task is not None and not task.done()
 
 
 @runtime_checkable
@@ -463,23 +491,71 @@ class AsyncTaskManager:
 
     def start_reaper(
         self,
-        interval_seconds: float = 3600.0,
-        max_age_seconds: float = 3600.0,
-    ) -> None:
+        *,
+        ttl_seconds: float | int = 3600.0,
+        sweep_interval_ms: float | int = 3_600_000,
+        interval_seconds: Any = _UNSET,
+        max_age_seconds: Any = _UNSET,
+    ) -> ReaperHandle:
         """Start a background asyncio task that periodically calls cleanup().
 
+        Cross-language signature alignment (Issue #34 D-11): TS and Rust
+        SDKs expose ``ttl_seconds`` (seconds) and ``sweep_interval_ms``
+        (milliseconds) and return a :class:`ReaperHandle`.
+
         Args:
-            interval_seconds: How often to run cleanup (seconds).
-            max_age_seconds: Terminal tasks older than this are removed.
+            ttl_seconds: Terminal tasks older than this are removed (seconds).
+            sweep_interval_ms: How often to run cleanup (milliseconds).
+            interval_seconds: **Deprecated** alias for ``sweep_interval_ms``
+                expressed in seconds; emits ``DeprecationWarning``.
+            max_age_seconds: **Deprecated** alias for ``ttl_seconds``; emits
+                ``DeprecationWarning``.
+
+        Returns:
+            A :class:`ReaperHandle` whose :meth:`~ReaperHandle.stop` cancels
+            the loop.
 
         Raises:
             RuntimeError: If the reaper is already running.
+            TypeError: If both legacy and new kwargs are supplied for the
+                same value.
         """
+        # Resolve legacy aliases with explicit conflict checks.
+        if interval_seconds is not _UNSET:
+            if sweep_interval_ms != 3_600_000:
+                raise TypeError(
+                    "start_reaper() received both 'sweep_interval_ms' and "
+                    "deprecated 'interval_seconds'; pass only one."
+                )
+            warnings.warn(
+                "AsyncTaskManager.start_reaper(interval_seconds=...) is deprecated; "
+                "use sweep_interval_ms (milliseconds) for cross-language alignment.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            sweep_interval_ms = float(interval_seconds) * 1000.0
+
+        if max_age_seconds is not _UNSET:
+            if ttl_seconds != 3600.0:
+                raise TypeError(
+                    "start_reaper() received both 'ttl_seconds' and "
+                    "deprecated 'max_age_seconds'; pass only one."
+                )
+            warnings.warn(
+                "AsyncTaskManager.start_reaper(max_age_seconds=...) is deprecated; "
+                "use ttl_seconds for cross-language alignment.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            ttl_seconds = float(max_age_seconds)
+
         if self._reaper_task is not None and not self._reaper_task.done():
             raise RuntimeError("Reaper is already running; call stop_reaper() first")
-        self._reaper_interval = interval_seconds
-        self._reaper_max_age = max_age_seconds
+
+        self._reaper_interval = float(sweep_interval_ms) / 1000.0
+        self._reaper_max_age = float(ttl_seconds)
         self._reaper_task = asyncio.create_task(self._reap_loop())
+        return ReaperHandle(self)
 
     def stop_reaper(self) -> None:
         """Stop the background reaper task. No-op if not running."""

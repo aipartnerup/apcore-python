@@ -1207,6 +1207,42 @@ Config.register_namespace(
     },
 )
 
+#: Default ``obs.redaction.sensitive_keys`` list (Issue #43 §5).  Any field
+#: whose name contains one of these substrings (case-insensitive) is
+#: redacted at log emission and at module input/output capture.  The
+#: ``_secret_*`` glob is preserved for backward compatibility with the
+#: legacy prefix convention.
+_DEFAULT_OBS_REDACTION_SENSITIVE_KEYS: list[str] = [
+    "_secret_*",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "access_key",
+    "private_key",
+    "authorization",
+    "auth",
+    "credential",
+    "cookie",
+    "session",
+    "bearer",
+]
+
+
+Config.register_namespace(
+    "obs",
+    env_prefix="APCORE_OBS",
+    defaults={
+        "redaction": {
+            "regex_patterns": [],
+            "sensitive_keys": list(_DEFAULT_OBS_REDACTION_SENSITIVE_KEYS),
+            "replacement": "***REDACTED***",
+        },
+    },
+)
+
 Config.register_namespace(
     "sys_modules",
     env_prefix="APCORE_SYS",
