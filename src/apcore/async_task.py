@@ -541,8 +541,7 @@ class AsyncTaskManager:
         if max_age_seconds is not _UNSET:
             if ttl_seconds != 3600.0:
                 raise TypeError(
-                    "start_reaper() received both 'ttl_seconds' and "
-                    "deprecated 'max_age_seconds'; pass only one."
+                    "start_reaper() received both 'ttl_seconds' and " "deprecated 'max_age_seconds'; pass only one."
                 )
             warnings.warn(
                 "AsyncTaskManager.start_reaper(max_age_seconds=...) is deprecated; "

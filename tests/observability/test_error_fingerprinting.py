@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from apcore.errors import ModuleError
 from apcore.observability.error_history import (
@@ -49,6 +48,7 @@ def test_fingerprint_uses_top_frame_when_available() -> None:
     Each ``_raise_with`` call constructs the error from the same line; we use
     a different helper to differentiate the top frame.
     """
+
     def _raise_b(message: str) -> ModuleError:
         try:
             raise ModuleError(code="TEST_ERR", message=message)

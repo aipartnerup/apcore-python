@@ -907,9 +907,7 @@ class Executor:
             # ``output``) are seeded by the streaming pre-flight, not by
             # earlier steps in this sub-strategy. Skip the strict §2.1
             # dependency check that would otherwise reject the slice.
-            post_strategy = ExecutionStrategy(
-                "post_stream", post_steps, validate_dependencies=False
-            )
+            post_strategy = ExecutionStrategy("post_stream", post_steps, validate_dependencies=False)
             try:
                 await self._pipeline_engine.run(post_strategy, pipe_ctx)
             except Exception as post_exc:

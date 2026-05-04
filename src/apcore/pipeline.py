@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from collections.abc import Sequence
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from apcore.errors import ModuleError
 from apcore.utils.pattern import match_pattern
@@ -164,13 +164,9 @@ class StepMiddleware(Protocol):
 
     def before_step(self, step_name: str, state: "PipelineState") -> Any: ...
 
-    def after_step(
-        self, step_name: str, state: "PipelineState", result: "StepResult"
-    ) -> Any: ...
+    def after_step(self, step_name: str, state: "PipelineState", result: "StepResult") -> Any: ...
 
-    def on_step_error(
-        self, step_name: str, state: "PipelineState", error: Exception
-    ) -> Any: ...
+    def on_step_error(self, step_name: str, state: "PipelineState", error: Exception) -> Any: ...
 
 
 @dataclass
@@ -352,9 +348,7 @@ async def _invoke_step_mw_hook(
             if inspect.isawaitable(value):
                 value = await value
         except Exception:
-            _logger.exception(
-                "StepMiddleware %r raised in %s", type(mw).__name__, hook
-            )
+            _logger.exception("StepMiddleware %r raised in %s", type(mw).__name__, hook)
             continue
         if value is not None:
             last_value = value
@@ -493,9 +487,7 @@ class PipelineEngine:
                         outputs=step_outputs,
                         context=ctx,
                     )
-                    recovery = await _invoke_step_mw_hook(
-                        step_mws, "on_step_error", step.name, err_state, exc
-                    )
+                    recovery = await _invoke_step_mw_hook(step_mws, "on_step_error", step.name, err_state, exc)
 
                 if recovery is not None:
                     # Coerce non-StepResult recoveries (e.g. plain dicts) into
@@ -555,9 +547,7 @@ class PipelineEngine:
                     outputs=step_outputs,
                     context=ctx,
                 )
-                await _invoke_step_mw_hook(
-                    step_mws, "after_step", step.name, post_state, result, reverse=True
-                )
+                await _invoke_step_mw_hook(step_mws, "after_step", step.name, post_state, result, reverse=True)
 
             if result.action == "abort":
                 trace.total_duration_ms = (time.monotonic() - start) * 1000
@@ -763,10 +753,7 @@ class PipelineDependencyError(ModuleError):
         missing: tuple[str, ...] = (),
         **kwargs: Any,
     ) -> None:
-        msg = (
-            f"Pipeline step '{step_name}' requires {set(missing)}, "
-            f"but no preceding step provides them."
-        )
+        msg = f"Pipeline step '{step_name}' requires {set(missing)}, " f"but no preceding step provides them."
         super().__init__(
             code="PIPELINE_DEPENDENCY_ERROR",
             message=msg,

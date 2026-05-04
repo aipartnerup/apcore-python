@@ -111,9 +111,7 @@ class TraceContext:
         """
         if parent_id is not None:
             if not isinstance(parent_id, str) or not _PARENT_ID_RE.match(parent_id):
-                raise ValueError(
-                    f"parent_id must be 16 lowercase hex chars, got {parent_id!r}"
-                )
+                raise ValueError(f"parent_id must be 16 lowercase hex chars, got {parent_id!r}")
             chosen_parent_id = parent_id
         else:
             spans_stack = context.data.get("_apcore.mw.tracing.spans")
@@ -156,9 +154,7 @@ class TraceContext:
             return None
 
         tracestate_raw = _lookup_header_ci(headers, "tracestate")
-        tracestate: tuple[tuple[str, str], ...] = (
-            tuple(parse_tracestate(tracestate_raw)) if tracestate_raw else ()
-        )
+        tracestate: tuple[tuple[str, str], ...] = tuple(parse_tracestate(tracestate_raw)) if tracestate_raw else ()
 
         return TraceParent(
             version=version,

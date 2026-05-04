@@ -245,9 +245,7 @@ class MiddlewareManager:
                     # Run in thread first; if the sync callable actually
                     # returned a coroutine/awaitable (partial / decorator
                     # over ``async def``) await it on this loop.
-                    ret = await asyncio.to_thread(
-                        mw.on_error, module_id, inputs, error, context
-                    )
+                    ret = await asyncio.to_thread(mw.on_error, module_id, inputs, error, context)
                     recovery = await ret if inspect.isawaitable(ret) else ret
                 if isinstance(recovery, RetrySignal):
                     return recovery

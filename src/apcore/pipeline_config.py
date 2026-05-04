@@ -181,23 +181,17 @@ def build_strategy_from_config(
         try:
             strategy.remove(step_name)
         except StepNotFoundError as exc:
-            raise ConfigurationError(
-                f"Cannot remove step '{step_name}': step not found in strategy"
-            ) from exc
+            raise ConfigurationError(f"Cannot remove step '{step_name}': step not found in strategy") from exc
 
     # (2) Configure existing step fields — fail-fast (Issue #33 §1.2)
     configure_section = pipeline_config.get("configure", {}) or {}
     for step_name, overrides in configure_section.items():
         target = next((s for s in strategy.steps if s.name == step_name), None)
         if target is None:
-            raise ConfigurationError(
-                f"Cannot configure step '{step_name}': step not found in strategy"
-            )
+            raise ConfigurationError(f"Cannot configure step '{step_name}': step not found in strategy")
         for key, value in overrides.items():
             if not hasattr(target, key):
-                raise ConfigurationError(
-                    f"Cannot configure step '{step_name}': unknown field '{key}'"
-                )
+                raise ConfigurationError(f"Cannot configure step '{step_name}': unknown field '{key}'")
             setattr(target, key, value)
 
     # (3) Resolve and insert custom steps — fail-fast (Issue #33 §1.2)
@@ -216,8 +210,6 @@ def build_strategy_from_config(
                 strategy.insert_before(before, step)
         except StepNotFoundError as exc:
             anchor = after or before
-            raise ConfigurationError(
-                f"Cannot insert step '{step.name}': anchor step '{anchor}' not found"
-            ) from exc
+            raise ConfigurationError(f"Cannot insert step '{step.name}': anchor step '{anchor}' not found") from exc
 
     return strategy

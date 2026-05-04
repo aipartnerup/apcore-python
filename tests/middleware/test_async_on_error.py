@@ -117,9 +117,7 @@ async def test_partial_async_on_error_recovery_is_awaited() -> None:
     manager.add(mw)
 
     error = RuntimeError("boom")
-    recovery = await manager.execute_on_error_async(
-        "test_module", {"x": 1}, error, _make_context(), [mw]
-    )
+    recovery = await manager.execute_on_error_async("test_module", {"x": 1}, error, _make_context(), [mw])
 
     assert recovery == {"recovered": True, "module_id": "test_module"}
 
@@ -131,9 +129,7 @@ async def test_partial_async_before_is_awaited() -> None:
     mw = PartialAsyncBeforeMiddleware()
     manager.add(mw)
 
-    new_inputs, executed = await manager.execute_before_async(
-        "test_module", {"x": 1}, _make_context()
-    )
+    new_inputs, executed = await manager.execute_before_async("test_module", {"x": 1}, _make_context())
     assert mw in executed
     assert new_inputs == {"x": 1, "stamped_by": "before-tag"}
 
@@ -145,9 +141,7 @@ async def test_partial_async_after_is_awaited() -> None:
     mw = PartialAsyncAfterMiddleware()
     manager.add(mw)
 
-    out = await manager.execute_after_async(
-        "test_module", {"x": 1}, {"out": "v"}, _make_context()
-    )
+    out = await manager.execute_after_async("test_module", {"x": 1}, {"out": "v"}, _make_context())
     assert out == {"out": "v", "stamped_by": "after-tag"}
 
 

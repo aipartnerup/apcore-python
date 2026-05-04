@@ -40,15 +40,9 @@ class {class_name}:
 def ext_dir(tmp_path: Path) -> Path:
     ext = tmp_path / "extensions"
     ext.mkdir()
-    (ext / "alpha.py").write_text(
-        _MODULE_TEMPLATE.format(class_name="AlphaModule", description="alpha")
-    )
-    (ext / "beta.py").write_text(
-        _MODULE_TEMPLATE.format(class_name="BetaModule", description="beta")
-    )
-    (ext / "gamma.py").write_text(
-        _MODULE_TEMPLATE.format(class_name="GammaModule", description="gamma")
-    )
+    (ext / "alpha.py").write_text(_MODULE_TEMPLATE.format(class_name="AlphaModule", description="alpha"))
+    (ext / "beta.py").write_text(_MODULE_TEMPLATE.format(class_name="BetaModule", description="beta"))
+    (ext / "gamma.py").write_text(_MODULE_TEMPLATE.format(class_name="GammaModule", description="gamma"))
     return ext
 
 
@@ -59,9 +53,7 @@ def test_discover_with_path_filter_only_walks_matching_files(ext_dir: Path) -> N
     assert n == 1
     ids = registry.module_ids
     assert any("alpha" in mid for mid in ids), f"Expected alpha module, got {ids}"
-    assert not any("beta" in mid or "gamma" in mid for mid in ids), (
-        f"Filter leaked: {ids}"
-    )
+    assert not any("beta" in mid or "gamma" in mid for mid in ids), f"Filter leaked: {ids}"
 
 
 def test_discover_no_filter_walks_everything(ext_dir: Path) -> None:
@@ -83,9 +75,7 @@ def test_discover_path_filter_preserves_existing_unmatched_modules(ext_dir: Path
 
     # Touch alpha file — simulate a hot-reload of just alpha.
     alpha_path = ext_dir / "alpha.py"
-    alpha_path.write_text(
-        _MODULE_TEMPLATE.format(class_name="AlphaModule", description="alpha v2")
-    )
+    alpha_path.write_text(_MODULE_TEMPLATE.format(class_name="AlphaModule", description="alpha v2"))
     registry.unregister(next(mid for mid in before_ids if "alpha" in mid))
     registry.discover(path_filter="*alpha*")
 
@@ -100,6 +90,4 @@ def test_discover_path_filter_list_form(ext_dir: Path) -> None:
     n = registry.discover(path_filter=["*alpha*", "*beta*"])
     assert n == 2
     ids = registry.module_ids
-    assert not any("gamma" in mid for mid in ids), (
-        f"Gamma should not be discovered: {ids}"
-    )
+    assert not any("gamma" in mid for mid in ids), f"Gamma should not be discovered: {ids}"

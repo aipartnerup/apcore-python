@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.20.0] - 2026-05-04
 
 ### Added
 
@@ -40,10 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Async `on_error` middleware now detects awaitable **return values** via `inspect.isawaitable(...)` rather than `inspect.iscoroutinefunction(mw.on_error)` (#42). The previous gate missed `functools.partial` wrappers and decorator-wrapped async handlers (no `__wrapped__`), causing the recovery coroutine to be silently dropped — `isinstance(recovery, dict)` then evaluated against an un-awaited coroutine and the chain aborted. The same fix applies to `execute_before` and `execute_after`. Truly synchronous handlers continue to run through `asyncio.to_thread` so blocking calls (`time.sleep` in `RetryMiddleware`) do not stall the event loop.
 
-
-## [0.20.0] - 2026-04-29
-
-### Added
+### Added — PROTOCOL_SPEC hardening (Issues #32–#45)
 
 - **AsyncTaskManager Evolution** (PROTOCOL_SPEC Issue #34) — Pluggable `TaskStore` protocol with `InMemoryTaskStore` default; custom backends (Redis, SQL) can be injected at construction time. Per-task retry configuration via new `RetryPolicy` dataclass (`max_retries`, `retry_delay_ms`, `backoff_multiplier`, `max_retry_delay_ms`) and `BackoffStrategy` enum; tasks move to `TaskStatus.RETRYING` between attempts and `FAILED` after exhaustion. `AsyncTaskManager.start_reaper(interval_seconds, max_age_seconds)` / `stop_reaper()` — opt-in background task for automatic TTL-based deletion of terminal-state (`COMPLETED`, `FAILED`, `CANCELLED`) tasks. Exports: `TaskStore`, `InMemoryTaskStore`, `RetryPolicy`, `BackoffStrategy`.
 - **Observability Hardening** (PROTOCOL_SPEC Issue #43) — Pluggable `ObservabilityStore` protocol with `InMemoryObservabilityStore` default (`apcore.observability.store`). `BatchSpanProcessor` for non-blocking OTEL span export with configurable queue and drop-on-full `spans_dropped` counter (now exported from `apcore.observability.tracing`). O(log N) `ErrorHistory` eviction via min-heap keyed on `last_occurred` plus O(1) fingerprint index replacing prior O(M) ring-buffer scan. `compute_fingerprint()` — SHA-256 content-addressable error deduplication with UUID/timestamp normalization (exported from `apcore.observability.error_history`). `RedactionConfig` in `ContextLogger` for glob `field_patterns` and regex `value_patterns` applied at log time. `PrometheusExporter` HTTP server serving `/metrics` (Prometheus text format), `/healthz` (liveness), and `/readyz` (readiness) endpoints (`apcore.observability.prometheus_exporter`). `MetricsCollector.export_prometheus()` emits `apcore_module_calls_total`, `apcore_module_errors_total`, `apcore_module_duration_seconds`. `UsageCollector.export_prometheus()` emits `apcore_usage_calls_total`, `apcore_usage_error_rate`, `apcore_usage_p50/p95/p99_latency_ms`.

@@ -24,10 +24,9 @@ import logging
 import queue
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    from apcore.observability.tracing import Span
+from apcore.observability.span import Span
 
 _logger = logging.getLogger(__name__)
 
@@ -110,9 +109,7 @@ class BatchSpanProcessor:
         self._max_queue_size = max_queue_size
         self._schedule_delay_ms = schedule_delay_ms
         # Accept the spec-style alias.
-        self._max_export_batch_size = (
-            max_export_batch if max_export_batch is not None else max_export_batch_size
-        )
+        self._max_export_batch_size = max_export_batch if max_export_batch is not None else max_export_batch_size
         self._export_timeout_ms = export_timeout_ms
         self._queue: queue.Queue[Span] = queue.Queue(maxsize=max_queue_size)
         self._spans_dropped = 0

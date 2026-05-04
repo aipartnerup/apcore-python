@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 from apcore.observability import BatchSpanProcessor
 from apcore.observability.batch_span_processor import BatchSpanProcessor as DirectImport
@@ -24,6 +23,7 @@ class TestBatchSpanProcessorModule:
     def test_module_exists(self) -> None:
         # The new dedicated module is importable
         import apcore.observability.batch_span_processor as mod
+
         assert mod is not None
 
     def test_re_exported_from_observability_package(self) -> None:

@@ -18,21 +18,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
-import pytest
 import yaml
 
 from apcore.config import Config
-from apcore.events.emitter import EventEmitter
 from apcore.executor import Executor
 from apcore.registry.registry import Registry
-from apcore.sys_modules.audit import InMemoryAuditStore
-from apcore.sys_modules.control import (
-    ToggleFeatureModule,
-    ToggleState,
-    UpdateConfigModule,
-)
 from apcore.sys_modules.overrides import (
     FileOverridesStore,
     InMemoryOverridesStore,
@@ -223,9 +214,7 @@ class TestRegisterSysModulesWithStore:
         loaded = store.load()
         assert loaded["toggle.system.health.module"] is False
 
-    def test_overrides_path_kwarg_back_compat_constructs_file_store(
-        self, tmp_path: Path
-    ) -> None:
+    def test_overrides_path_kwarg_back_compat_constructs_file_store(self, tmp_path: Path) -> None:
         """The legacy ``overrides_path`` kwarg still loads + persists via FileOverridesStore."""
         path = tmp_path / "overrides.yaml"
         # Pre-seed: existing override applied on startup.

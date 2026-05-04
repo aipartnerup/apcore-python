@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
-import yaml
 
 from apcore.config import Config
 from apcore.errors import SysModuleRegistrationError
@@ -284,9 +283,7 @@ def _load_overrides_from_store(
         logger.error("Failed to load overrides from store %r: %s", store, exc)
         return
     if not isinstance(overrides, dict):
-        logger.warning(
-            "Overrides store %r did not return a mapping; skipping", store
-        )
+        logger.warning("Overrides store %r did not return a mapping; skipping", store)
         return
     _apply_overrides(config, overrides, toggle_state=toggle_state, source=repr(store))
 

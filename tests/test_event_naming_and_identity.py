@@ -104,9 +104,7 @@ class TestRegistryEventCanonicalization:
         assert "apcore.registry.module_unregistered" in emitted_types
         assert "module_unregistered" in emitted_types
 
-        legacy_calls = [
-            c for c in emitter.emit.call_args_list if c[0][0].event_type == "module_unregistered"
-        ]
+        legacy_calls = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "module_unregistered"]
         assert len(legacy_calls) == 1
         assert legacy_calls[0][0][0].data.get("deprecated") is True
 
@@ -281,9 +279,7 @@ class TestUpdateConfigCallerId:
             ctx,
         )
 
-        canonical = [
-            c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.config.updated"
-        ]
+        canonical = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.config.updated"]
         assert len(canonical) == 1
         event: ApCoreEvent = canonical[0][0][0]
         assert event.data.get("caller_id") == "user.alice"
@@ -300,9 +296,7 @@ class TestUpdateConfigCallerId:
             None,
         )
 
-        canonical = [
-            c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.config.updated"
-        ]
+        canonical = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.config.updated"]
         assert len(canonical) == 1
         assert canonical[0][0][0].data.get("caller_id") == "@external"
 
@@ -319,9 +313,7 @@ class TestUpdateConfigCallerId:
             ctx,
         )
 
-        canonical = [
-            c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.config.updated"
-        ]
+        canonical = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.config.updated"]
         assert len(canonical) == 1
         ident_payload = canonical[0][0][0].data.get("identity")
         assert isinstance(ident_payload, dict)

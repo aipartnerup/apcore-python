@@ -7,50 +7,14 @@ import dataclasses
 import json
 import logging
 import os
-import queue
 import random
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from apcore.middleware import Middleware
-
-
-@dataclass
-class Span:
-    """A trace span representing a unit of work in the apcore pipeline."""
-
-    trace_id: str
-    name: str
-    start_time: float
-    span_id: str = field(default_factory=lambda: os.urandom(8).hex())
-    parent_span_id: str | None = None
-    attributes: dict[str, Any] = field(default_factory=dict)
-    end_time: float | None = None
-    status: str = "ok"
-    events: list[dict[str, Any]] = field(default_factory=list)
-
-
-def create_span(
-    *,
-    trace_id: str,
-    name: str,
-    start_time: float,
-    span_id: str | None = None,
-    parent_span_id: str | None = None,
-    attributes: dict[str, Any] | None = None,
-) -> Span:
-    """Factory function to create a Span with sensible defaults."""
-    return Span(
-        trace_id=trace_id,
-        name=name,
-        start_time=start_time,
-        span_id=span_id if span_id is not None else os.urandom(8).hex(),
-        parent_span_id=parent_span_id,
-        attributes=attributes if attributes is not None else {},
-    )
+from apcore.observability.span import Span, create_span
 
 
 @runtime_checkable

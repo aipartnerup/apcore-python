@@ -39,17 +39,13 @@ from apcore.registry import Registry
 class TestSaveRename:
     def test_save_stores_task(self) -> None:
         store = InMemoryTaskStore()
-        info = TaskInfo(
-            task_id="t1", module_id="m", status=TaskStatus.PENDING, submitted_at=time.time()
-        )
+        info = TaskInfo(task_id="t1", module_id="m", status=TaskStatus.PENDING, submitted_at=time.time())
         store.save(info)
         assert store.get("t1") is info
 
     def test_put_emits_deprecation_warning(self) -> None:
         store = InMemoryTaskStore()
-        info = TaskInfo(
-            task_id="t2", module_id="m", status=TaskStatus.PENDING, submitted_at=time.time()
-        )
+        info = TaskInfo(task_id="t2", module_id="m", status=TaskStatus.PENDING, submitted_at=time.time())
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             store.put(info)
@@ -132,11 +128,7 @@ class _SpyStore:
         return [t for t in self._data.values() if t.status == status]
 
     def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
-        return [
-            t
-            for t in self._data.values()
-            if t.completed_at is not None and t.completed_at < before_timestamp
-        ]
+        return [t for t in self._data.values() if t.completed_at is not None and t.completed_at < before_timestamp]
 
 
 class TestStatusDuringBackoffIsPending:

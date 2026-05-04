@@ -154,9 +154,7 @@ class TestRedactSensitiveUtility:
         assert result["Authorization"] == "***REDACTED***"
 
     def test_explicit_empty_sensitive_keys_disables_key_matching(self) -> None:
-        result = redact_sensitive(
-            {"password": "hunter2"}, {}, sensitive_keys=[]
-        )
+        result = redact_sensitive({"password": "hunter2"}, {}, sensitive_keys=[])
         assert result["password"] == "hunter2"
 
     def test_regex_pattern_redacts_value(self) -> None:

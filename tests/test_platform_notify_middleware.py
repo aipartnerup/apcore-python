@@ -56,7 +56,9 @@ class TestPlatformNotifyMiddleware:
         # Dual emission: canonical apcore.health.error_threshold_exceeded plus
         # legacy alias error_threshold_exceeded (Issue #36 deprecation window).
         assert emitter.emit.call_count == 2
-        canonical = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.health.error_threshold_exceeded"]
+        canonical = [
+            c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.health.error_threshold_exceeded"
+        ]
         assert len(canonical) == 1
         event: ApCoreEvent = canonical[0][0][0]
         assert event.module_id == "mod.a"
@@ -187,7 +189,9 @@ class TestPlatformNotifyMiddleware:
         mw.on_error("mod.a", {}, RuntimeError("boom3"), MagicMock())
         # Dual emission again
         assert emitter.emit.call_count == 2
-        canonical = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.health.error_threshold_exceeded"]
+        canonical = [
+            c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.health.error_threshold_exceeded"
+        ]
         assert len(canonical) == 1
 
     def test_after_returns_none(self) -> None:

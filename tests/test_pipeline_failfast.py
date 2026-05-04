@@ -51,8 +51,6 @@ class TestDependencyValidationRaises:
 
 class TestPipelineConfigFailFast:
     def _stub_registry(self) -> object:
-        from apcore.builtin_steps import build_standard_strategy
-
         # build_standard_strategy needs a registry-like object — we just need it to
         # produce a strategy. We can pass None to many of its kwargs; but it will
         # always require a registry for the lookup step. Build a minimal stand-in.
@@ -99,11 +97,7 @@ class TestPipelineConfigFailFast:
     def test_step_without_anchor_raises_configuration_error(self) -> None:
         from apcore.pipeline_config import build_strategy_from_config
 
-        cfg = {
-            "steps": [
-                {"name": "free_floating", "handler": "tests.binding_helpers:DummyHandler"}
-            ]
-        }
+        cfg = {"steps": [{"name": "free_floating", "handler": "tests.binding_helpers:DummyHandler"}]}
         # Even before reaching the handler import, lacking after/before is a
         # configuration error.
         with pytest.raises(ConfigurationError):

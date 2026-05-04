@@ -12,7 +12,6 @@ from apcore.pipeline import (
     ExecutionStrategy,
     PipelineContext,
     PipelineEngine,
-    PipelineState,
     PipelineStepError,
     StepMiddleware,
     StepResult,
