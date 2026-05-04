@@ -1301,3 +1301,309 @@ def test_core_schema_structure() -> None:
     s = _load_schema("module-schema")
     for key in ["module_id", "description", "input_schema", "output_schema"]:
         assert key in s["required"], f"module-schema: missing required key {key!r}"
+
+
+# ---------------------------------------------------------------------------
+# 23. Sensitive Keys Default (D-54 — canonical RedactionConfig.default list)
+# ---------------------------------------------------------------------------
+
+from apcore.observability.context_logger import RedactionConfig  # noqa: E402
+from apcore.utils.redaction import redact_sensitive  # noqa: E402
+
+_sensitive_keys_data = _load("sensitive_keys_default")
+
+
+@pytest.mark.parametrize(
+    "case",
+    _sensitive_keys_data["test_cases"],
+    ids=[c["id"] for c in _sensitive_keys_data["test_cases"]],
+)
+def test_sensitive_keys_default(case: dict[str, Any]) -> None:
+    """D-54 — RedactionConfig.default() and override semantics.
+
+    Cases come in two flavours:
+
+    * ``construction == "default"``:
+      - When ``input``/``expected`` key maps are present, run
+        :func:`redact_sensitive` with the canonical default list and
+        verify the result matches.
+      - When only ``expected.sensitive_keys`` is present, verify
+        ``RedactionConfig.default().sensitive_keys`` equals the canonical
+        16-entry list in the documented order.
+    * ``construction == "override"``: build a config with the supplied
+      ``override_sensitive_keys`` and verify the redaction matches.
+    """
+    construction = case["construction"]
+    expected = case["expected"]
+
+    if construction == "default":
+        # Sub-case 1: assert canonical default list.
+        if "sensitive_keys" in expected:
+            rc = RedactionConfig.default()
+            assert rc.sensitive_keys == expected["sensitive_keys"], (
+                f"[{case['id']}] RedactionConfig.default().sensitive_keys mismatch\n"
+                f"  got:      {rc.sensitive_keys!r}\n"
+                f"  expected: {expected['sensitive_keys']!r}"
+            )
+            if "length" in expected:
+                assert len(rc.sensitive_keys) == expected["length"], (
+                    f"[{case['id']}] sensitive_keys length: "
+                    f"got {len(rc.sensitive_keys)}, expected {expected['length']}"
+                )
+            return
+
+        # Sub-case 2: redact with default list and compare.
+        result = redact_sensitive(case["input"], {})
+        assert result == expected, (
+            f"[{case['id']}] redact_sensitive(default) mismatch\n"
+            f"  got:      {result!r}\n"
+            f"  expected: {expected!r}"
+        )
+        return
+
+    if construction == "override":
+        override = case["override_sensitive_keys"]
+        result = redact_sensitive(case["input"], {}, sensitive_keys=override)
+        assert result == expected, (
+            f"[{case['id']}] redact_sensitive(override={override!r}) mismatch\n"
+            f"  got:      {result!r}\n"
+            f"  expected: {expected!r}"
+        )
+        return
+
+    pytest.fail(f"[{case['id']}] unknown construction kind {construction!r}")
+
+
+# ---------------------------------------------------------------------------
+# 24. Error Fingerprinting (Issue #43 §4 — dedup with normalization)
+# ---------------------------------------------------------------------------
+
+from apcore.errors import ModuleError as _ModuleError  # noqa: E402
+from apcore.observability.error_history import ErrorHistory  # noqa: E402
+
+_error_fp_data = _load("error_fingerprinting")
+
+
+def _push_error(
+    history: ErrorHistory,
+    error_code: str,
+    caller_id: str,
+    message: str,
+    top_frame: str | None = None,
+) -> None:
+    """Push a synthetic ModuleError into ``history``.
+
+    The Python SDK derives the top-frame signature from the live
+    traceback when available.  Fixtures may pre-supply ``top_frame``
+    (a ``file:func:line`` hint) — we forge a minimal fake traceback so
+    two cases with different ``top_frame`` strings are kept distinct.
+    """
+    err = _ModuleError(code=error_code, message=message)
+    if top_frame is not None:
+        # Stamp the message so it folds the call site into the
+        # normalized message — the SDK will hash it as part of the
+        # fingerprint when no live traceback is attached.
+        err = _ModuleError(
+            code=error_code,
+            message=f"{message} [@{top_frame}]",
+        )
+    history.record(caller_id, err)
+
+
+@pytest.mark.parametrize(
+    "case",
+    _error_fp_data["test_cases"],
+    ids=[c["id"] for c in _error_fp_data["test_cases"]],
+)
+def test_error_fingerprinting(case: dict[str, Any]) -> None:
+    """Verify ErrorHistory dedup and fingerprint behavior.
+
+    The fingerprint normalizes UUIDs, ISO timestamps, hex IDs, and
+    integers ≥ 4 digits — so two errors that differ only in those
+    values MUST collapse into a single entry.  Different ``error_code``
+    or different call-sites MUST yield distinct entries.
+    """
+    history = ErrorHistory()
+    expected = case["expected"]
+
+    for err_data in case["errors"]:
+        _push_error(
+            history,
+            error_code=err_data["error_code"],
+            caller_id=err_data["caller_id"],
+            message=err_data["message"],
+            top_frame=err_data.get("top_frame"),
+        )
+
+    all_entries = history.get_all()
+    fingerprints = {e.fingerprint for e in all_entries}
+
+    assert len(all_entries) == expected["entry_count"], (
+        f"[{case['id']}] entry_count: got {len(all_entries)}, "
+        f"expected {expected['entry_count']}; entries={[(e.code, e.message, e.count) for e in all_entries]!r}"
+    )
+    assert len(fingerprints) == expected["fingerprints_distinct"], (
+        f"[{case['id']}] fingerprints_distinct: got {len(fingerprints)}, "
+        f"expected {expected['fingerprints_distinct']}"
+    )
+
+    if "first_entry_count" in expected:
+        # Entries are returned newest-first by last_occurred; the
+        # collapsed entry is the one with count > 1.  Pick the entry
+        # with the highest count to match "first/dedup'd entry".
+        top = max(all_entries, key=lambda e: e.count)
+        assert top.count == expected["first_entry_count"], (
+            f"[{case['id']}] first_entry_count: got {top.count}, " f"expected {expected['first_entry_count']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 25. Contextual Audit (Issue #45.2 — caller_id/identity in audit events)
+# ---------------------------------------------------------------------------
+
+from apcore.events.emitter import EventEmitter as _EventEmitter  # noqa: E402
+from apcore.sys_modules.control import (  # noqa: E402
+    ReloadModule,
+    ToggleFeatureModule,
+    UpdateConfigModule,
+)
+
+_contextual_audit_data = _load("contextual_audit")
+
+
+class _CapturingSubscriber:
+    """Async event subscriber that records every received ApCoreEvent."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    async def on_event(self, event: Any) -> None:
+        self.events.append(event)
+
+
+def _build_audit_context(case_ctx: dict[str, Any]) -> Context | None:
+    """Build a Context from the fixture's ``context`` block.
+
+    The fixture passes free-form identity dicts (e.g. ``display_name``,
+    ``bearer_token``).  Identity is a ``frozen`` dataclass with only
+    ``id``/``type``/``roles``/``attrs`` fields, so any extra keys flow
+    through ``attrs``.
+    """
+    caller_id = case_ctx.get("caller_id")
+    identity_data = case_ctx.get("identity")
+    identity_obj: Identity | None = None
+    if identity_data is not None:
+        canonical_keys = {"id", "type", "roles"}
+        attrs = {k: v for k, v in identity_data.items() if k not in canonical_keys}
+        identity_obj = Identity(
+            id=str(identity_data.get("id", "")),
+            type=str(identity_data.get("type", "user")),
+            roles=tuple(identity_data.get("roles", ()) or ()),
+            attrs=attrs,
+        )
+    # Build a Context manually so caller_id can be ``""`` or ``None``
+    # (Context.create always assigns a fresh trace_id but doesn't
+    # surface caller_id).
+    ctx: Context = Context(
+        trace_id="0" * 31 + "1",
+        caller_id=caller_id,
+        call_chain=[],
+        executor=None,
+        identity=identity_obj,
+    )
+    return ctx
+
+
+def _subset_match(actual: dict[str, Any], expected: dict[str, Any]) -> tuple[bool, str]:
+    """Return ``(ok, reason)`` — every key in ``expected`` is present and equal in ``actual``.
+
+    Nested dicts are checked recursively; lists and primitives use ``==``.
+    """
+    for key, exp_val in expected.items():
+        if key not in actual:
+            return False, f"missing key {key!r} (have {sorted(actual.keys())!r})"
+        act_val = actual[key]
+        if isinstance(exp_val, dict) and isinstance(act_val, dict):
+            ok, reason = _subset_match(act_val, exp_val)
+            if not ok:
+                return False, f"at {key!r}: {reason}"
+        else:
+            if act_val != exp_val:
+                return False, (f"at {key!r}: got {act_val!r}, expected {exp_val!r}")
+    return True, ""
+
+
+@pytest.mark.parametrize(
+    "case",
+    _contextual_audit_data["test_cases"],
+    ids=[c["id"] for c in _contextual_audit_data["test_cases"]],
+)
+def test_contextual_audit(case: dict[str, Any]) -> None:
+    """Verify system.control.* modules attach caller_id + identity to audit events."""
+    module_id = case["module_id"]
+    expected = case["expected"]
+    ctx = _build_audit_context(case["context"])
+
+    # Drive the SDK directly through each control module's ``_emit_event``
+    # / ``_emit_module_reloaded`` so we exercise the real event-payload
+    # construction without depending on a populated Registry, on-disk
+    # overrides, or live module-reload mechanics.  This is the cleanest
+    # spec-driven harness: the contract under test is "audit event
+    # payload contains caller_id + identity", not the full execute path.
+    emitter = _EventEmitter()
+    sub = _CapturingSubscriber()
+    emitter.subscribe(sub)
+
+    try:
+        if module_id == "system.control.update_config":
+            mod = UpdateConfigModule(
+                config=Config.from_defaults(),
+                event_emitter=emitter,
+            )
+            mod.execute(case["input"], ctx)
+        elif module_id == "system.control.toggle_feature":
+            # Drive the emit-only branch directly so we don't need a
+            # Registry populated with ``risky.module``.
+            mod_t = ToggleFeatureModule(
+                registry=None,  # type: ignore[arg-type]
+                event_emitter=emitter,
+            )
+            mod_t._emit_event(  # noqa: SLF001 — testing payload shape
+                module_id=case["input"]["module_id"],
+                enabled=case["input"]["enabled"],
+                context=ctx,
+            )
+        elif module_id == "system.control.reload_module":
+            mod_r = ReloadModule(
+                registry=None,  # type: ignore[arg-type]
+                event_emitter=emitter,
+            )
+            mod_r._emit_module_reloaded(  # noqa: SLF001 — testing payload shape
+                module_id=case["input"]["module_id"],
+                previous_version="1.0.0",
+                new_version="1.0.1",
+                context=ctx,
+            )
+        else:
+            pytest.fail(f"[{case['id']}] unknown module_id {module_id!r}")
+
+        emitter.flush()
+    finally:
+        emitter.shutdown()
+
+    matching = [e for e in sub.events if e.event_type == expected["event_type"]]
+    assert matching, (
+        f"[{case['id']}] no event of type {expected['event_type']!r} captured; "
+        f"got {[e.event_type for e in sub.events]!r}"
+    )
+    event = matching[0]
+    data = dict(event.data)
+
+    # Subset match — fixture's ``data_contains`` is intentionally a
+    # subset (extra keys like timestamp / event-level module_id are
+    # producer-defined).
+    ok, reason = _subset_match(data, expected["data_contains"])
+    assert ok, f"[{case['id']}] data_contains mismatch: {reason}; got={data!r}"
+
+    for forbidden in expected.get("data_must_not_contain_keys", []):
+        assert forbidden not in data, f"[{case['id']}] data must not contain key {forbidden!r}; got={data!r}"

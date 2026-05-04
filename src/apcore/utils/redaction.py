@@ -117,11 +117,21 @@ def _normalize_for_match(s: str) -> str:
     return s.lower().replace("-", "_").replace(" ", "_")
 
 
+def _compact_for_match(s: str) -> str:
+    """Lower-case with ``-`` / ``_`` / space stripped entirely.
+
+    Allows camelCase keys like ``"AccessKey"`` to match the ``"access_key"``
+    substring (D-54 canonical default list expects this).
+    """
+    return s.lower().replace("-", "").replace("_", "").replace(" ", "")
+
+
 def _key_matches(key: str, sensitive_keys: list[str]) -> bool:
     """Case-insensitive substring + glob match against ``sensitive_keys``."""
     if not sensitive_keys:
         return False
     norm_key = _normalize_for_match(key)
+    compact_key = _compact_for_match(key)
     lower_key = key.lower()
     for pat in sensitive_keys:
         if not pat:
@@ -132,6 +142,10 @@ def _key_matches(key: str, sensitive_keys: list[str]) -> bool:
                 return True
         else:
             if _normalize_for_match(pat) in norm_key:
+                return True
+            # Also match the compact (separator-stripped) form so that
+            # camelCase keys like "AccessKey" match the "access_key" pattern.
+            if _compact_for_match(pat) in compact_key:
                 return True
     return False
 

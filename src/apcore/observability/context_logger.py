@@ -118,6 +118,15 @@ def _normalize_key_for_match(s: str) -> str:
     return s.lower().replace("-", "_").replace(" ", "_")
 
 
+def _compact_key_for_match(s: str) -> str:
+    """Lower-case with ``-`` / ``_`` / space stripped entirely.
+
+    Allows camelCase keys like ``"AccessKey"`` to match the ``"access_key"``
+    substring (D-54 canonical default list expects this).
+    """
+    return s.lower().replace("-", "").replace("_", "").replace(" ", "")
+
+
 def _key_matches_sensitive(key: str, sensitive_keys: list[str]) -> bool:
     """Return True if *key* matches any entry in ``sensitive_keys``.
 
@@ -125,9 +134,12 @@ def _key_matches_sensitive(key: str, sensitive_keys: list[str]) -> bool:
     - a :mod:`fnmatch`-style glob when it contains ``*`` / ``?`` / ``[`` (case-insensitive),
     - or a plain case-insensitive substring match otherwise.  Hyphen,
       underscore, and space are treated as equivalent on both sides so
-      ``"X-API-Key"`` matches ``"api_key"`` (Issue #43 §5).
+      ``"X-API-Key"`` matches ``"api_key"`` (Issue #43 §5).  The match also
+      collapses separators to allow camelCase keys (``AccessKey``) to match
+      snake_case patterns (``access_key``).
     """
     norm_key = _normalize_key_for_match(key)
+    compact_key = _compact_key_for_match(key)
     lower_key = key.lower()
     for pat in sensitive_keys:
         if not pat:
@@ -139,6 +151,8 @@ def _key_matches_sensitive(key: str, sensitive_keys: list[str]) -> bool:
         else:
             norm_pat = _normalize_key_for_match(pat)
             if norm_pat in norm_key:
+                return True
+            if _compact_key_for_match(pat) in compact_key:
                 return True
     return False
 
