@@ -1426,3 +1426,24 @@ class TestRegisterInternalValidation:
         reg.register_internal("system.dup", _ValidModule())
         with pytest.raises(InvalidInputError, match="already registered"):
             reg.register_internal("system.dup", _ValidModule())
+
+    # D11-001: register_internal intentionally skips _versioned_modules /
+    # _versioned_meta inserts because sys/internal modules are not
+    # version-tracked. Document the asymmetry: get(sys_id) without a hint
+    # works (falls through to _modules), but get(sys_id, version_hint=...)
+    # must raise a clear error rather than silently returning None — the
+    # caller asked for version resolution on a module that explicitly
+    # opted out of version tracking.
+
+    def test_register_internal_get_without_hint_returns_module(self) -> None:
+        reg = Registry()
+        mod = _ValidModule()
+        reg.register_internal("system.unversioned", mod)
+        # No hint: falls through to _modules.
+        assert reg.get("system.unversioned") is mod
+
+    def test_register_internal_get_with_version_hint_raises_clear_error(self) -> None:
+        reg = Registry()
+        reg.register_internal("system.unversioned", _ValidModule())
+        with pytest.raises(ModuleNotFoundError, match="not version-tracked"):
+            reg.get("system.unversioned", version_hint="1.0.0")

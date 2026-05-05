@@ -378,7 +378,9 @@ class ModuleNotFoundError(ModuleError):
 
     _default_retryable: bool | None = False
 
-    def __init__(self, module_id: str, **kwargs: Any) -> None:
+    def __init__(
+        self, module_id: str, message: str | None = None, **kwargs: Any
+    ) -> None:
         kwargs.setdefault(
             "ai_guidance",
             f"Module '{module_id}' does not exist in the registry. "
@@ -387,7 +389,7 @@ class ModuleNotFoundError(ModuleError):
         )
         super().__init__(
             code="MODULE_NOT_FOUND",
-            message=f"Module not found: {module_id}",
+            message=message if message is not None else f"Module not found: {module_id}",
             details={"module_id": module_id},
             **kwargs,
         )

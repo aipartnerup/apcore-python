@@ -1002,15 +1002,47 @@ class Registry:
         If no hint, returns the latest version.
 
         Raises:
-            ModuleNotFoundError: If module_id is empty string.
+            ModuleNotFoundError: If module_id is empty string, or if a
+                ``version_hint`` is supplied but ``module_id`` was registered
+                via :meth:`register_internal` (which deliberately skips
+                ``_versioned_modules`` / ``_versioned_meta`` — D11-001).
+                Sys/internal modules are not version-tracked; callers asking
+                for version resolution on one get a clear error rather than
+                a silent ``None``.
         """
         if module_id == "":
             raise ModuleNotFoundError(module_id="")
         with self._lock:
             if version_hint is not None:
-                return self._versioned_modules.resolve(module_id, version_hint)
+                resolved = self._versioned_modules.resolve(module_id, version_hint)
+                if resolved is not None:
+                    return resolved
+                # Distinguish two "no match in versioned store" cases:
+                # 1. Module was registered via the public register() path —
+                #    appears in BOTH _modules AND _versioned_modules — the
+                #    hint just didn't match any registered version. Return
+                #    None to preserve "no-match returns None" semantics
+                #    expected by version-negotiation callers.
+                # 2. Module was registered via register_internal() — appears
+                #    in _modules but NOT in _versioned_modules. Sys/internal
+                #    modules deliberately opt out of version tracking
+                #    (D11-001). Raising a clear error beats silently
+                #    returning None which masks the asymmetry.
+                if (
+                    module_id in self._modules
+                    and not self._versioned_modules.has(module_id)
+                ):
+                    raise ModuleNotFoundError(
+                        module_id=module_id,
+                        message=(
+                            f"Module '{module_id}' is registered as a sys/internal "
+                            "module (via register_internal) and is not version-tracked; "
+                            "drop the version_hint argument to look it up by ID alone."
+                        ),
+                    )
+                return None
             # No hint: return latest from versioned store if available,
-            # otherwise fall back to primary map
+            # otherwise fall back to primary map (covers register_internal).
             latest = self._versioned_modules.get_latest(module_id)
             if latest is not None:
                 return latest
