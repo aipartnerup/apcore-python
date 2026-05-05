@@ -1324,8 +1324,7 @@ class TestCustomValidator:
 
         assert count == 2, "both modules should register"
         assert validator.calls == 2, (
-            f"validator.validate must be called exactly once per module "
-            f"(got {validator.calls} calls for 2 modules)"
+            f"validator.validate must be called exactly once per module " f"(got {validator.calls} calls for 2 modules)"
         )
 
 

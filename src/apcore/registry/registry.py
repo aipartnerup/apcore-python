@@ -1028,10 +1028,7 @@ class Registry:
                 #    modules deliberately opt out of version tracking
                 #    (D11-001). Raising a clear error beats silently
                 #    returning None which masks the asymmetry.
-                if (
-                    module_id in self._modules
-                    and not self._versioned_modules.has(module_id)
-                ):
+                if module_id in self._modules and not self._versioned_modules.has(module_id):
                     raise ModuleNotFoundError(
                         module_id=module_id,
                         message=(
