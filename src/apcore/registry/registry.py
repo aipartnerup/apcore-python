@@ -449,7 +449,10 @@ class Registry:
                     continue
 
             try:
-                self.register(mod_id, mod)
+                # D11-006: validator already ran inline above; skip the
+                # re-run inside register() so stateful validators see one
+                # call per module (matching apcore-typescript).
+                self.register(mod_id, mod, _skip_custom_validator=True)
                 registered_count += 1
             except Exception as e:
                 logger.warning("Failed to register custom-discovered module '%s': %s", mod_id, e)
@@ -857,6 +860,8 @@ class Registry:
         module: Any,
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        _skip_custom_validator: bool = False,
     ) -> None:
         """Manually register a module instance.
 
@@ -865,6 +870,13 @@ class Registry:
             module: Module instance to register.
             version: Optional semver version string for versioned registration.
             metadata: Optional metadata dict (may include x-compatible-versions, x-deprecation).
+            _skip_custom_validator: Internal flag — when True, bypass the
+                ``_custom_validator.validate`` call. Used by
+                ``_discover_custom`` (which already validates inline at line
+                442) so stateful validators are invoked exactly once per
+                module, matching apcore-typescript ``_registerImpl`` (which
+                does not run the validator) called from ``_discoverCustom``
+                (which does, once). D11-006.
 
         Raises:
             InvalidInputError: If module_id is empty, malformed, exceeds the
@@ -880,7 +892,7 @@ class Registry:
 
         _ensure_schema_adapter(module)
 
-        if self._custom_validator is not None:
+        if not _skip_custom_validator and self._custom_validator is not None:
             errors = self._custom_validator.validate(module)
             if errors:
                 raise InvalidInputError(message=f"Custom validator rejected module '{module_id}': {'; '.join(errors)}")

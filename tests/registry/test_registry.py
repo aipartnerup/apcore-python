@@ -1289,6 +1289,45 @@ class TestCustomValidator:
         assert count == 0
         assert not reg.has("val_mod")
 
+    def test_custom_validator_called_exactly_once_per_module_in_custom_discovery(self) -> None:
+        """D11-006: Custom validator must run exactly ONCE per module in the
+        custom-discovery path. Previously _discover_custom validated the
+        module inline (line 442) AND the inner register() call ran the
+        validator again (line 884), so stateful validators (e.g. one that
+        revokes after N approvals) yielded different acceptance counts in
+        Python vs TypeScript (TS validates once via _registerImpl which
+        skips the validator).
+        """
+
+        class _CountingValidator:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def validate(self, module: Any) -> list[str]:
+                self.calls += 1
+                return []
+
+        mod_a = _ValidModule()
+        mod_b = _ValidModuleB()
+        discoverer = _MockDiscoverer(
+            [
+                {"module_id": "counted.a", "module": mod_a},
+                {"module_id": "counted.b", "module": mod_b},
+            ]
+        )
+        validator = _CountingValidator()
+
+        reg = Registry()
+        reg.set_discoverer(discoverer)
+        reg.set_validator(validator)
+        count = reg.discover()
+
+        assert count == 2, "both modules should register"
+        assert validator.calls == 2, (
+            f"validator.validate must be called exactly once per module "
+            f"(got {validator.calls} calls for 2 modules)"
+        )
+
 
 # ===== Registry Constants =====
 
