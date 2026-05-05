@@ -68,6 +68,7 @@ _CANONICAL_FIELDS = {
     "cache_key_fields",
     "paginated",
     "pagination_style",
+    "discoverable",
     "extra",
 }
 
@@ -88,6 +89,12 @@ class ModuleAnnotations:
         cache_key_fields: Input fields used to compute the cache key (None = all).
         paginated: Whether the module supports paginated results.
         pagination_style: Pagination strategy (default "cursor"). Accepts any string.
+        discoverable: Whether the module appears in enumeration surfaces
+            (``Registry.list``, manifest export, etc.). Default ``True``.
+            ``ephemeral.*`` modules SHOULD set this to ``False`` per the
+            ephemeral-modules RFC pilot. Hidden modules remain callable
+            through ``Registry.get`` / ``Executor.execute`` when the caller
+            already knows the module ID.
         extra: Extension dictionary for ecosystem package metadata.
     """
 
@@ -102,6 +109,7 @@ class ModuleAnnotations:
     cache_key_fields: tuple[str, ...] | None = None
     paginated: bool = False
     pagination_style: str = "cursor"
+    discoverable: bool = True
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

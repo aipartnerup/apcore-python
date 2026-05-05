@@ -119,6 +119,15 @@ DEFAULT_MODULE_VERSION = "1.0.0"
 
 RESERVED_WORDS = frozenset({"system", "internal", "core", "apcore", "plugin", "schema", "acl"})
 
+# Namespace reserved for programmatically-registered modules synthesized at
+# runtime (see apcore RFC ``docs/spec/rfc-ephemeral-modules.md``). IDs in this
+# namespace MUST be registered through :meth:`Registry.register` only; the
+# filesystem discoverer rejects matching IDs because the namespace has no
+# directory-rooted source of truth. The trailing dot is required so module IDs
+# whose first segment merely *starts with* ``ephemeral`` (e.g. ``ephemerals``)
+# are not falsely classified.
+EPHEMERAL_NAMESPACE_PREFIX = "ephemeral."
+
 __all__ = [
     "Registry",
     "REGISTRY_EVENTS",
@@ -126,9 +135,15 @@ __all__ = [
     "MAX_MODULE_ID_LENGTH",
     "DEFAULT_MODULE_VERSION",
     "RESERVED_WORDS",
+    "EPHEMERAL_NAMESPACE_PREFIX",
     "Discoverer",
     "ModuleValidator",
 ]
+
+
+def _is_ephemeral(module_id: str) -> bool:
+    """Return True when ``module_id`` belongs to the reserved ephemeral.* namespace."""
+    return module_id == "ephemeral" or module_id.startswith(EPHEMERAL_NAMESPACE_PREFIX)
 
 
 def _validate_module_id(module_id: str, *, allow_reserved: bool = False) -> None:
@@ -330,6 +345,12 @@ class Registry:
         self._custom_discoverer: Discoverer | None = None
         self._custom_validator: ModuleValidator | None = None
 
+        # Optional EventEmitter wired in by callers that want registry-level
+        # audit events for ``ephemeral.*`` registrations (RFC pilot). When
+        # unset, ephemeral audit events are emitted to the standard logger
+        # instead so they are never silently dropped.
+        self._event_emitter: Any = None
+
         # Safe hot-reload state (F09 / Algorithm A21)
         self._ref_counts: dict[str, int] = {}
         self._draining: set[str] = set()
@@ -348,6 +369,25 @@ class Registry:
     def set_validator(self, validator: ModuleValidator) -> None:
         """Set a custom module validator."""
         self._custom_validator = validator
+
+    def set_event_emitter(self, emitter: Any) -> None:
+        """Wire an :class:`apcore.events.EventEmitter` for registry audit events.
+
+        When set, ``ephemeral.*`` registrations (and their unregistrations)
+        emit ``apcore.registry.module_registered`` /
+        ``apcore.registry.module_unregistered`` events whose ``data`` payload
+        mirrors the D-35 contextual-auditing shape used by
+        ``system.control.*`` modules: ``caller_id`` (defaulting to
+        ``"@external"`` when no identity is attached) plus a redacted
+        identity snapshot when ``context.identity`` is set on the call site.
+
+        Pilot scope (apcore RFC ``docs/spec/rfc-ephemeral-modules.md``):
+        only ``ephemeral.*`` registrations trigger registry-side emits. The
+        ``_bridge_registry_events`` helper in ``apcore.sys_modules.registration``
+        continues to emit canonical events for all module registrations via
+        the callback pathway.
+        """
+        self._event_emitter = emitter
 
     # ----- Discovery -----
 
@@ -538,16 +578,44 @@ class Registry:
         """Stage 1 — walk extension root(s) and return DiscoveredModule entries."""
         has_namespace = any("namespace" in r for r in self._extension_roots)
         if len(self._extension_roots) > 1 or has_namespace:
-            return scan_multi_root(
+            discovered = scan_multi_root(
                 roots=self._extension_roots,
                 max_depth=max_depth,
                 follow_symlinks=follow_symlinks,
             )
-        root_path = Path(self._extension_roots[0]["root"])
-        return scan_extensions(
-            root=root_path,
-            max_depth=max_depth,
-            follow_symlinks=follow_symlinks,
+        else:
+            root_path = Path(self._extension_roots[0]["root"])
+            discovered = scan_extensions(
+                root=root_path,
+                max_depth=max_depth,
+                follow_symlinks=follow_symlinks,
+            )
+        self._reject_ephemeral_discoveries(discovered)
+        return discovered
+
+    @staticmethod
+    def _reject_ephemeral_discoveries(discovered: list[Any]) -> None:
+        """Reject filesystem-derived IDs that fall in the reserved ``ephemeral.*`` namespace.
+
+        Per the apcore ephemeral-modules RFC pilot, ``ephemeral.*`` is reserved
+        for programmatically-registered modules synthesized at runtime. Any
+        filesystem layout that produces such an ID is a configuration error —
+        either the directory is misnamed or the namespace prefix is being
+        misused.
+        """
+        offenders = [dm for dm in discovered if _is_ephemeral(getattr(dm, "canonical_id", ""))]
+        if not offenders:
+            return
+        ids = sorted({dm.canonical_id for dm in offenders})
+        raise InvalidInputError(
+            message=(
+                "Filesystem discovery produced module ID(s) in the reserved "
+                f"'ephemeral.*' namespace: {ids}. The ephemeral.* namespace is "
+                "reserved for programmatically-registered modules and may only "
+                "be used via Registry.register(). Rename the offending "
+                "directory or extension namespace."
+            ),
+            code=ErrorCodes.INVALID_MODULE_ID,
         )
 
     def _apply_path_filter(
@@ -861,6 +929,7 @@ class Registry:
         version: str | None = None,
         metadata: dict[str, Any] | None = None,
         *,
+        context: Any = None,
         _skip_custom_validator: bool = False,
     ) -> None:
         """Manually register a module instance.
@@ -870,6 +939,12 @@ class Registry:
             module: Module instance to register.
             version: Optional semver version string for versioned registration.
             metadata: Optional metadata dict (may include x-compatible-versions, x-deprecation).
+            context: Optional execution context. Used solely to enrich audit
+                events emitted for ``ephemeral.*`` registrations (RFC pilot).
+                When the context exposes ``caller_id`` / ``identity`` they
+                are folded into the audit-event payload (D-35 shape); when
+                absent the sentinel ``"@external"`` is used. Ignored for
+                non-ephemeral modules.
             _skip_custom_validator: Internal flag — when True, bypass the
                 ``_custom_validator.validate`` call. Used by
                 ``_discover_custom`` (which already validates inline at line
@@ -889,6 +964,14 @@ class Registry:
         → duplicate.
         """
         _validate_module_id(module_id, allow_reserved=False)
+        # ``ephemeral.*`` registrations only land via this programmatic
+        # entry point — the filesystem discoverer rejects matching IDs
+        # earlier (see ``_reject_ephemeral_discoveries``). When invoked
+        # here the RFC pilot recommends ``requires_approval=true`` so a
+        # human gates execution of agent-synthesized code.
+        ephemeral = _is_ephemeral(module_id)
+        if ephemeral:
+            self._warn_if_missing_approval(module_id, module)
 
         _ensure_schema_adapter(module)
 
@@ -962,9 +1045,17 @@ class Registry:
                 raise
 
         self._trigger_event("register", module_id, module)
+        if ephemeral:
+            self._emit_ephemeral_audit("apcore.registry.module_registered", module_id, context)
 
-    def unregister(self, module_id: str) -> bool:
+    def unregister(self, module_id: str, *, context: Any = None) -> bool:
         """Remove a module from the registry.
+
+        Args:
+            module_id: ID of the module to remove.
+            context: Optional execution context. Used solely to enrich the
+                audit event emitted for ``ephemeral.*`` unregistrations
+                (RFC pilot). Ignored for non-ephemeral modules.
 
         Returns False if module was not registered.
         """
@@ -991,6 +1082,8 @@ class Registry:
                 logger.error("on_unload() failed for module '%s': %s", module_id, e)
 
         self._trigger_event("unregister", module_id, module)
+        if _is_ephemeral(module_id):
+            self._emit_ephemeral_audit("apcore.registry.module_unregistered", module_id, context)
         return True
 
     # ----- Query Methods -----
@@ -1050,13 +1143,35 @@ class Registry:
         with self._lock:
             return module_id in self._modules
 
-    def list(self, tags: list[str] | None = None, prefix: str | None = None) -> list[str]:
-        """Return sorted list of unique registered module IDs, optionally filtered."""
+    def list(
+        self,
+        tags: list[str] | None = None,
+        prefix: str | None = None,
+        *,
+        include_hidden: bool = False,
+    ) -> list[str]:
+        """Return sorted list of unique registered module IDs, optionally filtered.
+
+        Args:
+            tags: When supplied, only modules carrying *all* of the given tags
+                are returned.
+            prefix: When supplied, only IDs starting with the prefix are returned.
+            include_hidden: When ``True``, modules whose
+                :class:`ModuleAnnotations` set ``discoverable=False`` are also
+                returned. Defaults to ``False`` so the apcore RFC's
+                ``discoverable`` annotation is honored on all enumeration
+                surfaces. Callers that legitimately need to see every module
+                ID (introspection tools, debug consoles) can pass
+                ``include_hidden=True``.
+        """
         with self._lock:
             snapshot = dict(self._modules)
             meta_snapshot = dict(self._module_meta)
 
         ids = list(snapshot.keys())
+
+        if not include_hidden:
+            ids = [mid for mid in ids if self._is_discoverable(mid, snapshot, meta_snapshot)]
 
         if prefix is not None:
             ids = [mid for mid in ids if mid.startswith(prefix)]
@@ -1078,23 +1193,76 @@ class Registry:
 
         return sorted(ids)
 
-    def iter(self) -> Iterator[tuple[str, Any]]:
-        """Return an iterator of (module_id, module) tuples (snapshot-based)."""
+    def iter(self, *, include_hidden: bool = False) -> Iterator[tuple[str, Any]]:
+        """Return an iterator of (module_id, module) tuples (snapshot-based).
+
+        Modules annotated ``discoverable=False`` are excluded by default.
+        Pass ``include_hidden=True`` to enumerate every registered module.
+        """
         with self._lock:
             items = list(self._modules.items())
+            meta_snapshot = dict(self._module_meta)
+        snapshot = dict(items)
+        if not include_hidden:
+            items = [(mid, mod) for mid, mod in items if self._is_discoverable(mid, snapshot, meta_snapshot)]
         return iter(items)
 
     @property
     def count(self) -> int:
-        """Number of registered modules."""
+        """Number of registered modules (including hidden ones)."""
         with self._lock:
             return len(self._modules)
 
     @property
     def module_ids(self) -> list[str]:
-        """Sorted list of registered module IDs."""
+        """Sorted list of registered module IDs (excludes ``discoverable=False`` modules).
+
+        Modules annotated ``discoverable=False`` (per the apcore RFC pilot)
+        are filtered out. Use :meth:`list` with ``include_hidden=True`` when
+        the full set is required.
+        """
         with self._lock:
-            return sorted(self._modules.keys())
+            snapshot = dict(self._modules)
+            meta_snapshot = dict(self._module_meta)
+        return sorted(mid for mid in snapshot if self._is_discoverable(mid, snapshot, meta_snapshot))
+
+    @staticmethod
+    def _is_discoverable(
+        module_id: str,
+        modules: dict[str, Any],
+        module_meta: dict[str, dict[str, Any]],
+    ) -> bool:
+        """Return False when the module's annotations declare ``discoverable=False``.
+
+        Resolution order matches :func:`merge_module_metadata`:
+        1. The merged ``annotations`` slot in ``_module_meta`` (which
+           already accounts for YAML > code precedence).
+        2. The module instance's ``annotations`` attribute (covers paths
+           that bypassed the merge, e.g. ``register_internal``).
+
+        Anything other than an explicit ``False`` keeps the module visible —
+        the default ``True`` preserves backward compatibility.
+        """
+        meta = module_meta.get(module_id)
+        if meta is not None:
+            ann = meta.get("annotations")
+            if ann is not None:
+                discoverable = getattr(ann, "discoverable", None)
+                if discoverable is None and isinstance(ann, dict):
+                    discoverable = ann.get("discoverable")
+                if discoverable is False:
+                    return False
+                if discoverable is not None:
+                    return True
+        module = modules.get(module_id)
+        if module is None:
+            return True
+        ann = getattr(module, "annotations", None)
+        if ann is None:
+            return True
+        if isinstance(ann, dict):
+            return ann.get("discoverable", True) is not False
+        return getattr(ann, "discoverable", True) is not False
 
     def get_definition(self, module_id: str, version_hint: str | None = None) -> ModuleDescriptor | None:
         """Get a ModuleDescriptor for a registered module. Returns None if not found.
@@ -1358,6 +1526,109 @@ class Registry:
                             "error_type": type(e).__name__,
                         },
                     )
+
+    # ----- Ephemeral namespace pilot (apcore RFC: rfc-ephemeral-modules) -----
+
+    @staticmethod
+    def _warn_if_missing_approval(module_id: str, module: Any) -> None:
+        """Soft-warn when an ephemeral.* module is registered without ``requires_approval=True``.
+
+        Per the ephemeral-modules RFC pilot, agent-synthesized modules SHOULD
+        declare ``requires_approval: true`` so a human gates execution. The
+        registry only warns; it does not refuse the registration. The check
+        inspects both a code-level ``ModuleAnnotations`` instance and a
+        dict-style annotations attribute so all common shapes are caught.
+        """
+        annotations = getattr(module, "annotations", None)
+        requires_approval = False
+        if isinstance(annotations, dict):
+            requires_approval = bool(annotations.get("requires_approval", False))
+        elif annotations is not None:
+            requires_approval = bool(getattr(annotations, "requires_approval", False))
+        if not requires_approval:
+            logger.warning(
+                "ephemeral.* module '%s' registered without requires_approval=True. "
+                "The apcore RFC docs/spec/rfc-ephemeral-modules.md recommends "
+                "setting ModuleAnnotations(requires_approval=True) so agent-"
+                "synthesized code does not run unattended.",
+                module_id,
+            )
+
+    def _build_ephemeral_audit_payload(self, context: Any) -> dict[str, Any]:
+        """Build the ``caller_id`` (+ optional ``identity``) D-35 payload fragment.
+
+        Mirrors ``apcore.sys_modules.control._audit_payload_extras`` so audit
+        consumers can apply the same redaction rules they already use for
+        ``system.control.*`` events.
+        """
+        # Lazy import to avoid pulling sys_modules at registry import time.
+        from apcore.sys_modules.control import _audit_payload_extras
+
+        return _audit_payload_extras(context)
+
+    def _emit_ephemeral_audit(
+        self,
+        event_type: str,
+        module_id: str,
+        context: Any,
+    ) -> None:
+        """Emit an audit event for an ephemeral.* register/unregister.
+
+        When :meth:`set_event_emitter` has wired an emitter, the canonical
+        ``apcore.registry.module_registered`` /
+        ``apcore.registry.module_unregistered`` event is emitted with the
+        D-35 contextual-audit payload. When no emitter is wired the event
+        is logged at INFO so it never silently disappears — useful for the
+        v1 pilot where most callers will not have an emitter attached.
+        """
+        try:
+            payload = self._build_ephemeral_audit_payload(context)
+        except Exception as e:  # defensive: identity extraction must never break registration
+            logger.warning(
+                "Failed to extract audit payload for ephemeral '%s': %s. "
+                "Falling back to caller_id='@external'.",
+                module_id,
+                e,
+            )
+            payload = {"caller_id": "@external"}
+
+        emitter = self._event_emitter
+        if emitter is None:
+            logger.info(
+                "ephemeral audit event %s module_id=%s payload=%s "
+                "(no EventEmitter wired; call Registry.set_event_emitter to capture)",
+                event_type,
+                module_id,
+                payload,
+            )
+            return
+
+        # Lazy import — events package is optional at the registry layer.
+        try:
+            from datetime import datetime, timezone
+
+            from apcore.events.emitter import ApCoreEvent
+        except Exception as e:  # pragma: no cover - extremely defensive
+            logger.warning("Cannot import ApCoreEvent for ephemeral audit emit: %s", e)
+            return
+
+        try:
+            emitter.emit(
+                ApCoreEvent(
+                    event_type=event_type,
+                    module_id=module_id,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    severity="info",
+                    data=payload,
+                )
+            )
+        except Exception as e:
+            logger.error(
+                "EventEmitter.emit failed for ephemeral audit event %s on '%s': %s",
+                event_type,
+                module_id,
+                e,
+            )
 
     def get_callback_errors(self, event: str | None = None) -> dict[str, int] | int:
         """Return callback-exception counts per event.
