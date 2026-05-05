@@ -49,7 +49,6 @@ __all__ = [
     "BindingSchemaInferenceFailedError",
     "BindingSchemaModeConflictError",
     "BindingStrictSchemaIncompatibleError",
-    "BindingPolicyViolationError",
     "BindingFileInvalidError",
     "CircularDependencyError",
     "ModuleLoadError",
@@ -875,52 +874,6 @@ class BindingStrictSchemaIncompatibleError(ModuleError):
             details={
                 "module_id": module_id,
                 "features_listed": features_listed,
-                "file_path": file_path,
-                "line": line,
-            },
-            **kwargs,
-        )
-
-
-class BindingPolicyViolationError(ModuleError):
-    """Raised when a binding entry field violates a configured policy limit.
-
-    See DECLARATIVE_CONFIG_SPEC.md §9 and §7.1.
-    """
-
-    _default_retryable: bool | None = False
-
-    def __init__(
-        self,
-        *,
-        module_id: str,
-        field_name: str,
-        policy_path: str,
-        reason: str,
-        limit_value: Any,
-        file_path: str | None = None,
-        line: int | None = None,
-        **kwargs: Any,
-    ) -> None:
-        loc = ""
-        if file_path is not None:
-            loc = f"{file_path}"
-            if line is not None:
-                loc += f":{line}"
-            loc += ": "
-        super().__init__(
-            code="BINDING_POLICY_VIOLATION",
-            message=(
-                f"{loc}binding '{module_id}' field '{field_name}' violates policy "
-                f"'{policy_path}': {reason} (configured limit: {limit_value}). "
-                "Adjust the limit in apcore.yaml or shorten the value."
-            ),
-            details={
-                "module_id": module_id,
-                "field_name": field_name,
-                "policy_path": policy_path,
-                "reason": reason,
-                "limit_value": limit_value,
                 "file_path": file_path,
                 "line": line,
             },

@@ -430,7 +430,6 @@ class TestPublicAPIAll:
         "BindingInvalidTargetError",
         "BindingModuleNotFoundError",
         "BindingNotCallableError",
-        "BindingPolicyViolationError",
         "BindingSchemaInferenceFailedError",
         "BindingSchemaMissingError",
         "BindingSchemaModeConflictError",
