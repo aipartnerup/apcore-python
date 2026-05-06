@@ -57,6 +57,16 @@ class TestPublicAPIImports:
 
         assert ValidationResult is not None
 
+    def test_change_importable(self):
+        from apcore import Change
+
+        assert Change is not None
+
+    def test_preview_result_importable(self):
+        from apcore import PreviewResult
+
+        assert PreviewResult is not None
+
     # -- Registry types --
 
     def test_module_descriptor_importable(self):
@@ -394,6 +404,7 @@ class TestPublicAPIAll:
         "AutoApproveHandler",
         "CallbackApprovalHandler",
         # Module types
+        "Change",
         "DEFAULT_ANNOTATIONS",
         "Module",
         "ModuleAnnotations",
@@ -401,6 +412,7 @@ class TestPublicAPIAll:
         "ValidationResult",
         "PreflightCheckResult",
         "PreflightResult",
+        "PreviewResult",
         # Registry types
         "ModuleDescriptor",
         "DiscoveredModule",

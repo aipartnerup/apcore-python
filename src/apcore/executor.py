@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import inspect
 import logging
 import threading
 import time
@@ -41,7 +42,13 @@ from apcore.middleware.manager import (
     MiddlewareManager,
     RetrySignal,
 )
-from apcore.module import ModuleAnnotations, PreflightCheckResult, PreflightResult
+from apcore.module import (
+    Change,
+    ModuleAnnotations,
+    PreflightCheckResult,
+    PreflightResult,
+    PreviewResult,
+)
 from apcore.pipeline import (
     AbortReason,
     ExecutionStrategy,
@@ -570,8 +577,40 @@ class Executor:
                     )
                 )
 
+        # Module-level preview (optional, PROTOCOL_SPEC §5.6 / RFC rfc-preview-method.md).
+        # Predicted changes are an advisory signal — if preview() raises, we
+        # surface the failure as a warning on the module_preview check rather
+        # than failing validation. This mirrors preflight() exception semantics.
+        predicted_changes: list[Change] = []
+        if (
+            pipe_ctx.module is not None
+            and hasattr(pipe_ctx.module, "preview")
+            and callable(pipe_ctx.module.preview)
+        ):
+            try:
+                raw = pipe_ctx.module.preview(inputs, pipe_ctx.context)
+                # Support both sync and async preview() implementations.
+                if inspect.isawaitable(raw):
+                    raw = await raw
+                if isinstance(raw, PreviewResult):
+                    predicted_changes = list(raw.changes)
+                checks.append(PreflightCheckResult(check="module_preview", passed=True))
+            except Exception as exc:
+                checks.append(
+                    PreflightCheckResult(
+                        check="module_preview",
+                        passed=True,
+                        warnings=[f"preview() raised {type(exc).__name__}: {exc}"],
+                    )
+                )
+
         valid = all(c.passed for c in checks)
-        return PreflightResult(valid=valid, checks=checks, requires_approval=requires_approval)
+        return PreflightResult(
+            valid=valid,
+            checks=checks,
+            requires_approval=requires_approval,
+            predicted_changes=predicted_changes,
+        )
 
     @staticmethod
     def _validate_module_id(module_id: str) -> None:

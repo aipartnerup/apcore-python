@@ -42,12 +42,14 @@ from apcore.utils.redaction import REDACTED_VALUE, redact_sensitive
 
 # Module types
 from apcore.module import (
+    Change,
     DEFAULT_ANNOTATIONS,
     Module,
     ModuleAnnotations,
     ModuleExample,
     PreflightCheckResult,
     PreflightResult,
+    PreviewResult,
     ValidationResult,
 )
 
@@ -571,6 +573,7 @@ __all__ = [
     "AutoApproveHandler",
     "CallbackApprovalHandler",
     # Module types
+    "Change",
     "DEFAULT_ANNOTATIONS",
     "Module",
     "ModuleAnnotations",
@@ -578,6 +581,7 @@ __all__ = [
     "ValidationResult",
     "PreflightCheckResult",
     "PreflightResult",
+    "PreviewResult",
     # Registry types
     "ModuleDescriptor",
     "DiscoveredModule",

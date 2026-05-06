@@ -577,6 +577,136 @@ class TestValidate:
         assert "RuntimeError" in preflight_checks[0].warnings[0]
         assert "connection refused" in preflight_checks[0].warnings[0]
 
+    # === Module.preview() integration (PROTOCOL_SPEC §5.6 / §12.8) ===
+
+    def test_no_preview_method_yields_empty_predicted_changes(self) -> None:
+        """validate() leaves predicted_changes empty when module lacks preview()."""
+        from apcore.module import PreflightResult
+
+        mod = MockModule()
+        ex = _make_executor(module=mod)
+        result = ex.validate("test.module", {"name": "Alice"})
+        assert isinstance(result, PreflightResult)
+        assert result.valid is True
+        assert result.predicted_changes == []
+        assert all(c.check != "module_preview" for c in result.checks)
+
+    def test_preview_returns_none_yields_empty_predicted_changes(self) -> None:
+        """validate() records the module_preview check but leaves predicted_changes empty."""
+        from apcore.module import PreviewResult
+
+        class NonePreviewModule(MockModule):
+            def preview(self, inputs: dict[str, Any], context: Any) -> PreviewResult | None:
+                return None
+
+        mod = NonePreviewModule()
+        ex = _make_executor(module=mod)
+        result = ex.validate("test.module", {"name": "Alice"})
+        assert result.valid is True
+        assert result.predicted_changes == []
+        preview_checks = [c for c in result.checks if c.check == "module_preview"]
+        assert len(preview_checks) == 1
+        assert preview_checks[0].passed is True
+        assert preview_checks[0].warnings == []
+
+    def test_preview_returns_result_populates_predicted_changes(self) -> None:
+        """validate() folds PreviewResult.changes into PreflightResult.predicted_changes."""
+        from apcore.module import Change, PreviewResult
+
+        class PreviewModule(MockModule):
+            def preview(self, inputs: dict[str, Any], context: Any) -> PreviewResult:
+                return PreviewResult(
+                    changes=[
+                        Change(
+                            action="delete",
+                            target=f"users.{inputs['name']}",
+                            summary=f"Permanently delete user {inputs['name']}",
+                            before={"name": inputs["name"]},
+                        ),
+                    ]
+                )
+
+        mod = PreviewModule()
+        ex = _make_executor(module=mod)
+        result = ex.validate("test.module", {"name": "Alice"})
+        assert result.valid is True
+        assert len(result.predicted_changes) == 1
+        change = result.predicted_changes[0]
+        assert change.action == "delete"
+        assert change.target == "users.Alice"
+        assert change.summary == "Permanently delete user Alice"
+        assert change.before == {"name": "Alice"}
+        preview_checks = [c for c in result.checks if c.check == "module_preview"]
+        assert len(preview_checks) == 1
+        assert preview_checks[0].passed is True
+
+    def test_preview_async_is_awaited(self) -> None:
+        """validate() awaits an async preview() implementation."""
+        from apcore.module import Change, PreviewResult
+
+        class AsyncPreviewModule(MockModule):
+            async def preview(self, inputs: dict[str, Any], context: Any) -> PreviewResult:
+                return PreviewResult(
+                    changes=[Change(action="send", target="smtp", summary="send email")]
+                )
+
+        mod = AsyncPreviewModule()
+        ex = _make_executor(module=mod)
+        result = ex.validate("test.module", {"name": "Alice"})
+        assert result.valid is True
+        assert len(result.predicted_changes) == 1
+        assert result.predicted_changes[0].action == "send"
+
+    def test_preview_exception_produces_warning(self) -> None:
+        """validate() gracefully handles preview() raising; validation still succeeds."""
+
+        class FailingPreviewModule(MockModule):
+            def preview(self, inputs: dict[str, Any], context: Any) -> Any:
+                raise RuntimeError("preview backend unreachable")
+
+        mod = FailingPreviewModule()
+        ex = _make_executor(module=mod)
+        result = ex.validate("test.module", {"name": "Alice"})
+        assert result.valid is True
+        assert result.predicted_changes == []
+        preview_checks = [c for c in result.checks if c.check == "module_preview"]
+        assert len(preview_checks) == 1
+        assert preview_checks[0].passed is True
+        assert len(preview_checks[0].warnings) == 1
+        assert "RuntimeError" in preview_checks[0].warnings[0]
+        assert "preview backend unreachable" in preview_checks[0].warnings[0]
+
+
+class TestChangeExtensionKeys:
+    """RFC rfc-preview-method.md: Change.x-* extension fields cross-SDK encoding."""
+
+    def test_change_accepts_x_prefixed_extras(self) -> None:
+        from apcore.module import Change
+
+        ch = Change(
+            action="write",
+            target="db.row.42",
+            summary="Set value",
+            **{"x-correlation-id": "abc-123", "x-priority": 5},
+        )
+        dumped = ch.model_dump()
+        assert dumped["x-correlation-id"] == "abc-123"
+        assert dumped["x-priority"] == 5
+
+    def test_change_rejects_unknown_non_x_keys(self) -> None:
+        from apcore.module import Change
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            Change(
+                action="write",
+                target="db.row.42",
+                summary="Set value",
+                random_key="boom",
+            )
+        # The model-validator wraps the message — assert the key shows up.
+        assert "random_key" in str(exc_info.value)
+
 
 # === Middleware Management Tests ===
 

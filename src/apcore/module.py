@@ -7,18 +7,22 @@ from dataclasses import dataclass, field
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from pydantic import BaseModel as _PydBaseModel, ConfigDict, model_validator
+
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from apcore.context import Context
 
 __all__ = [
+    "Change",
     "DEFAULT_ANNOTATIONS",
     "Module",
     "ModuleAnnotations",
     "ModuleExample",
     "PreflightCheckResult",
     "PreflightResult",
+    "PreviewResult",
     "ValidationResult",
 ]
 
@@ -43,6 +47,12 @@ class Module(Protocol):
     - ``on_resume(state)`` — called after hot-reload; receives suspended state.
     - ``preflight(inputs, context)`` — custom validation before execution;
       return a ``PreflightResult``-compatible object.
+    - ``preview(inputs, context)`` — structured prediction of state changes the
+      call would produce. Return a ``PreviewResult`` (or ``None`` when prediction
+      is unavailable). MUST NOT have side effects. Mirrors ``preflight()``
+      exception semantics: a raised exception is folded into a warning on the
+      ``module_preview`` advisory check rather than failing validation.
+      Per PROTOCOL_SPEC §5.6 and RFC `apcore/docs/spec/rfc-preview-method.md`.
     - ``stream(inputs, context)`` — async generator variant (streaming mode).
 
     Cross-language parity with apcore-typescript Module interface and
@@ -195,6 +205,57 @@ class PreflightCheckResult:
     warnings: list[str] = field(default_factory=list)
 
 
+class Change(_PydBaseModel):
+    """Structured prediction of a single state change a module call would produce.
+
+    Per PROTOCOL_SPEC §12.8 and RFC `apcore/docs/spec/rfc-preview-method.md`:
+
+    - ``action`` is a free-form verb describing the kind of change ("write",
+      "delete", "send", ...). Module authors define their own taxonomy.
+    - ``target`` is a free-form identifier of what is changed.
+    - ``summary`` is the required human-readable single-line description — the
+      floor that even modules wrapping opaque external APIs can produce.
+    - ``before`` / ``after`` are optional and module-class specific.
+
+    Extension keys MUST follow the ``^x-`` convention (consistent with §4.6
+    metadata extensions). Extra keys without the ``x-`` prefix are rejected at
+    construction time. This is the Python idiomatic encoding called out in the
+    RFC's "Change.x-* extension fields" cross-SDK schema-encoding table:
+    ``ConfigDict(extra='allow')`` + a model-validator that asserts the prefix.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    action: str
+    target: str
+    summary: str
+    before: Any | None = None
+    after: Any | None = None
+
+    @model_validator(mode="after")
+    def _validate_extension_keys(self) -> Change:
+        # Pydantic stashes extras on .model_extra; enforce the ^x- pattern.
+        extras = self.model_extra or {}
+        for key in extras:
+            if not key.startswith("x-"):
+                raise ValueError(
+                    f"Unknown field {key!r} on Change; non-'x-*' extension keys "
+                    "are forbidden (see PROTOCOL_SPEC §4.6 / RFC rfc-preview-method.md)."
+                )
+        return self
+
+
+class PreviewResult(_PydBaseModel):
+    """Module's prediction of what would change if a call were executed.
+
+    Returned by the optional ``Module.preview()`` method; folded into
+    ``PreflightResult.predicted_changes`` by ``Executor.validate()`` when the
+    target module implements the method.
+    """
+
+    changes: list[Change]
+
+
 @dataclass
 class PreflightResult:
     """Result of Executor.validate() preflight check.
@@ -206,11 +267,20 @@ class PreflightResult:
         valid: True only if all checks passed.
         checks: Per-step check results.
         requires_approval: True if the module has requires_approval annotation.
+        predicted_changes: Optional structured prediction of state changes the
+            call would produce. Populated when ``Executor.validate()`` runs
+            against a module that implements ``preview()`` and the method
+            returns a :class:`PreviewResult`. Empty otherwise (module does not
+            implement ``preview()``, returned ``None``, or ``preview()`` raised
+            — in the last case a warning is emitted on the ``module_preview``
+            advisory check, mirroring ``preflight()`` semantics).
+            Per PROTOCOL_SPEC §12.8.
     """
 
     valid: bool
     checks: list[PreflightCheckResult] = field(default_factory=list)
     requires_approval: bool = False
+    predicted_changes: list[Change] = field(default_factory=list)
 
     @property
     def errors(self) -> list[dict[str, Any]]:
