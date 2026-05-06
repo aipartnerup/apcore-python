@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+
+- **`ephemeral.*` namespace + `discoverable` annotation pilot (apcore RFC `docs/spec/rfc-ephemeral-modules.md`, [#25](https://github.com/aiperceivable/apcore-python/issues/25))** — Pilot implementation **ahead of upstream RFC acceptance** (RFC is in `Draft / RFC` state). Reserves the `ephemeral.*` namespace for programmatically-registered modules synthesized at runtime by LLM-agent pipelines (e.g. ToolMaker, ACL 2025, arXiv 2502.11705). Filesystem discovery now refuses to register any ID that falls under `ephemeral.*` and raises `InvalidInputError` with code `INVALID_MODULE_ID`; the namespace is reachable only via `Registry.register()`. New `discoverable: bool = True` field on `ModuleAnnotations` — when `False`, the module is excluded from `Registry.list()` (default behaviour; `include_hidden=True` returns the full set), `Registry.iter()`, `Registry.module_ids`, and downstream manifest export, while remaining callable via `Registry.get()` / `Executor.execute()`. New `Registry.set_event_emitter(emitter)` opt-in: when wired, `ephemeral.*` registrations / unregistrations emit canonical `apcore.registry.module_registered` / `apcore.registry.module_unregistered` events whose `data` payload mirrors the D-35 contextual-audit shape (`caller_id` defaulting to `"@external"`, plus a redacted `identity` snapshot when `context.identity` is set). Without an emitter the same audit information is logged at INFO so it never silently disappears. `Registry.register()` / `Registry.unregister()` accept an optional `context=` keyword used solely to enrich those audit payloads. A soft `logging.warning(...)` fires when an `ephemeral.*` module is registered without `requires_approval=True` (per the RFC). Lifecycle is caller-managed via `Registry.unregister()`; TTL/GC sweeper and host-side sandboxing are deliberately out of scope for the v1 pilot. New top-level constant `EPHEMERAL_NAMESPACE_PREFIX` exported from `apcore.registry.registry`. **Pilot disclaimer:** the upstream RFC is not yet accepted; downstream SDKs (`apcore-typescript`, `apcore-rust`) will follow once Python pilot findings are reported back.
+
+### Changed
+
+- **iter-11 alignment with upstream apcore RFC `rfc-ephemeral-modules.md` (apcore commit [`81df336`](https://github.com/aiperceivable/apcore/commit/81df336))** — Tightens the `ephemeral.*` pilot against two new normative rules added during the RFC iter-11 reconciliation round:
+  1. **Audit-event single-emit rule** (RFC §"Audit-event single-emit rule"). The legacy `_bridge_registry_events` callback in `apcore.sys_modules.registration` now short-circuits for `ephemeral.*` module IDs so that exactly **one** `apcore.registry.module_registered` / `apcore.registry.module_unregistered` event is emitted per registration — the rich registry-side direct emit carrying the full D-35 contextual payload — instead of being followed by a second empty-payload copy from the bridge. Non-ephemeral registrations are unaffected (legacy bridge behaviour preserved for backwards compatibility).
+  2. **`register_internal()` rejection** (RFC §"`register_internal()` interaction"). `Registry.register_internal()` now raises `ValueError` when called with an `ephemeral.*` module ID, directing the caller to `Registry.register()`. Rationale: namespace → registration-mechanism is a 1:1 mapping; mixing the two paths blurs the audit-trail distinction between framework-emitted (`system.*`) and caller-emitted (`ephemeral.*`) modules.
+
 ## [0.20.0] - 2026-05-05
 
 ### Added

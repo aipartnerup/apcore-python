@@ -835,6 +835,9 @@ def test_annotations_extra_round_trip(case: dict[str, Any]) -> None:
                 serialized["cache_key_fields"] = None
             elif isinstance(serialized.get("cache_key_fields"), (tuple, list)):
                 serialized["cache_key_fields"] = list(serialized["cache_key_fields"]) or None
+            # Pilot field: see note in standard-case branch below.
+            if "discoverable" not in case["expected_reserialized"]:
+                serialized.pop("discoverable", None)
             assert serialized == case["expected_reserialized"], (
                 f"[{case_id}] re-serialized annotations mismatch: "
                 f"got {serialized!r}, expected {case['expected_reserialized']!r}"
@@ -858,6 +861,12 @@ def test_annotations_extra_round_trip(case: dict[str, Any]) -> None:
         if ckf is not None:
             serialized["cache_key_fields"] = list(ckf) if ckf else None
         expected = dict(case["expected_serialized"])
+        # Pilot field: ``discoverable`` was added ahead of upstream RFC
+        # acceptance (see CHANGELOG). Strip it from the serialized form when
+        # the fixture predates the field so the cross-language conformance
+        # check stays meaningful for every other key.
+        if "discoverable" not in expected:
+            serialized.pop("discoverable", None)
         assert serialized == expected, (
             f"[{case_id}] serialized annotations mismatch: " f"got {serialized!r}, expected {expected!r}"
         )
