@@ -1961,8 +1961,22 @@ class Registry:
         Raises:
             InvalidInputError: If module_id is empty, malformed, exceeds the
                 length limit, or is already registered.
+            ValueError: If module_id falls under the ``ephemeral.*`` namespace
+                (must use :meth:`register` instead).
             RuntimeError: If module.on_load() fails (propagated).
         """
+        # Per apcore RFC docs/spec/rfc-ephemeral-modules.md
+        # "register_internal() interaction": ephemeral.* IDs MUST be rejected
+        # here. Namespace → registration-mechanism is a 1:1 mapping; mixing
+        # blurs the audit-trail distinction between framework-emitted
+        # (system.*) and caller-emitted (ephemeral.*) modules.
+        if module_id.startswith(EPHEMERAL_NAMESPACE_PREFIX):
+            raise ValueError(
+                f"ephemeral.* module IDs must be registered via Registry.register(), "
+                f"not register_internal() (got: {module_id!r}). See apcore "
+                f"docs/spec/rfc-ephemeral-modules.md "
+                f"§'register_internal() interaction' for rationale."
+            )
         _validate_module_id(module_id, allow_reserved=True)
 
         _ensure_schema_adapter(module)

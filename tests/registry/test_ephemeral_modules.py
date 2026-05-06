@@ -435,3 +435,84 @@ class TestEphemeralAuditEvents:
             "ephemeral audit event" in rec.getMessage() and "ephemeral.logged" in rec.getMessage()
             for rec in caplog.records
         ), "expected an INFO log fallback when no EventEmitter is wired"
+
+    def test_bridge_does_not_dual_emit_for_ephemeral(self) -> None:
+        """Single-emit rule (apcore RFC ``rfc-ephemeral-modules.md``,
+        "Audit-event single-emit rule"): when both the registry-side direct
+        emit (``set_event_emitter``) and the ``_bridge_registry_events``
+        callback bridge are wired, an ``ephemeral.*`` registration MUST
+        produce exactly ONE ``apcore.registry.module_registered`` event —
+        the rich one with the contextual payload, not a second empty-payload
+        copy from the bridge.
+        """
+        from apcore.sys_modules.registration import _bridge_registry_events
+
+        emitter, sub = self._make_emitter()
+        registry = Registry()
+        registry.set_event_emitter(emitter)
+        # Wire the legacy bridge as well — this is what would have produced
+        # the second empty-payload emit before the single-emit guard landed.
+        _bridge_registry_events(registry, emitter)
+
+        registry.register("ephemeral.single_emit", _EphemeralModuleApproved())
+        self._drain(emitter, sub, 1)
+        # Give the bridge a chance to fire if the guard regresses.
+        import time
+
+        time.sleep(0.1)
+        emitter.shutdown()
+
+        register_events = [
+            e for e in sub.events
+            if e.event_type == "apcore.registry.module_registered"
+            and e.module_id == "ephemeral.single_emit"
+        ]
+        assert len(register_events) == 1, (
+            f"expected exactly one apcore.registry.module_registered event for "
+            f"ephemeral.single_emit, got {len(register_events)}: {register_events}"
+        )
+        # And it MUST be the rich one (caller_id present), not the empty bridge emit.
+        assert register_events[0].data.get("caller_id") == "@external"
+        # The legacy bare alias `module_registered` MUST also be suppressed for
+        # ephemeral.* (single-emit rule applies to both canonical and legacy).
+        legacy_events = [
+            e for e in sub.events
+            if e.event_type == "module_registered"
+            and e.module_id == "ephemeral.single_emit"
+        ]
+        assert legacy_events == [], (
+            "single-emit rule: legacy `module_registered` alias must also be "
+            "suppressed for ephemeral.* IDs"
+        )
+
+
+# ===========================================================================
+# 5. register_internal() rejection of ephemeral.* IDs
+# ===========================================================================
+
+
+class TestRegisterInternalRejectsEphemeral:
+    """Per apcore RFC ``rfc-ephemeral-modules.md`` §"register_internal()
+    interaction": ``register_internal()`` MUST reject ``ephemeral.*`` IDs
+    and direct the caller to ``Registry.register()``. Rationale: namespace →
+    registration-mechanism is a 1:1 mapping; mixing blurs the audit-trail
+    distinction between framework-emitted (``system.*``) and caller-emitted
+    (``ephemeral.*``) modules.
+    """
+
+    def test_register_internal_rejects_ephemeral_id(self) -> None:
+        registry = Registry()
+        mod = _EphemeralModuleApproved()
+        with pytest.raises(ValueError, match="ephemeral"):
+            registry.register_internal("ephemeral.test_v1", mod)
+        # And the rejection MUST short-circuit before any state mutation.
+        assert registry.get("ephemeral.test_v1") is None
+
+    def test_register_internal_error_mentions_register(self) -> None:
+        """The error message MUST point the caller to ``Registry.register()``."""
+        registry = Registry()
+        with pytest.raises(ValueError) as exc_info:
+            registry.register_internal("ephemeral.bad", _EphemeralModuleApproved())
+        msg = str(exc_info.value)
+        assert "Registry.register()" in msg
+        assert "ephemeral" in msg
