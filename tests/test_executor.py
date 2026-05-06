@@ -646,9 +646,7 @@ class TestValidate:
 
         class AsyncPreviewModule(MockModule):
             async def preview(self, inputs: dict[str, Any], context: Any) -> PreviewResult:
-                return PreviewResult(
-                    changes=[Change(action="send", target="smtp", summary="send email")]
-                )
+                return PreviewResult(changes=[Change(action="send", target="smtp", summary="send email")])
 
         mod = AsyncPreviewModule()
         ex = _make_executor(module=mod)

@@ -281,9 +281,9 @@ class TestRequiresApprovalWarning:
         registry = Registry()
         with caplog.at_level(logging.WARNING, logger="apcore.registry.registry"):
             registry.register("ephemeral.no_approval", _EphemeralModuleNoApproval())
-        assert any("requires_approval" in rec.getMessage() for rec in caplog.records), (
-            "expected a WARN about missing requires_approval=True"
-        )
+        assert any(
+            "requires_approval" in rec.getMessage() for rec in caplog.records
+        ), "expected a WARN about missing requires_approval=True"
 
     def test_no_warning_when_approval_present(self, caplog: pytest.LogCaptureFixture) -> None:
         registry = Registry()
@@ -409,9 +409,9 @@ class TestEphemeralAuditEvents:
 
         time.sleep(0.1)
         emitter.shutdown()
-        assert all(e.module_id != "normal.module" for e in sub.events), (
-            "non-ephemeral registrations must not produce registry-side audit events"
-        )
+        assert all(
+            e.module_id != "normal.module" for e in sub.events
+        ), "non-ephemeral registrations must not produce registry-side audit events"
 
     def test_unregister_audit_uses_context_payload(self) -> None:
         emitter, sub = self._make_emitter()
@@ -463,9 +463,9 @@ class TestEphemeralAuditEvents:
         emitter.shutdown()
 
         register_events = [
-            e for e in sub.events
-            if e.event_type == "apcore.registry.module_registered"
-            and e.module_id == "ephemeral.single_emit"
+            e
+            for e in sub.events
+            if e.event_type == "apcore.registry.module_registered" and e.module_id == "ephemeral.single_emit"
         ]
         assert len(register_events) == 1, (
             f"expected exactly one apcore.registry.module_registered event for "
@@ -476,13 +476,10 @@ class TestEphemeralAuditEvents:
         # The legacy bare alias `module_registered` MUST also be suppressed for
         # ephemeral.* (single-emit rule applies to both canonical and legacy).
         legacy_events = [
-            e for e in sub.events
-            if e.event_type == "module_registered"
-            and e.module_id == "ephemeral.single_emit"
+            e for e in sub.events if e.event_type == "module_registered" and e.module_id == "ephemeral.single_emit"
         ]
         assert legacy_events == [], (
-            "single-emit rule: legacy `module_registered` alias must also be "
-            "suppressed for ephemeral.* IDs"
+            "single-emit rule: legacy `module_registered` alias must also be " "suppressed for ephemeral.* IDs"
         )
 
 

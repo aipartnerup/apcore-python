@@ -1557,12 +1557,10 @@ class Registry:
     def _build_ephemeral_audit_payload(self, context: Any) -> dict[str, Any]:
         """Build the ``caller_id`` (+ optional ``identity``) D-35 payload fragment.
 
-        Mirrors ``apcore.sys_modules.control._audit_payload_extras`` so audit
-        consumers can apply the same redaction rules they already use for
-        ``system.control.*`` events.
+        Shares the redaction rules used by ``system.control.*`` audit events
+        (see ``apcore.sys_modules.identity._audit_payload_extras``).
         """
-        # Lazy import to avoid pulling sys_modules at registry import time.
-        from apcore.sys_modules.control import _audit_payload_extras
+        from apcore.sys_modules.identity import _audit_payload_extras
 
         return _audit_payload_extras(context)
 
@@ -1585,8 +1583,7 @@ class Registry:
             payload = self._build_ephemeral_audit_payload(context)
         except Exception as e:  # defensive: identity extraction must never break registration
             logger.warning(
-                "Failed to extract audit payload for ephemeral '%s': %s. "
-                "Falling back to caller_id='@external'.",
+                "Failed to extract audit payload for ephemeral '%s': %s. " "Falling back to caller_id='@external'.",
                 module_id,
                 e,
             )

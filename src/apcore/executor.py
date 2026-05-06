@@ -582,11 +582,7 @@ class Executor:
         # surface the failure as a warning on the module_preview check rather
         # than failing validation. This mirrors preflight() exception semantics.
         predicted_changes: list[Change] = []
-        if (
-            pipe_ctx.module is not None
-            and hasattr(pipe_ctx.module, "preview")
-            and callable(pipe_ctx.module.preview)
-        ):
+        if pipe_ctx.module is not None and hasattr(pipe_ctx.module, "preview") and callable(pipe_ctx.module.preview):
             try:
                 raw = pipe_ctx.module.preview(inputs, pipe_ctx.context)
                 # Support both sync and async preview() implementations.
