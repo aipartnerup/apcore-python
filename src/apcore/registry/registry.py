@@ -195,6 +195,14 @@ def _validate_streaming_signature(module_id: str, module: Any) -> None:
             mismatch_reason="wrong_arity",
         )
 
+    # NOTE: the spec mismatch_reason literal also includes "wrong_return_type".
+    # Return-type annotation validation is intentionally skipped here: Python
+    # annotations are not enforced at runtime, AsyncIterator[dict] cannot be
+    # reliably introspected from inspect.signature() for async generators, and
+    # the @runtime_checkable Protocol already validates structural presence.
+    # The "not_async" and "wrong_arity" checks cover the practically important
+    # mismatches; "wrong_return_type" would only fire on annotation-only errors.
+
 
 def _is_ephemeral(module_id: str) -> bool:
     """Return True when ``module_id`` belongs to the reserved ephemeral.* namespace."""
@@ -1657,18 +1665,19 @@ class Registry:
 
             from apcore.events.emitter import ApCoreEvent
 
+            ts = datetime.now(timezone.utc).isoformat()
             emitter.emit(
                 ApCoreEvent(
                     event_type="apcore.registry.module_load_failed",
                     module_id=module_id,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    timestamp=ts,
                     severity="error",
                     data={
                         "module_id": module_id,
                         "callback_name": "on_load",
                         "error_type": type(exc).__name__,
                         "error_message": str(exc),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": ts,
                     },
                 )
             )

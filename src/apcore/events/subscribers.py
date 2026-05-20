@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import fnmatch
 import json
 import logging
@@ -34,8 +33,10 @@ logger = logging.getLogger(__name__)
 class WebhookSubscriber:
     """Delivers events via HTTP POST to a webhook URL.
 
-    Retries on 5xx and connection errors up to ``retry_count`` times.
-    Does not retry on 4xx responses. Enforces ``timeout_ms``.
+    Retry policy is controlled entirely by ``retry: EventRetryConfig``; the
+    emitter handles backoff and DLQ emission on exhaustion. Raises on every
+    non-2xx/4xx response and on network errors so the emitter retry loop can
+    observe failures.
     """
 
     subscriber_type = "webhook"
@@ -44,7 +45,6 @@ class WebhookSubscriber:
         self,
         url: str,
         headers: dict[str, str] | None = None,
-        retry_count: int = 3,
         timeout_ms: int = 5000,
         *,
         id: str | None = None,  # noqa: A002
@@ -55,14 +55,18 @@ class WebhookSubscriber:
 
         self._url = url
         self._headers = headers or {}
-        self._retry_count = retry_count
         self._timeout_ms = timeout_ms
         self.subscriber_id: str = id if id is not None else _next_subscriber_id("webhook")
         self.retry: EventRetryConfig = retry if retry is not None else EventRetryConfig()
         self.event_pattern: str = event_pattern
 
     async def on_event(self, event: ApCoreEvent) -> None:
-        """Send the event as a JSON POST request to the configured URL."""
+        """Send the event as a JSON POST request to the configured URL.
+
+        Raises on 5xx responses and network errors so the emitter's retry loop
+        can act. 4xx responses are logged as warnings and treated as permanent
+        failures (no retry).
+        """
         if aiohttp is None:
             raise ImportError("aiohttp is required for WebhookSubscriber. Install with: pip install apcore[events]")
 
@@ -70,47 +74,17 @@ class WebhookSubscriber:
         timeout = aiohttp.ClientTimeout(total=self._timeout_ms / 1000.0)
         merged_headers = {"Content-Type": "application/json", **self._headers}
 
-        attempts = 1 + self._retry_count  # initial + retries
-        last_error: Exception | None = None
-
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            for attempt in range(attempts):
-                try:
-                    async with session.post(self._url, json=payload, headers=merged_headers) as response:
-                        if response.status < 500:
-                            if response.status >= 400:
-                                logger.warning(
-                                    "Webhook %s returned %d for event %s",
-                                    self._url,
-                                    response.status,
-                                    event.event_type,
-                                )
-                            return
-                        last_error = RuntimeError(f"Webhook returned {response.status}")
-                        logger.warning(
-                            "Webhook %s returned %d (attempt %d/%d)",
-                            self._url,
-                            response.status,
-                            attempt + 1,
-                            attempts,
-                        )
-                except (OSError, asyncio.TimeoutError) as exc:
-                    last_error = exc
+            async with session.post(self._url, json=payload, headers=merged_headers) as response:
+                if response.status >= 500:
+                    raise RuntimeError(f"Webhook {self._url} returned {response.status} for event {event.event_type}")
+                if response.status >= 400:
                     logger.warning(
-                        "Webhook %s failed (attempt %d/%d): %s",
+                        "Webhook %s returned %d for event %s (permanent failure — no retry)",
                         self._url,
-                        attempt + 1,
-                        attempts,
-                        exc,
+                        response.status,
+                        event.event_type,
                     )
-
-        if last_error is not None:
-            logger.error(
-                "Webhook %s delivery failed after %d attempts: %s",
-                self._url,
-                attempts,
-                last_error,
-            )
 
 
 class FileSubscriber:
@@ -163,6 +137,7 @@ class FileSubscriber:
                 event.event_type,
                 self._path,
             )
+            raise
 
 
 class StdoutSubscriber:

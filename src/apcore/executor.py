@@ -344,18 +344,20 @@ class Executor:
             break
 
     def use(self, middleware: Middleware) -> Executor:
-        """Add class-based middleware and return self for chaining."""
-        self._middleware_manager.add(middleware)
+        """Add class-based middleware with duplicate detection and return self for chaining."""
+        self._middleware_manager.use(middleware)
         return self
 
     def use_before(self, callback: Callable[..., Any]) -> Executor:
         """Wrap callback in BeforeMiddleware adapter and add it."""
-        self._middleware_manager.add(BeforeMiddleware(callback))
+        wrapped = BeforeMiddleware(callback)
+        self._middleware_manager.use(wrapped, identity_key=f"apcore.before.{id(callback)}")
         return self
 
     def use_after(self, callback: Callable[..., Any]) -> Executor:
         """Wrap callback in AfterMiddleware adapter and add it."""
-        self._middleware_manager.add(AfterMiddleware(callback))
+        wrapped = AfterMiddleware(callback)
+        self._middleware_manager.use(wrapped, identity_key=f"apcore.after.{id(callback)}")
         return self
 
     def remove(self, middleware: Middleware) -> bool:

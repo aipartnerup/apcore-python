@@ -77,11 +77,18 @@ _subscriber_factories: dict[str, Callable[[dict[str, Any]], EventSubscriber]] = 
 
 
 def _default_webhook_factory(cfg: dict[str, Any]) -> EventSubscriber:
+    from apcore.events.retry import EventRetryConfig
+
+    retry_cfg: EventRetryConfig | None = None
+    # Legacy: retry_count in config maps to EventRetryConfig.max_attempts + 1
+    # (retry_count was retries after first attempt; max_attempts is total attempts).
+    if "retry_count" in cfg:
+        retry_cfg = EventRetryConfig(max_attempts=int(cfg["retry_count"]) + 1)
     return WebhookSubscriber(
         url=cfg["url"],
         headers=cfg.get("headers"),
-        retry_count=cfg.get("retry_count", 3),
         timeout_ms=cfg.get("timeout_ms", 5000),
+        retry=retry_cfg,
     )
 
 

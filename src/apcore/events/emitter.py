@@ -249,10 +249,11 @@ class EventEmitter:
     ) -> None:
         """Build and deliver apcore.event.delivery_failed to DLQ-watching subscribers."""
         sub_type = _get_subscriber_type(subscriber)
+        ts = _iso_now()
         dlq_event = ApCoreEvent(
             event_type=_DLQ_EVENT_TYPE,
             module_id=None,
-            timestamp=_iso_now(),
+            timestamp=ts,
             severity="error",
             data={
                 "subscriber_type": sub_type,
@@ -267,7 +268,7 @@ class EventEmitter:
                     "message": str(error) if error is not None else "",
                 },
                 "attempt_count": attempt_count,
-                "timestamp": _iso_now(),
+                "timestamp": ts,
             },
         )
 

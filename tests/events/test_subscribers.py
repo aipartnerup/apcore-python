@@ -97,97 +97,56 @@ class TestWebhookSubscriberIncludesCustomHeaders:
             assert headers.get("X-Api-Key") == "secret"
 
 
-class TestWebhookSubscriberRetriesOn5xx:
+class TestWebhookSubscriberRaisesOn5xx:
     @pytest.mark.asyncio
-    async def test_webhook_subscriber_retries_on_5xx(self) -> None:
+    async def test_webhook_subscriber_raises_on_5xx(self) -> None:
+        """Per apcore #61, WebhookSubscriber raises on 5xx so the emitter can retry."""
         from apcore.events.subscribers import WebhookSubscriber
 
-        subscriber = WebhookSubscriber(url="https://example.com/webhook", retry_count=3)
+        subscriber = WebhookSubscriber(url="https://example.com/webhook")
         event = _make_event()
 
         with patch("apcore.events.subscribers.aiohttp") as mock_aiohttp:
-            # Return 500 twice, then 200
-            responses = []
-            for status in [500, 500, 200]:
-                resp = AsyncMock()
-                resp.status = status
-                resp.__aenter__ = AsyncMock(return_value=resp)
-                resp.__aexit__ = AsyncMock(return_value=False)
-                responses.append(resp)
+            resp = AsyncMock()
+            resp.status = 500
+            resp.__aenter__ = AsyncMock(return_value=resp)
+            resp.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = AsyncMock()
-            mock_session.post = MagicMock(side_effect=responses)
+            mock_session.post = MagicMock(return_value=resp)
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
 
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = MagicMock()
 
-            await subscriber.on_event(event)
+            with pytest.raises(RuntimeError, match="500"):
+                await subscriber.on_event(event)
 
-            assert mock_session.post.call_count == 3
+            # Single attempt per on_event call — emitter handles retry cadence
+            assert mock_session.post.call_count == 1
 
 
-class TestWebhookSubscriberRetriesOnConnectionError:
+class TestWebhookSubscriberRaisesOnConnectionError:
     @pytest.mark.asyncio
-    async def test_webhook_subscriber_retries_on_connection_error(self) -> None:
+    async def test_webhook_subscriber_raises_on_connection_error(self) -> None:
+        """Per apcore #61, network errors propagate so the emitter can retry."""
         from apcore.events.subscribers import WebhookSubscriber
 
-        subscriber = WebhookSubscriber(url="https://example.com/webhook", retry_count=3)
+        subscriber = WebhookSubscriber(url="https://example.com/webhook")
         event = _make_event()
 
         with patch("apcore.events.subscribers.aiohttp") as mock_aiohttp:
-            mock_response_ok = AsyncMock()
-            mock_response_ok.status = 200
-            mock_response_ok.__aenter__ = AsyncMock(return_value=mock_response_ok)
-            mock_response_ok.__aexit__ = AsyncMock(return_value=False)
-
             mock_session = AsyncMock()
-            # Connection error twice, then success
-            mock_session.post = MagicMock(
-                side_effect=[OSError("conn refused"), OSError("conn refused"), mock_response_ok]
-            )
+            mock_session.post = MagicMock(side_effect=OSError("conn refused"))
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
 
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = MagicMock()
 
-            await subscriber.on_event(event)
-
-            assert mock_session.post.call_count == 3
-
-
-class TestWebhookSubscriberRespectsRetryCount:
-    @pytest.mark.asyncio
-    async def test_webhook_subscriber_respects_retry_count(self) -> None:
-        from apcore.events.subscribers import WebhookSubscriber
-
-        subscriber = WebhookSubscriber(url="https://example.com/webhook", retry_count=2)
-        event = _make_event()
-
-        with patch("apcore.events.subscribers.aiohttp") as mock_aiohttp:
-            responses = []
-            for _ in range(3):
-                resp = AsyncMock()
-                resp.status = 500
-                resp.__aenter__ = AsyncMock(return_value=resp)
-                resp.__aexit__ = AsyncMock(return_value=False)
-                responses.append(resp)
-
-            mock_session = AsyncMock()
-            mock_session.post = MagicMock(side_effect=responses)
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-
-            mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
-            mock_aiohttp.ClientTimeout = MagicMock()
-
-            # Should not raise -- failures are logged
-            await subscriber.on_event(event)
-
-            # 1 initial + 2 retries = 3 total attempts
-            assert mock_session.post.call_count == 3
+            with pytest.raises(OSError):
+                await subscriber.on_event(event)
 
 
 class TestWebhookSubscriberEnforcesTimeout:
@@ -208,8 +167,9 @@ class TestWebhookSubscriberEnforcesTimeout:
 
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
 
-            # Should log but not raise
-            await subscriber.on_event(event)
+            # Timeout now propagates so the emitter can retry
+            with pytest.raises(asyncio.TimeoutError):
+                await subscriber.on_event(event)
 
             # Verify ClientTimeout was called with the correct timeout
             mock_aiohttp.ClientTimeout.assert_called_with(total=0.1)
@@ -220,7 +180,7 @@ class TestWebhookSubscriberDoesNotRetryOn4xx:
     async def test_webhook_subscriber_does_not_retry_on_4xx(self) -> None:
         from apcore.events.subscribers import WebhookSubscriber
 
-        subscriber = WebhookSubscriber(url="https://example.com/webhook", retry_count=3)
+        subscriber = WebhookSubscriber(url="https://example.com/webhook")
         event = _make_event()
 
         with patch("apcore.events.subscribers.aiohttp") as mock_aiohttp:

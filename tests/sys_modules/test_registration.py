@@ -285,7 +285,8 @@ class TestEventsEnabled:
         assert isinstance(sub, WebhookSubscriber)
         assert sub._url == "https://example.com/hook"
         assert sub._headers == {"X-Custom": "value"}
-        assert sub._retry_count == 2
+        # retry_count=2 in config → max_attempts=3 (retry_count was retries after first attempt)
+        assert sub.retry.max_attempts == 3
         assert sub._timeout_ms == 3000
 
     def test_register_sys_modules_subscriber_failure_logged(self, caplog: pytest.LogCaptureFixture) -> None:
