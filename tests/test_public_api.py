@@ -542,6 +542,7 @@ class TestPublicAPIAll:
         # Events
         "EventEmitter",
         "EventSubscriber",
+        "EventRetryConfig",
         "ApCoreEvent",
         "WebhookSubscriber",
         "A2ASubscriber",
@@ -563,6 +564,9 @@ class TestPublicAPIAll:
         "ModuleReloadConflictError",
         "ReloadFailedError",
         "SysModuleRegistrationError",
+        "StreamingInterfaceError",
+        # Streaming Protocol (apcore #62)
+        "StreamingModule",
         # Observability (added in 0.11.0, exported in 0.12.0)
         "ErrorEntry",
         "ErrorHistory",

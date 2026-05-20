@@ -411,6 +411,10 @@ class Registry:
         self._draining: set[str] = set()
         self._drain_events: dict[str, threading.Event] = {}
 
+        # Deferred-publish: module IDs currently executing on_load (not yet visible).
+        # Concurrent same-ID registrations see the in-flight set and raise DUPLICATE_MODULE_ID.
+        self._in_flight: set[str] = set()
+
         # Load ID map if provided
         if id_map_path is not None:
             self._id_map = load_id_map(Path(id_map_path))
@@ -1035,13 +1039,13 @@ class Registry:
             if errors:
                 raise InvalidInputError(message=f"Custom validator rejected module '{module_id}': {'; '.join(errors)}")
 
-        # Validate stream() signature when annotations.streaming = True
+        # Validate stream() signature when annotations.streaming is explicitly True
         annotations = getattr(module, "annotations", None)
         streaming_declared = False
         if isinstance(annotations, dict):
-            streaming_declared = bool(annotations.get("streaming", False))
+            streaming_declared = annotations.get("streaming") is True
         elif annotations is not None:
-            streaming_declared = bool(getattr(annotations, "streaming", False))
+            streaming_declared = getattr(annotations, "streaming", None) is True
         if streaming_declared:
             _validate_streaming_signature(module_id, module)
 
@@ -1060,7 +1064,18 @@ class Registry:
         # never has to fall back to the raw module object.
         merged_meta = merge_module_metadata(module, metadata or {})
 
+        # Phase 1: conflict detection + mark in-flight (DEFERRED-PUBLISH, apcore #65).
+        # The module is NOT inserted into _modules/_versioned_modules until after on_load
+        # completes, so discovery APIs see it only after full initialisation.
         with self._lock:
+            # Check the in-flight set FIRST so concurrent same-ID registrations are
+            # rejected even when on_load is running (module not yet in _modules).
+            if not is_versioned and module_id in self._in_flight:
+                raise InvalidInputError(
+                    message=f"Module '{module_id}' is already being registered (in-flight)",
+                    code=ErrorCodes.DUPLICATE_MODULE_ID,
+                )
+
             # For explicit versioned registration, skip conflict check when
             # the module_id already exists (we allow multiple versions).
             # For non-versioned registration, preserve original conflict detection.
@@ -1083,6 +1098,26 @@ class Registry:
                     else:
                         logger.warning("ID conflict: %s", conflict.message)
 
+            # Mark as in-flight — visible store is NOT updated yet.
+            if not is_versioned:
+                self._in_flight.add(module_id)
+
+        # Phase 2: call on_load() OUTSIDE the lock.
+        # The module is not visible during this phase. Concurrent same-ID
+        # registrations will see module_id in _in_flight and raise DUPLICATE_MODULE_ID.
+        if hasattr(module, "on_load") and callable(module.on_load):
+            try:
+                module.on_load()
+            except Exception as exc:
+                with self._lock:
+                    self._in_flight.discard(module_id)
+                self._emit_module_load_failed(module_id, exc)
+                raise
+
+        # Phase 3: atomically insert into visible store.
+        with self._lock:
+            self._in_flight.discard(module_id)
+
             # Store in versioned store
             self._versioned_modules.add(module_id, effective_version, module)
             if metadata:
@@ -1094,20 +1129,6 @@ class Registry:
                 self._modules[module_id] = latest
             self._module_meta[module_id] = merged_meta
             self._lowercase_map[module_id.lower()] = module_id
-
-        # Call on_load if available
-        if hasattr(module, "on_load") and callable(module.on_load):
-            try:
-                module.on_load()
-            except Exception:
-                with self._lock:
-                    self._versioned_modules.remove(module_id, effective_version)
-                    self._versioned_meta.remove(module_id, effective_version)
-                    if not self._versioned_modules.has(module_id):
-                        self._modules.pop(module_id, None)
-                        self._module_meta.pop(module_id, None)
-                        self._lowercase_map.pop(module_id.lower(), None)
-                raise
 
         self._trigger_event("register", module_id, module)
         if ephemeral:
@@ -1618,6 +1639,41 @@ class Registry:
                 "synthesized code does not run unattended.",
                 module_id,
             )
+
+    def _emit_module_load_failed(self, module_id: str, exc: Exception) -> None:
+        """Emit apcore.registry.module_load_failed when on_load raises (apcore #65)."""
+        emitter = self._event_emitter
+        if emitter is None:
+            logger.error(
+                "apcore.registry.module_load_failed module_id=%s error_type=%s error_message=%s",
+                module_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            return
+
+        try:
+            from datetime import datetime, timezone
+
+            from apcore.events.emitter import ApCoreEvent
+
+            emitter.emit(
+                ApCoreEvent(
+                    event_type="apcore.registry.module_load_failed",
+                    module_id=module_id,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    severity="error",
+                    data={
+                        "module_id": module_id,
+                        "callback_name": "on_load",
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            )
+        except Exception as e:
+            logger.error("Failed to emit module_load_failed event for '%s': %s", module_id, e)
 
     def _build_ephemeral_audit_payload(self, context: Any) -> dict[str, Any]:
         """Build the ``caller_id`` (+ optional ``identity``) D-35 payload fragment.
