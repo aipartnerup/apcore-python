@@ -427,6 +427,7 @@ class TestPublicAPIAll:
         "ModuleValidator",
         # Config
         "Config",
+        "RESERVED_NAMESPACES",
         "discover_config_file",
         # Errors
         "ErrorCodes",

@@ -10,9 +10,11 @@ from typing import Any
 import pytest
 
 from apcore.config import (
+    RESERVED_NAMESPACES,
     Config,
     _GLOBAL_NS_REGISTRY,
     _GLOBAL_NS_REGISTRY_LOCK,
+    _RESERVED_NAMESPACES,
 )
 from apcore.errors import (
     ConfigBindError,
@@ -91,6 +93,38 @@ class TestRegisterNamespace:
     def test_register_reserved_config_raises(self) -> None:
         with pytest.raises(ConfigNamespaceReservedError):
             Config.register_namespace("_config")
+
+    # PROTOCOL_SPEC §9.9.5 — Reserved namespace public query API.
+    def test_reserved_namespaces_contains_apcore_and_config(self) -> None:
+        reserved = Config.reserved_namespaces()
+        assert isinstance(reserved, frozenset)
+        assert "apcore" in reserved
+        assert "_config" in reserved
+
+    def test_reserved_namespaces_single_source_of_truth(self) -> None:
+        # §9.9.5 req 2: the query API MUST return the same set used by
+        # register_namespace to enforce CONFIG_NAMESPACE_RESERVED.
+        assert Config.reserved_namespaces() is _RESERVED_NAMESPACES
+
+    def test_reserved_namespaces_public_alias_matches_classmethod(self) -> None:
+        # The module-level public alias and the classmethod MUST agree.
+        assert RESERVED_NAMESPACES is Config.reserved_namespaces()
+
+    def test_reserved_namespaces_callable_without_instance(self) -> None:
+        # No `Config()` constructor call — classmethod on bare class.
+        _ = Config.reserved_namespaces()
+
+    def test_reserved_namespaces_immutable(self) -> None:
+        # frozenset rejects all mutating operations at runtime.
+        with pytest.raises(AttributeError):
+            Config.reserved_namespaces().add("hacked")  # type: ignore[attr-defined]
+
+    def test_reserved_namespaces_drive_register_enforcement(self) -> None:
+        # Behavioural single-source-of-truth: every name returned by the
+        # query API MUST be rejected by register_namespace.
+        for name in Config.reserved_namespaces():
+            with pytest.raises(ConfigNamespaceReservedError):
+                Config.register_namespace(name)
 
     def test_register_env_prefix_apcore_subpackage_ok(self) -> None:
         # APCORE_SOMETHING is fine — longest-prefix-match disambiguates.

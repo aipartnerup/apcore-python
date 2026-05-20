@@ -183,6 +183,11 @@ _DEFAULTS: dict[str, Any] = {
 
 _RESERVED_NAMESPACES: frozenset[str] = frozenset({"apcore", "_config"})
 
+# Public alias of the reserved-namespace set (PROTOCOL_SPEC §9.9.5).
+# Re-exported from ``apcore`` for ergonomic top-level access:
+# ``from apcore import RESERVED_NAMESPACES``.
+RESERVED_NAMESPACES: frozenset[str] = _RESERVED_NAMESPACES
+
 
 _DEFAULT_MAX_DEPTH: int = 5
 _VALID_ENV_STYLES: frozenset[str] = frozenset({"nested", "flat", "auto"})
@@ -713,6 +718,25 @@ class Config:
                 }
                 for reg in _GLOBAL_NS_REGISTRY.values()
             ]
+
+    @classmethod
+    def reserved_namespaces(cls) -> frozenset[str]:
+        """Return the set of top-level namespace names reserved by apcore.
+
+        Implements the public query API required by PROTOCOL_SPEC §9.9.5.
+
+        The returned ``frozenset`` is the single source of truth referenced
+        by :meth:`register_namespace` to enforce ``CONFIG_NAMESPACE_RESERVED``
+        (§9.5.1 rules 3 and 4). It is callable without instantiating
+        ``Config`` so third-party consumers (custom CLIs, framework
+        integrations) can fail-fast on user-supplied namespace names before
+        invoking :meth:`register_namespace`.
+
+        Returns:
+            ``frozenset[str]`` containing at minimum ``"apcore"`` and
+            ``"_config"``. The returned object is immutable.
+        """
+        return _RESERVED_NAMESPACES
 
     # ------------------------------------------------------------------
     # Factory methods

@@ -54,7 +54,11 @@ from apcore.module import (
 )
 
 # Config
-from apcore.config import Config, discover_config_file
+from apcore.config import (
+    RESERVED_NAMESPACES,
+    Config,
+    discover_config_file,
+)
 
 # Error Formatter
 from apcore.error_formatter import ErrorFormatter, ErrorFormatterRegistry
@@ -593,6 +597,7 @@ __all__ = [
     "detect_id_conflicts",
     # Config
     "Config",
+    "RESERVED_NAMESPACES",
     "discover_config_file",
     # Error Formatter
     "ErrorFormatter",

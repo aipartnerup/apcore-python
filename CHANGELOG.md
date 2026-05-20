@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.22.0] - 2026-05-18
+
+### Added
+
+- **`Config.reserved_namespaces()` classmethod + top-level `RESERVED_NAMESPACES` constant (PROTOCOL_SPEC §9.9.5, [apcore#60](https://github.com/aiperceivable/apcore/issues/60)).** Implements the new normative requirement that all SDKs MUST expose a public, read-only query API returning the set of reserved top-level namespace names. Returns the existing private `_RESERVED_NAMESPACES` `frozenset` — single source of truth, no parallel list — so `Config.register_namespace("apcore")` continues to raise `ConfigNamespaceReservedError` and the query API reports exactly the names that drive that enforcement. Class-level access (no `Config()` instance needed). Intended for third-party consumers (custom CLIs, framework integrations like `django-apcore`, application code) that accept user-supplied namespace names and need fail-fast pre-validation. The private constant `_RESERVED_NAMESPACES` is unchanged — internal callers keep using it.
+
+---
+
 ## [0.21.0] - 2026-05-06
 
 ### Added
