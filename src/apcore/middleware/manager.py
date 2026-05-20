@@ -17,6 +17,19 @@ __all__ = ["MiddlewareManager", "MiddlewareChainError", "RetrySignal"]
 _logger = logging.getLogger(__name__)
 
 
+def _make_identity(mw: Any, identity_key: str | None) -> str:
+    if identity_key is not None:
+        return identity_key
+    cls = type(mw)
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _caller_site() -> str:
+    """Return a 'file:lineno' string for the frame above use()."""
+    frame = inspect.stack()[2]  # [0]=_caller_site, [1]=use, [2]=actual caller
+    return f"{frame.filename}:{frame.lineno}"
+
+
 class MiddlewareChainError(ModuleError):
     """Raised when a middleware's before() fails. Carries context for error recovery."""
 
@@ -43,6 +56,47 @@ class MiddlewareManager:
         """Initialize an empty middleware manager."""
         self._middlewares: list[Middleware] = []
         self._lock = threading.Lock()
+        # identity → (first_call_site, allow_duplicate)
+        self._identity_registry: dict[str, str] = {}
+
+    def use(
+        self,
+        middleware: Middleware,
+        *,
+        allow_duplicate: bool = False,
+        identity_key: str | None = None,
+    ) -> None:
+        """Register a middleware with optional duplicate detection.
+
+        Computes an identity string for the middleware (type-based by default,
+        or the provided ``identity_key``). If the same identity has been
+        registered before and ``allow_duplicate`` is False, emits a WARNING
+        naming both call sites. Registration always proceeds.
+
+        Args:
+            middleware: The middleware instance to add.
+            allow_duplicate: When True, suppress the duplicate warning.
+            identity_key: Override the auto-computed identity. Keys starting
+                with ``apcore.`` are reserved for framework middleware.
+        """
+        site = _caller_site()
+        identity = _make_identity(middleware, identity_key)
+
+        with self._lock:
+            first_site = self._identity_registry.get(identity)
+            if first_site is not None and not allow_duplicate:
+                _logger.warning(
+                    "Duplicate middleware registration detected for %r: "
+                    "first registered at %s, now again at %s. "
+                    "Use allow_duplicate=True to suppress this warning.",
+                    identity,
+                    first_site,
+                    site,
+                )
+            if first_site is None:
+                self._identity_registry[identity] = site
+
+        self.add(middleware)
 
     def add(self, middleware: Middleware) -> None:
         """Insert a middleware sorted by priority (higher first).
