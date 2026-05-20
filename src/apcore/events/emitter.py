@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import inspect
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -222,7 +223,9 @@ class EventEmitter:
 
         if hasattr(subscriber, "on_failure") and callable(subscriber.on_failure):
             try:
-                await subscriber.on_failure(event, last_error, retry.max_attempts)
+                result = subscriber.on_failure(event, last_error, retry.max_attempts)
+                if inspect.isawaitable(result):
+                    await result
             except Exception:
                 logger.exception("on_failure callback raised for subscriber %r", subscriber)
 
