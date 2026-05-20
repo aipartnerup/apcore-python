@@ -1,15 +1,25 @@
-"""Global event bus with fan-out delivery and subscriber error isolation."""
+"""Global event bus with fan-out delivery, per-subscriber retry, and DLQ emission."""
 
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
+from apcore.events.retry import EventRetryConfig
+
 logger = logging.getLogger(__name__)
+
+_DLQ_EVENT_TYPE = "apcore.event.delivery_failed"
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True)
@@ -30,16 +40,76 @@ class EventSubscriber(Protocol):
     async def on_event(self, event: ApCoreEvent) -> None: ...
 
 
-class EventEmitter:
-    """Thread-safe global event bus with non-blocking fan-out delivery.
+# ---------------------------------------------------------------------------
+# Per-type subscriber-ID counters (monotonic, process-scoped)
+# ---------------------------------------------------------------------------
 
-    Uses a bounded ThreadPoolExecutor with a persistent asyncio event loop
-    for efficient async subscriber delivery. Errors in one subscriber do
-    not affect others.
+_id_counter_lock = threading.Lock()
+_id_counters: dict[str, int] = {}
+
+
+def _next_subscriber_id(type_name: str) -> str:
+    with _id_counter_lock:
+        count = _id_counters.get(type_name, 0)
+        _id_counters[type_name] = count + 1
+    return f"{type_name}-{count}"
+
+
+def _get_subscriber_id(subscriber: Any) -> str:
+    sid = getattr(subscriber, "subscriber_id", None)
+    return sid if isinstance(sid, str) else repr(subscriber)
+
+
+def _get_subscriber_type(subscriber: Any) -> str:
+    stype = getattr(subscriber, "subscriber_type", None)
+    if isinstance(stype, str):
+        return stype
+    return type(subscriber).__name__.lower().replace("subscriber", "").lstrip("_")
+
+
+def _get_event_pattern(subscriber: Any) -> str:
+    pattern = getattr(subscriber, "event_pattern", None)
+    return pattern if isinstance(pattern, str) else "*"
+
+
+def _get_retry_config(subscriber: Any) -> EventRetryConfig:
+    retry = getattr(subscriber, "retry", None)
+    return retry if isinstance(retry, EventRetryConfig) else EventRetryConfig()
+
+
+def _matches_event(subscriber: Any, event_type: str, *, is_dlq: bool) -> bool:
+    """Return True when *subscriber* should receive an event of *event_type*.
+
+    DLQ events (apcore.event.delivery_failed) are ONLY delivered to subscribers
+    that have an explicit, non-wildcard event_pattern. Catch-all subscribers
+    (pattern '*') never receive DLQ events — this prevents cascading failures
+    where every subscriber would recursively fail on the DLQ about itself.
+    """
+    pattern = _get_event_pattern(subscriber)
+    if is_dlq and pattern == "*":
+        return False
+    return fnmatch.fnmatch(event_type, pattern)
+
+
+# ---------------------------------------------------------------------------
+# EventEmitter
+# ---------------------------------------------------------------------------
+
+
+class EventEmitter:
+    """Thread-safe global event bus with per-subscriber retry and DLQ emission.
+
+    Delivery model:
+    - Each emit() fans out to all subscribers concurrently (one asyncio.gather).
+    - Each subscriber gets up to retry.max_attempts delivery attempts with
+      exponential backoff.
+    - On exhaustion: a ``apcore.event.delivery_failed`` DLQ event is emitted
+      to subscribers that explicitly watch for it (non-wildcard event_pattern).
+    - DLQ delivery is single-attempt (no retry, no second-order DLQ).
     """
 
     def __init__(self, max_workers: int = 4) -> None:
-        self._subscribers: list[EventSubscriber] = []
+        self._subscribers: list[Any] = []
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
@@ -47,20 +117,15 @@ class EventEmitter:
         )
         self._pending_futures: list[Future[None]] = []
         self._pending_lock = threading.Lock()
-        # Persistent event loop for async subscriber delivery
         self._loop = asyncio.new_event_loop()
         self._loop_lock = threading.Lock()
         self._shutdown = False
 
-    def subscribe(self, subscriber: EventSubscriber) -> None:
+    def subscribe(self, subscriber: Any) -> None:
         """Add a subscriber to receive future events.
 
         Raises:
             TypeError: If ``subscriber.on_event`` is not a coroutine function.
-                The emitter awaits deliveries via ``run_until_complete``; a
-                plain function would fail at delivery time with a confusing
-                error. Failing in ``subscribe`` gives callers an actionable
-                signal at registration time.
         """
         if not asyncio.iscoroutinefunction(getattr(subscriber, "on_event", None)):
             raise TypeError(
@@ -70,7 +135,7 @@ class EventEmitter:
         with self._lock:
             self._subscribers.append(subscriber)
 
-    def unsubscribe(self, subscriber: EventSubscriber) -> None:
+    def unsubscribe(self, subscriber: Any) -> None:
         """Remove a subscriber. No-op if not found."""
         with self._lock:
             try:
@@ -81,9 +146,7 @@ class EventEmitter:
     def emit(self, event: ApCoreEvent) -> None:
         """Fan-out event to all subscribers via thread pool.
 
-        Returns immediately. Subscriber errors are logged but not propagated.
-        After :meth:`shutdown`, further emits are silently dropped so
-        late-arriving events in a shutting-down process do not raise.
+        Returns immediately. After :meth:`shutdown`, emits are silently dropped.
         """
         if self._shutdown:
             return
@@ -95,47 +158,128 @@ class EventEmitter:
 
         future = self._executor.submit(self._deliver, snapshot, event)
         with self._pending_lock:
-            # Clean up completed futures
             self._pending_futures = [f for f in self._pending_futures if not f.done()]
             self._pending_futures.append(future)
 
     def flush(self, timeout: float = 5.0) -> None:
-        """Wait for all pending event deliveries to complete.
-
-        Args:
-            timeout: Maximum seconds to wait for all pending deliveries.
-        """
+        """Wait for all pending event deliveries to complete."""
         with self._pending_lock:
             futures = list(self._pending_futures)
         for future in futures:
             try:
                 future.result(timeout=timeout)
             except Exception:
-                pass  # Errors already logged in _deliver
+                pass
         with self._pending_lock:
             self._pending_futures = [f for f in self._pending_futures if not f.done()]
 
-    def _deliver(self, subscribers: list[EventSubscriber], event: ApCoreEvent) -> None:
-        """Deliver event to each subscriber using the persistent event loop."""
+    # ------------------------------------------------------------------
+    # Internal delivery machinery
+    # ------------------------------------------------------------------
+
+    def _deliver(self, subscribers: list[Any], event: ApCoreEvent) -> None:
+        """Run the async delivery coroutine inside the persistent event loop."""
+        is_dlq = event.event_type == _DLQ_EVENT_TYPE
         with self._loop_lock:
-            for subscriber in subscribers:
-                try:
-                    self._loop.run_until_complete(subscriber.on_event(event))
-                except Exception:
-                    logger.exception(
-                        "Subscriber %r failed handling event %s",
-                        subscriber,
-                        event.event_type,
-                    )
+            self._loop.run_until_complete(self._deliver_async(subscribers, event, is_dlq=is_dlq))
+
+    async def _deliver_async(
+        self,
+        subscribers: list[Any],
+        event: ApCoreEvent,
+        *,
+        is_dlq: bool,
+    ) -> None:
+        """Fan out delivery to all matching subscribers."""
+        tasks = []
+        for sub in subscribers:
+            if not _matches_event(sub, event.event_type, is_dlq=is_dlq):
+                continue
+            if is_dlq:
+                tasks.append(self._deliver_single_no_retry(sub, event))
+            else:
+                tasks.append(self._deliver_with_retry(sub, event))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _deliver_with_retry(self, subscriber: Any, event: ApCoreEvent) -> None:
+        """Deliver event with retry per subscriber's EventRetryConfig."""
+        retry = _get_retry_config(subscriber)
+        last_error: Exception | None = None
+
+        for attempt in range(retry.max_attempts):
+            try:
+                await subscriber.on_event(event)
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 < retry.max_attempts:
+                    delay_s = retry.compute_delay_ms(attempt) / 1000.0
+                    await asyncio.sleep(delay_s)
+
+        # All attempts exhausted — emit DLQ event then call on_failure
+        await self._emit_dlq(subscriber, event, last_error, retry.max_attempts)
+
+        if hasattr(subscriber, "on_failure") and callable(subscriber.on_failure):
+            try:
+                await subscriber.on_failure(event, last_error, retry.max_attempts)
+            except Exception:
+                logger.exception("on_failure callback raised for subscriber %r", subscriber)
+
+    async def _deliver_single_no_retry(self, subscriber: Any, event: ApCoreEvent) -> None:
+        """Single delivery attempt for DLQ events — errors are logged and discarded."""
+        try:
+            await subscriber.on_event(event)
+        except Exception:
+            logger.error(
+                "Subscriber %r failed to handle DLQ event %s — discarded",
+                subscriber,
+                event.event_type,
+            )
+
+    async def _emit_dlq(
+        self,
+        subscriber: Any,
+        original_event: ApCoreEvent,
+        error: Exception | None,
+        attempt_count: int,
+    ) -> None:
+        """Build and deliver apcore.event.delivery_failed to DLQ-watching subscribers."""
+        sub_type = _get_subscriber_type(subscriber)
+        dlq_event = ApCoreEvent(
+            event_type=_DLQ_EVENT_TYPE,
+            module_id=None,
+            timestamp=_iso_now(),
+            severity="error",
+            data={
+                "subscriber_type": sub_type,
+                "subscriber_id": _get_subscriber_id(subscriber),
+                "original_event": {
+                    "name": original_event.event_type,
+                    "payload": original_event.data,
+                    "metadata": {},
+                },
+                "error": {
+                    "type": type(error).__name__ if error is not None else "Unknown",
+                    "message": str(error) if error is not None else "",
+                },
+                "attempt_count": attempt_count,
+                "timestamp": _iso_now(),
+            },
+        )
+
+        with self._lock:
+            snapshot = list(self._subscribers)
+
+        dlq_subs = [s for s in snapshot if _matches_event(s, _DLQ_EVENT_TYPE, is_dlq=True)]
+        if dlq_subs:
+            await asyncio.gather(
+                *[self._deliver_single_no_retry(s, dlq_event) for s in dlq_subs],
+                return_exceptions=True,
+            )
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        """Release the executor thread pool and asyncio loop.
-
-        Stops accepting new emits, flushes pending deliveries (bounded by
-        ``timeout``), shuts the ThreadPoolExecutor with ``wait=True`` +
-        ``cancel_futures=True``, and closes the persistent event loop. Safe
-        to call multiple times — subsequent calls are no-ops.
-        """
+        """Release the executor thread pool and asyncio loop."""
         if self._shutdown:
             return
         self._shutdown = True

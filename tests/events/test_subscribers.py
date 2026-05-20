@@ -349,7 +349,8 @@ class TestA2ASubscriberIncludesEventInPayload:
 
 class TestA2ASubscriberHandlesSendFailure:
     @pytest.mark.asyncio
-    async def test_a2a_subscriber_handles_send_failure(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_a2a_subscriber_handles_send_failure(self) -> None:
+        """Per apcore #61, A2A now raises on failure so the emitter can retry."""
         from apcore.events.subscribers import A2ASubscriber
 
         subscriber = A2ASubscriber(
@@ -365,11 +366,9 @@ class TestA2ASubscriberHandlesSendFailure:
 
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
 
-            # Should not raise
-            with caplog.at_level(logging.ERROR):
+            # A2A now raises on failure (emitter handles retry/DLQ)
+            with pytest.raises(OSError, match="connection failed"):
                 await subscriber.on_event(event)
-
-            assert any("connection failed" in r.message or "A2A" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

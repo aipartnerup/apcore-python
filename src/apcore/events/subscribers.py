@@ -16,6 +16,7 @@ except ImportError:
     aiohttp = None  # type: ignore[assignment]
 
 from apcore.events.emitter import ApCoreEvent, EventSubscriber
+from apcore.events.retry import EventRetryConfig
 
 __all__ = [
     "WebhookSubscriber",
@@ -37,17 +38,28 @@ class WebhookSubscriber:
     Does not retry on 4xx responses. Enforces ``timeout_ms``.
     """
 
+    subscriber_type = "webhook"
+
     def __init__(
         self,
         url: str,
         headers: dict[str, str] | None = None,
         retry_count: int = 3,
         timeout_ms: int = 5000,
+        *,
+        id: str | None = None,  # noqa: A002
+        retry: EventRetryConfig | None = None,
+        event_pattern: str = "*",
     ) -> None:
+        from apcore.events.emitter import _next_subscriber_id
+
         self._url = url
         self._headers = headers or {}
         self._retry_count = retry_count
         self._timeout_ms = timeout_ms
+        self.subscriber_id: str = id if id is not None else _next_subscriber_id("webhook")
+        self.retry: EventRetryConfig = retry if retry is not None else EventRetryConfig()
+        self.event_pattern: str = event_pattern
 
     async def on_event(self, event: ApCoreEvent) -> None:
         """Send the event as a JSON POST request to the configured URL."""
@@ -66,7 +78,6 @@ class WebhookSubscriber:
                 try:
                     async with session.post(self._url, json=payload, headers=merged_headers) as response:
                         if response.status < 500:
-                            # Success or 4xx -- no retry
                             if response.status >= 400:
                                 logger.warning(
                                     "Webhook %s returned %d for event %s",
@@ -75,7 +86,6 @@ class WebhookSubscriber:
                                     event.event_type,
                                 )
                             return
-                        # 5xx -- retry
                         last_error = RuntimeError(f"Webhook returned {response.status}")
                         logger.warning(
                             "Webhook %s returned %d (attempt %d/%d)",
@@ -106,17 +116,28 @@ class WebhookSubscriber:
 class FileSubscriber:
     """Writes events to a local file (built-in type: 'file')."""
 
+    subscriber_type = "file"
+
     def __init__(
         self,
         path: str,
         append: bool = True,
         output_format: str = "json",
         rotate_bytes: int | None = None,
+        *,
+        id: str | None = None,  # noqa: A002
+        retry: EventRetryConfig | None = None,
+        event_pattern: str = "*",
     ) -> None:
+        from apcore.events.emitter import _next_subscriber_id
+
         self._path = path
         self._append = append
         self._format = output_format
         self._rotate_bytes = rotate_bytes
+        self.subscriber_id: str = id if id is not None else _next_subscriber_id("file")
+        self.retry: EventRetryConfig = retry if retry is not None else EventRetryConfig()
+        self.event_pattern: str = event_pattern
 
     async def on_event(self, event: ApCoreEvent) -> None:
         try:
@@ -147,13 +168,24 @@ class FileSubscriber:
 class StdoutSubscriber:
     """Writes events to stdout (built-in type: 'stdout')."""
 
+    subscriber_type = "stdout"
+
     def __init__(
         self,
         output_format: str = "text",
         level_filter: str | None = None,
+        *,
+        id: str | None = None,  # noqa: A002
+        retry: EventRetryConfig | None = None,
+        event_pattern: str = "*",
     ) -> None:
+        from apcore.events.emitter import _next_subscriber_id
+
         self._format = output_format
         self._level_filter = level_filter
+        self.subscriber_id: str = id if id is not None else _next_subscriber_id("stdout")
+        self.retry: EventRetryConfig = retry if retry is not None else EventRetryConfig()
+        self.event_pattern: str = event_pattern
 
     async def on_event(self, event: ApCoreEvent) -> None:
         if self._level_filter is not None:
@@ -173,23 +205,28 @@ class StdoutSubscriber:
 
 
 class FilterSubscriber:
-    """Wraps a delegate subscriber with event-name filtering (built-in type: 'filter').
+    """Wraps a delegate subscriber with event-name filtering (built-in type: 'filter')."""
 
-    Matching rules:
-    - If include_events is set, forward only events matching any pattern in the list.
-    - Otherwise, if exclude_events is set, discard events matching any pattern.
-    - If neither is set, all events are forwarded.
-    """
+    subscriber_type = "filter"
 
     def __init__(
         self,
         delegate: EventSubscriber,
         include_events: list[str] | None = None,
         exclude_events: list[str] | None = None,
+        *,
+        id: str | None = None,  # noqa: A002
+        retry: EventRetryConfig | None = None,
+        event_pattern: str = "*",
     ) -> None:
+        from apcore.events.emitter import _next_subscriber_id
+
         self._delegate = delegate
         self._include_events = include_events
         self._exclude_events = exclude_events
+        self.subscriber_id: str = id if id is not None else _next_subscriber_id("filter")
+        self.retry: EventRetryConfig = retry if retry is not None else EventRetryConfig()
+        self.event_pattern: str = event_pattern
 
     async def on_event(self, event: ApCoreEvent) -> None:
         if self._matches(event.event_type):
@@ -204,26 +241,35 @@ class FilterSubscriber:
 
 
 class A2ASubscriber:
-    """Delivers events via the A2A protocol to the platform.
+    """Delivers events via the A2A protocol to the platform."""
 
-    Sends a POST with ``skillId="apevo.event_receiver"`` and the
-    serialized event in the payload. Failures are logged, not raised.
-    """
+    subscriber_type = "a2a"
 
     def __init__(
         self,
         platform_url: str,
         auth: str | dict[str, str] | None = None,
         timeout_ms: int = 5000,
+        skill_id: str = "apevo.event_receiver",
+        *,
+        id: str | None = None,  # noqa: A002
+        retry: EventRetryConfig | None = None,
+        event_pattern: str = "*",
     ) -> None:
+        from apcore.events.emitter import _next_subscriber_id
+
         self._platform_url = platform_url
         self._auth = auth
         self._timeout_ms = timeout_ms
+        self._skill_id = skill_id
+        self.subscriber_id: str = id if id is not None else _next_subscriber_id("a2a")
+        self.retry: EventRetryConfig = retry if retry is not None else EventRetryConfig()
+        self.event_pattern: str = event_pattern
 
     async def on_event(self, event: ApCoreEvent) -> None:
         """Send the event to the A2A platform endpoint."""
         payload = {
-            "skillId": "apevo.event_receiver",
+            "skillId": self._skill_id,
             "event": asdict(event),
         }
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -235,19 +281,8 @@ class A2ASubscriber:
         if aiohttp is None:
             raise ImportError("aiohttp is required for A2ASubscriber. Install with: pip install apcore[events]")
 
-        try:
-            timeout = aiohttp.ClientTimeout(total=self._timeout_ms / 1000.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(self._platform_url, json=payload, headers=headers) as response:
-                    if response.status >= 400:
-                        logger.error(
-                            "A2A delivery to %s failed with status %d",
-                            self._platform_url,
-                            response.status,
-                        )
-        except Exception:
-            logger.exception(
-                "A2A delivery to %s failed for event %s",
-                self._platform_url,
-                event.event_type,
-            )
+        timeout = aiohttp.ClientTimeout(total=self._timeout_ms / 1000.0)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(self._platform_url, json=payload, headers=headers) as response:
+                if response.status >= 400:
+                    raise RuntimeError(f"A2A delivery to {self._platform_url} failed with status {response.status}")

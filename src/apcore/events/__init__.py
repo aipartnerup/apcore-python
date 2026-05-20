@@ -8,6 +8,7 @@ Re-exports the global event bus and related types::
 
 from apcore.events.circuit_breaker import CircuitBreakerWrapper, CircuitState
 from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
+from apcore.events.retry import EventRetryConfig
 from apcore.events.subscribers import (
     A2ASubscriber,
     FileSubscriber,
@@ -50,6 +51,7 @@ __all__ = [
     "ApCoreEvent",
     "EventEmitter",
     "EventSubscriber",
+    "EventRetryConfig",
     "A2ASubscriber",
     "WebhookSubscriber",
     "FileSubscriber",
