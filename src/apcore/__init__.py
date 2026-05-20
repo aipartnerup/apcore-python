@@ -62,10 +62,12 @@ from apcore.config import (
 
 # Error Formatter
 from apcore.error_formatter import ErrorFormatter, ErrorFormatterRegistry
+from apcore.streaming import StreamingModule
 
 # Errors
 from apcore.errors import (
     ACLDeniedError,
+    StreamingInterfaceError,
     ACLRuleError,
     ApprovalDeniedError,
     ApprovalError,
@@ -602,6 +604,8 @@ __all__ = [
     # Error Formatter
     "ErrorFormatter",
     "ErrorFormatterRegistry",
+    # Streaming
+    "StreamingModule",
     # Registry protocols
     "Discoverer",
     "ModuleValidator",
@@ -654,6 +658,7 @@ __all__ = [
     "ModuleReloadConflictError",
     "ReloadFailedError",
     "SysModuleRegistrationError",
+    "StreamingInterfaceError",
     "ModuleTimeoutError",
     "SchemaCircularRefError",
     "SchemaNotFoundError",

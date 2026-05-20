@@ -11,11 +11,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Protocol, runtime_checkable
 
+import inspect
+
 from apcore.config import Config
 from apcore.errors import (
     ErrorCodes,
     InvalidInputError,
     ModuleNotFoundError,
+    StreamingInterfaceError,
 )
 from apcore.registry.conflicts import ConflictSeverity, detect_id_conflicts
 from apcore.registry.dependencies import resolve_dependencies
@@ -139,6 +142,58 @@ __all__ = [
     "Discoverer",
     "ModuleValidator",
 ]
+
+
+_EXPECTED_STREAM_SIGNATURE = "(self, inputs: dict, context: Context) -> AsyncIterator[dict]"
+
+
+def _validate_streaming_signature(module_id: str, module: Any) -> None:
+    """Raise StreamingInterfaceError when module.stream() doesn't match the Protocol.
+
+    Called only when the module's annotations declare ``streaming = True``.
+    """
+    stream_fn = getattr(module, "stream", None)
+    if stream_fn is None or not callable(stream_fn):
+        raise StreamingInterfaceError(
+            module_id=module_id,
+            expected_signature=_EXPECTED_STREAM_SIGNATURE,
+            actual_signature="<missing>",
+            mismatch_reason="missing_marker",
+        )
+
+    if not inspect.iscoroutinefunction(stream_fn) and not inspect.isasyncgenfunction(stream_fn):
+        try:
+            sig = str(inspect.signature(stream_fn))
+        except (ValueError, TypeError):
+            sig = "<unknown>"
+        raise StreamingInterfaceError(
+            module_id=module_id,
+            expected_signature=_EXPECTED_STREAM_SIGNATURE,
+            actual_signature=sig,
+            mismatch_reason="not_async",
+        )
+
+    try:
+        params = list(inspect.signature(stream_fn).parameters.keys())
+    except (ValueError, TypeError):
+        params = []
+
+    # Bound method: self is already consumed by descriptor protocol; inspect
+    # returns the unbound params list when inspecting the function via the class,
+    # but ``getattr(instance, 'stream')`` gives a bound method where 'self' is
+    # absent from the visible parameter list.
+    expected_params = {"inputs", "context"}
+    if not expected_params.issubset(set(params)):
+        try:
+            actual_sig = str(inspect.signature(stream_fn))
+        except (ValueError, TypeError):
+            actual_sig = "<unknown>"
+        raise StreamingInterfaceError(
+            module_id=module_id,
+            expected_signature=_EXPECTED_STREAM_SIGNATURE,
+            actual_signature=actual_sig,
+            mismatch_reason="wrong_arity",
+        )
 
 
 def _is_ephemeral(module_id: str) -> bool:
@@ -979,6 +1034,16 @@ class Registry:
             errors = self._custom_validator.validate(module)
             if errors:
                 raise InvalidInputError(message=f"Custom validator rejected module '{module_id}': {'; '.join(errors)}")
+
+        # Validate stream() signature when annotations.streaming = True
+        annotations = getattr(module, "annotations", None)
+        streaming_declared = False
+        if isinstance(annotations, dict):
+            streaming_declared = bool(annotations.get("streaming", False))
+        elif annotations is not None:
+            streaming_declared = bool(getattr(annotations, "streaming", False))
+        if streaming_declared:
+            _validate_streaming_signature(module_id, module)
 
         effective_version = version or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
 

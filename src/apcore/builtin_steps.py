@@ -585,8 +585,10 @@ class BuiltinExecute(BaseStep):
 
         inputs = ctx.validated_inputs if ctx.validated_inputs is not None else ctx.inputs
 
-        # Stream mode: set up output_stream if module has stream()
-        if ctx.stream and hasattr(module, "stream") and callable(module.stream):
+        # Stream mode: set up output_stream if module satisfies StreamingModule Protocol
+        from apcore.streaming import StreamingModule
+
+        if ctx.stream and isinstance(module, StreamingModule):
             ctx.output_stream = module.stream(inputs, ctx.context)
             return StepResult(action="skip_to", skip_to="return_result")
 

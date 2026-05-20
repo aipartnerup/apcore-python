@@ -14,6 +14,7 @@ from typing import Any
 
 __all__ = [
     "ModuleError",
+    "StreamingInterfaceError",
     "ConfigNotFoundError",
     "ConfigError",
     "ConfigNamespaceDuplicateError",
@@ -1268,6 +1269,7 @@ class ErrorCodes:
     ID_TOO_LONG = "ID_TOO_LONG"
     MODULE_RELOAD_CONFLICT = "MODULE_RELOAD_CONFLICT"
     SYS_MODULE_REGISTRATION_FAILED = "SYS_MODULE_REGISTRATION_FAILED"
+    STREAMING_INTERFACE_MISMATCH = "STREAMING_INTERFACE_MISMATCH"
 
     # Note: this class is intentionally NOT instantiated. All callers access the
     # constants as class attributes (`ErrorCodes.MODULE_NOT_FOUND`). A previous
@@ -1301,6 +1303,7 @@ FRAMEWORK_ERROR_CODE_PREFIXES: frozenset[str] = frozenset(
         "VERSION_",
         "ERROR_CODE_",
         "PIPELINE_",
+        "STREAMING_",
     }
 )
 
@@ -1393,6 +1396,33 @@ class ErrorCodeRegistry:
             if code in codes:
                 return mid
         return None
+
+
+class StreamingInterfaceError(ModuleError):
+    """Raised when a module declares streaming=True but its stream() signature is wrong."""
+
+    _default_retryable: bool | None = False
+
+    def __init__(
+        self,
+        module_id: str,
+        expected_signature: str,
+        actual_signature: str,
+        mismatch_reason: str,
+    ) -> None:
+        super().__init__(
+            code="STREAMING_INTERFACE_MISMATCH",
+            message=(
+                f"Module {module_id!r} declared streaming but stream() does not "
+                f"match the StreamingModule Protocol "
+                f"(reason={mismatch_reason}; expected {expected_signature}, "
+                f"got {actual_signature})"
+            ),
+        )
+        self.module_id = module_id
+        self.expected_signature = expected_signature
+        self.actual_signature = actual_signature
+        self.mismatch_reason = mismatch_reason
 
 
 class ErrorCodeCollisionError(ModuleError):
