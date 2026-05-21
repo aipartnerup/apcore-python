@@ -918,6 +918,15 @@ class Registry:
         to ``_modules``, leaving version-hint queries unable to see
         auto-discovered modules.
 
+        A-D-REG-003 / Issue #65 — discover paths now apply the same
+        deferred-publish protocol as the public ``register()`` API:
+        reserve an in-flight slot → run ``on_load()`` outside the lock →
+        atomically publish on success. The earlier implementation
+        published into ``_modules`` *before* invoking ``on_load`` and
+        relied on rollback, leaving a window in which ``registry.get()``
+        callers could observe a module whose ``on_load``-installed state
+        (warmed pools, primed caches) was incomplete.
+
         Returns the number of modules that successfully completed registration
         (including a successful ``on_load`` call when defined).
         """
@@ -938,16 +947,32 @@ class Registry:
             # are picked up; getattr falls through to class attrs anyway.
             # Aligned with manual register() / register_internal().
             merged_meta = merge_module_metadata(module, meta)
+
+            # Phase 1: reserve in-flight slot. Skip if already in-flight or
+            # visible — concurrent discover invocations must not double-load.
             with self._lock:
+                if mod_id in self._in_flight or mod_id in self._modules:
+                    logger.warning(
+                        "Discover skipping '%s' — already registered or in-flight", mod_id
+                    )
+                    continue
+                self._in_flight.add(mod_id)
+
+            # Phase 2: run on_load OUTSIDE the lock. Module is NOT visible.
+            if not self._invoke_on_load(mod_id, module, effective_version):
+                # _invoke_on_load already discarded the in-flight slot and
+                # emitted apcore.registry.module_load_failed. Move on.
+                continue
+
+            # Phase 3: atomic publish.
+            with self._lock:
+                self._in_flight.discard(mod_id)
                 self._versioned_modules.add(mod_id, effective_version, module)
                 if meta:
                     self._versioned_meta.add(mod_id, effective_version, meta)
                 self._modules[mod_id] = module
                 self._module_meta[mod_id] = merged_meta
                 self._lowercase_map[mod_id.lower()] = mod_id
-
-            if not self._invoke_on_load(mod_id, module, effective_version):
-                continue
 
             self._trigger_event("register", mod_id, module)
             registered_count += 1
@@ -964,12 +989,24 @@ class Registry:
         return resolved
 
     def _invoke_on_load(self, mod_id: str, module: Any, effective_version: str) -> bool:
-        """Call ``module.on_load()`` if defined; roll back registration on failure.
+        """Call ``module.on_load()`` if defined; clean up in-flight slot on failure.
 
-        Returns True if the module is still registered, False if it was removed.
-        Rollback symmetrically clears both the latest-only ``_modules`` view
-        and the multi-version ``_versioned_modules`` / ``_versioned_meta``
-        stores populated by ``_register_in_order``.
+        Returns True when ``on_load`` succeeded (or no callback was defined)
+        and the caller may proceed to publish. Returns False when the
+        callback raised, in which case this helper has already:
+
+          * removed ``mod_id`` from the in-flight set,
+          * emitted ``apcore.registry.module_load_failed`` (A-D-REG-005),
+            mirroring the public ``register()`` path so observers see a
+            uniform DLQ-style signal regardless of which registration
+            path failed,
+          * logged the failure at ERROR.
+
+        Because the deferred-publish refactor (A-D-REG-003) calls this
+        BEFORE the module is inserted into the visible store, there is no
+        rollback of ``_modules`` / ``_versioned_modules`` to do — the
+        invariant is that an on_load failure leaves the registry exactly
+        as it was before the registration attempt began.
         """
         if not (hasattr(module, "on_load") and callable(module.on_load)):
             return True
@@ -978,12 +1015,12 @@ class Registry:
         except Exception as e:
             logger.error("on_load() failed for module '%s': %s", mod_id, e)
             with self._lock:
-                self._versioned_modules.remove(mod_id, effective_version)
-                self._versioned_meta.remove(mod_id, effective_version)
-                if not self._versioned_modules.has(mod_id):
-                    self._modules.pop(mod_id, None)
-                    self._module_meta.pop(mod_id, None)
-                    self._lowercase_map.pop(mod_id.lower(), None)
+                self._in_flight.discard(mod_id)
+            # A-D-REG-005: align with the public register() path — every
+            # registration site that observes an on_load failure must
+            # emit the canonical module_load_failed event so subscribers
+            # have a single hook for partial-init detection.
+            self._emit_module_load_failed(mod_id, e)
             return False
         return True
 
@@ -2097,7 +2134,11 @@ class Registry:
         # here. Namespace → registration-mechanism is a 1:1 mapping; mixing
         # blurs the audit-trail distinction between framework-emitted
         # (system.*) and caller-emitted (ephemeral.*) modules.
-        if module_id.startswith(EPHEMERAL_NAMESPACE_PREFIX):
+        # A-D-REG-002: use the shared _is_ephemeral helper so the bare
+        # ``ephemeral`` ID (no dot) is rejected here too — ``startswith``
+        # missed it, leaving a one-character carveout that contradicted
+        # the canonical _is_ephemeral classifier used everywhere else.
+        if _is_ephemeral(module_id):
             raise ValueError(
                 f"ephemeral.* module IDs must be registered via Registry.register(), "
                 f"not register_internal() (got: {module_id!r}). See apcore "
@@ -2114,7 +2155,17 @@ class Registry:
         # __init__-set attributes are picked up.
         merged_meta = merge_module_metadata(module, {})
 
+        # A-D-REG-004: register_internal now routes through the SAME
+        # deferred-publish + module_load_failed-emit helper that
+        # register() uses, so the Issue #65 invariant ("modules are
+        # invisible until on_load completes") holds uniformly across
+        # every registration path, not just the public API.
         with self._lock:
+            if module_id in self._in_flight:
+                raise InvalidInputError(
+                    message=f"Module '{module_id}' is already being registered (in-flight)",
+                    code=ErrorCodes.DUPLICATE_MODULE_ID,
+                )
             # Sync finding A-D-002: use detect_id_conflicts with an empty
             # reserved-words set so case-collision detection still runs on
             # the sys/internal path. Apcore-rust's register_core (called by
@@ -2135,20 +2186,26 @@ class Registry:
                     message=conflict.message,
                     code=ErrorCodes.DUPLICATE_MODULE_ID,
                 )
-            self._modules[module_id] = module
-            self._module_meta[module_id] = merged_meta
-            self._lowercase_map[module_id.lower()] = module_id
+            self._in_flight.add(module_id)
 
-        # Call on_load if defined — mirrors the register() path. Roll back if it fails.
+        # Phase 2: call on_load() OUTSIDE the lock. Module is not visible
+        # yet. On failure: remove from in-flight, emit module_load_failed,
+        # re-raise the original exception unchanged (no wrapping).
         if hasattr(module, "on_load") and callable(module.on_load):
             try:
                 module.on_load()
-            except Exception:
+            except Exception as exc:
                 with self._lock:
-                    self._modules.pop(module_id, None)
-                    self._module_meta.pop(module_id, None)
-                    self._lowercase_map.pop(module_id.lower(), None)
+                    self._in_flight.discard(module_id)
+                self._emit_module_load_failed(module_id, exc)
                 raise
+
+        # Phase 3: atomically publish into the visible store.
+        with self._lock:
+            self._in_flight.discard(module_id)
+            self._modules[module_id] = module
+            self._module_meta[module_id] = merged_meta
+            self._lowercase_map[module_id.lower()] = module_id
 
         self._trigger_event("register", module_id, module)
 
