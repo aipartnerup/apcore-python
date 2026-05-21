@@ -168,6 +168,16 @@ class BuiltinCallChainGuard(BaseStep):
             self._max_module_repeat = Config.get_default("executor.max_module_repeat")
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
+        # D-21 / A-D-EXEC-002: short-circuit before any expensive validation
+        # or middleware work if the caller already cancelled. The pipeline
+        # also re-checks at the Execute step (defensive backstop for tokens
+        # cancelled while later steps run), but observing the token here is
+        # what makes the two-point invariant hold — single-check
+        # implementations leak compute through ACL/middleware/validation.
+        cancel_token = getattr(ctx.context, "cancel_token", None)
+        if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+            raise ExecutionCancelledError()
+
         call_chain = getattr(ctx.context, "call_chain", [])
         guard_call_chain(
             ctx.module_id,

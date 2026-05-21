@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Legacy `RetryPolicy` defaults `max_retries` to `0` and emits `DeprecationWarning` on instantiation (D-14 / A-D-AT-09).** Earlier builds silently enabled three retries when callers used `RetryPolicy()` without arguments, contradicting the opt-in retry contract. The class is retained for one release; new code should use `RetryConfig` (canonical, ms-based, no deprecation noise).
 
+### Fixed
+
+- **Cancel token observed at Step 2 of the execution pipeline (D-21 / A-D-EXEC-002).** `BuiltinCallChainGuard` now checks `context.cancel_token.is_cancelled` before running any guard work; a cancelled token short-circuits with `ExecutionCancelledError` before ACL, middleware, validation, or module execution. Combined with the existing Step 8 check, the pipeline now satisfies the two-point cancel-token invariant — single-check implementations were leaking compute through ACL/middleware/validation even when the caller had already cancelled.
+
+- **`MiddlewareChainError` unwrap rule (D-22 / A-D-EXEC-005).** `Executor._recover_from_call_error` now unwraps `MiddlewareChainError` and propagates the original typed cause (e.g. `ApprovalDeniedError`, `ACLDeniedError`) unchanged. Previously the wrapper was collapsed to a generic `ModuleExecuteError`, breaking callers that dispatch on the typed error (notably MCP/A2A bridges keying on `APPROVAL_DENIED` vs `MODULE_EXECUTE_ERROR`). Mirrors the TypeScript and Rust SDK semantics.
+
 ### Removed
 
 - **Misplaced spec-style docs (B-005).** Deleted `docs/features/async-task-evolution.md`, `docs/features/middleware-architecture-hardening.md`, and `docs/async-task-evolution/test-cases.md`. Per the apcore protocol-spec repo policy (`apcore/CLAUDE.md`), implementation repos contain only code and a README — feature specs, test-case matrices, and design notes live in the apcore spec repo. The deleted files were also stale (referenced the obsolete `TaskStore.put` method and the removed `TaskStatus.RETRYING` enum value); the canonical authority is the implementation plus the upstream `apcore/docs/features/async-tasks.md` spec.
