@@ -35,5 +35,4 @@ async def test_start_reaper_default_sweep_interval_is_300000_ms() -> None:
         # Default sweep_interval_ms = 300_000 → 300 s internally.
         assert mgr._reaper_interval == pytest.approx(300.0)
     finally:
-        handle.stop()
-        await asyncio.sleep(0)
+        await handle.stop()

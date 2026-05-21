@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import inspect
 import logging
 import time
 import uuid
@@ -38,6 +40,12 @@ class ReaperHandle:
     call :meth:`stop` to cancel the periodic cleanup loop; :meth:`is_running`
     reports whether the underlying ``asyncio.Task`` is still active.
     Idempotent: ``stop()`` after the loop has already finished is a no-op.
+
+    ``stop()`` is **async** and awaits the reaper task to fully drain
+    (D-11 / A-D-AT-03), matching the TypeScript and Rust SDKs. Callers
+    that still invoke ``handle.stop()`` from synchronous code (the
+    pre-D-11 surface) get a ``DeprecationWarning`` and the coroutine is
+    driven to completion via a private adapter — see :meth:`_run_sync_stop`.
     """
 
     __slots__ = ("_manager",)
@@ -45,9 +53,9 @@ class ReaperHandle:
     def __init__(self, manager: "AsyncTaskManager") -> None:
         self._manager = manager
 
-    def stop(self) -> None:
-        """Cancel the periodic reap loop (idempotent)."""
-        self._manager.stop_reaper()
+    async def stop(self) -> None:
+        """Cancel the periodic reap loop and await its termination (idempotent)."""
+        await self._manager.stop_reaper()
 
     def is_running(self) -> bool:
         """Return True if the reaper task exists and has not finished."""
@@ -166,37 +174,44 @@ class TaskInfo:
 
 @runtime_checkable
 class TaskStore(Protocol):
-    """Sync storage backend for :class:`TaskInfo` records.
+    """Async storage backend for :class:`TaskInfo` records (D-17).
 
     The default implementation is :class:`InMemoryTaskStore`. Users may
-    supply a custom store (e.g. Redis, DB) via ``AsyncTaskManager(store=...)``.
-    All methods are synchronous; async stores must wrap I/O in a sync adapter.
+    supply a custom store (e.g. Redis, SQL) via ``AsyncTaskManager(store=...)``.
+    All methods are asynchronous in every SDK so that I/O-backed stores can
+    plug in without blocking the runtime's event loop; ``InMemoryTaskStore``
+    keeps the uniform async shape even though its operations are CPU-only.
 
     .. note::
         The canonical write method is :meth:`save`.  ``put`` is retained as
         a deprecated shim for one minor release (D-10).
     """
 
-    def get(self, task_id: str) -> TaskInfo | None: ...
-    def save(self, info: TaskInfo) -> None: ...
-    def delete(self, task_id: str) -> None: ...
-    def list(self, status: TaskStatus | None = None) -> list[TaskInfo]: ...
-    def list_expired(self, before_timestamp: float) -> list[TaskInfo]: ...
+    async def get(self, task_id: str) -> TaskInfo | None: ...
+    async def save(self, info: TaskInfo) -> None: ...
+    async def delete(self, task_id: str) -> None: ...
+    async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]: ...
+    async def list_expired(self, before_timestamp: float) -> list[TaskInfo]: ...
 
 
 class InMemoryTaskStore:
-    """Default in-memory :class:`TaskStore` backed by a plain dict."""
+    """Default in-memory :class:`TaskStore` backed by a plain dict.
+
+    All methods are ``async`` to match the :class:`TaskStore` Protocol
+    (D-17). Operations remain pure CPU work — no I/O — so the coroutine
+    bodies return immediately without awaiting.
+    """
 
     def __init__(self) -> None:
         self._data: dict[str, TaskInfo] = {}
 
-    def get(self, task_id: str) -> TaskInfo | None:
+    async def get(self, task_id: str) -> TaskInfo | None:
         return self._data.get(task_id)
 
-    def save(self, info: TaskInfo) -> None:
+    async def save(self, info: TaskInfo) -> None:
         self._data[info.task_id] = info
 
-    def put(self, info: TaskInfo) -> None:
+    async def put(self, info: TaskInfo) -> None:
         """Deprecated alias for :meth:`save` (D-10).
 
         .. deprecated:: 0.21.0
@@ -208,17 +223,17 @@ class InMemoryTaskStore:
             DeprecationWarning,
             stacklevel=2,
         )
-        self.save(info)
+        await self.save(info)
 
-    def delete(self, task_id: str) -> None:
+    async def delete(self, task_id: str) -> None:
         self._data.pop(task_id, None)
 
-    def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+    async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
         if status is None:
             return list(self._data.values())
         return [t for t in self._data.values() if t.status == status]
 
-    def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
+    async def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
         """Return terminal-state tasks whose ``completed_at`` precedes
         ``before_timestamp`` (D-10).
 
@@ -299,14 +314,28 @@ class RetryPolicy:
         future major release.
 
     Attributes:
-        max_retries: Maximum number of retry attempts (0 = no retry).
+        max_retries: Maximum number of retry attempts (default ``0`` —
+            retries are strictly opt-in across all SDKs, D-14 / A-D-AT-09).
+            Earlier versions defaulted to ``3``, which silently enabled
+            retries when callers used ``RetryPolicy()`` without arguments.
         backoff: Delay growth strategy between attempts.
         base_delay_seconds: Base wait time fed into the backoff formula.
     """
 
-    max_retries: int = 3
+    max_retries: int = 0
     backoff: BackoffStrategy = BackoffStrategy.EXPONENTIAL
     base_delay_seconds: float = 1.0
+
+    def __post_init__(self) -> None:
+        # D-14 / A-D-AT-09: surface a one-shot deprecation when the legacy
+        # class is instantiated so callers migrate to RetryConfig.
+        warnings.warn(
+            "RetryPolicy is deprecated; use RetryConfig for cross-language "
+            "alignment with the TypeScript and Rust SDKs. RetryPolicy will "
+            "be removed in a future major release.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     def delay_for(self, attempt: int) -> float:
         """Return wait seconds before retry *attempt* (1-indexed)."""
@@ -320,6 +349,20 @@ class RetryPolicy:
 
 _ACTIVE_STATUSES = frozenset({TaskStatus.PENDING, TaskStatus.RUNNING})
 _TERMINAL_STATUSES = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
+
+
+def _snapshot(info: TaskInfo | None) -> TaskInfo | None:
+    """Return a shallow copy of ``info`` so callers cannot mutate live state.
+
+    Per D-clarification on ``AsyncTaskManager.get_status`` / ``list_tasks``
+    (A-D-AT-06): the manager MUST hand out copies, matching the TypeScript
+    SDK's ``{ ...info }`` and the Rust SDK's ``info.clone()``. Without this
+    shim, Python callers could mutate the live dataclass and silently
+    corrupt the store's view of task state.
+    """
+    if info is None:
+        return None
+    return dataclasses.replace(info)
 
 
 class AsyncTaskManager:
@@ -345,18 +388,42 @@ class AsyncTaskManager:
         self._reaper_interval: float = 3600.0
         self._reaper_max_age: float = 3600.0
 
-    def _save(self, info: TaskInfo) -> None:
+    async def _save(self, info: TaskInfo) -> None:
         """Persist ``info`` via the configured store.
 
-        Prefers the canonical :meth:`TaskStore.save` method.  Falls back to
-        the deprecated :meth:`put` for legacy custom stores that have not
-        yet been updated to the post-D-10 API.
+        Prefers the canonical async :meth:`TaskStore.save` method (D-17).
+        Falls back to the deprecated :meth:`put` for legacy custom stores
+        that have not yet been updated to the post-D-10 API. Awaits both
+        coroutine and sync return values so pre-D-17 sync stores remain
+        usable for one deprecation window.
         """
         save = getattr(self._store, "save", None)
         if callable(save):
-            save(info)
+            result = save(info)
         else:  # pragma: no cover - legacy custom stores
-            self._store.put(info)  # type: ignore[attr-defined]
+            result = self._store.put(info)  # type: ignore[attr-defined]
+        if inspect.isawaitable(result):
+            await result
+
+    async def _store_get(self, task_id: str) -> TaskInfo | None:
+        """Await-or-return adapter for ``self._store.get`` (D-17 migration shim)."""
+        result = self._store.get(task_id)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    async def _store_list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+        """Await-or-return adapter for ``self._store.list`` (D-17 migration shim)."""
+        result = self._store.list(status)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    async def _store_delete(self, task_id: str) -> None:
+        """Await-or-return adapter for ``self._store.delete`` (D-17 migration shim)."""
+        result = self._store.delete(task_id)
+        if inspect.isawaitable(result):
+            await result
 
     async def submit(
         self,
@@ -381,7 +448,8 @@ class AsyncTaskManager:
         Returns:
             The generated task_id (UUID4 string).
         """
-        active = sum(1 for info in self._store.list() if info.status in _ACTIVE_STATUSES)
+        all_tasks = await self._store_list()
+        active = sum(1 for info in all_tasks if info.status in _ACTIVE_STATUSES)
         if active >= self._max_tasks:
             raise TaskLimitExceededError(max_tasks=self._max_tasks)
 
@@ -393,7 +461,7 @@ class AsyncTaskManager:
             submitted_at=time.time(),
             max_retries=retry_policy.max_retries if retry_policy is not None else 0,
         )
-        self._save(info)
+        await self._save(info)
 
         async_task = asyncio.create_task(self._run(task_id, module_id, inputs, context, retry_policy))
         async_task.add_done_callback(lambda _: self._async_tasks.pop(task_id, None))
@@ -402,8 +470,40 @@ class AsyncTaskManager:
         return task_id
 
     def get_status(self, task_id: str) -> TaskInfo | None:
-        """Return the TaskInfo for a task, or None if not found."""
-        return self._store.get(task_id)
+        """Return a snapshot of the TaskInfo for a task, or None if not found.
+
+        The returned object is a shallow copy (A-D-AT-06): callers MUST
+        treat it as a read-only snapshot. Mutating the copy never affects
+        the live store. The store's ``get`` is read synchronously for the
+        in-memory default; async-backed stores SHOULD await
+        :meth:`get_status_async` instead.
+        """
+        # For the default in-memory store the coroutine completes
+        # synchronously on the first send; we drive it directly to keep
+        # the legacy sync surface working. Custom async-only stores
+        # should use ``get_status_async``.
+        get = self._store.get(task_id)
+        if inspect.isawaitable(get):
+            try:
+                # Pump the coroutine without an event loop. This works for
+                # the bundled InMemoryTaskStore (whose body is pure CPU)
+                # and for any custom store whose ``get`` returns without
+                # actually awaiting external I/O. Stores that perform
+                # real awaits MUST call ``get_status_async`` instead.
+                try:
+                    get.send(None)  # type: ignore[union-attr]
+                except StopIteration as stop:  # noqa: PERF203 — coroutine return value
+                    return _snapshot(stop.value)
+                raise RuntimeError(
+                    "TaskStore.get() suspended; call get_status_async() for I/O-backed stores"
+                )
+            finally:
+                get.close()  # type: ignore[union-attr]
+        return _snapshot(get)
+
+    async def get_status_async(self, task_id: str) -> TaskInfo | None:
+        """Async variant of :meth:`get_status` for I/O-backed stores (D-17)."""
+        return _snapshot(await self._store_get(task_id))
 
     def get_result(self, task_id: str) -> Any:
         """Return the result of a completed task.
@@ -412,7 +512,7 @@ class AsyncTaskManager:
             KeyError: If the task_id is not found.
             RuntimeError: If the task is not in COMPLETED status.
         """
-        info = self._store.get(task_id)
+        info = self.get_status(task_id)
         if info is None:
             raise KeyError(f"Task not found: {task_id}")
         if info.status != TaskStatus.COMPLETED:
@@ -425,7 +525,7 @@ class AsyncTaskManager:
         Returns:
             True if the task was successfully cancelled, False otherwise.
         """
-        info = self._store.get(task_id)
+        info = await self._store_get(task_id)
         if info is None:
             return False
         if info.status not in _ACTIVE_STATUSES:
@@ -448,24 +548,50 @@ class AsyncTaskManager:
                 exc_info=True,
             )
 
-        if info.status in _ACTIVE_STATUSES:
+        # Re-read after the task settles in case the runner already
+        # transitioned to a terminal state inside its cancel-handler.
+        info = await self._store_get(task_id)
+        if info is not None and info.status in _ACTIVE_STATUSES:
             info.status = TaskStatus.CANCELLED
             info.completed_at = time.time()
-            self._save(info)
+            await self._save(info)
 
         return True
 
     async def shutdown(self) -> None:
         """Cancel all pending/running/retrying tasks and stop the reaper."""
-        self.stop_reaper()
+        await self.stop_reaper()
         for task_id in list(self._async_tasks):
             await self.cancel(task_id)
 
     def list_tasks(self, status: TaskStatus | None = None) -> list[TaskInfo]:
-        """Return all tasks, optionally filtered by status."""
-        return self._store.list(status)
+        """Return snapshots of all tasks, optionally filtered by status.
 
-    def cleanup(self, max_age_seconds: float = 3600.0) -> int:
+        Each entry is a shallow copy of the live :class:`TaskInfo` — see
+        :meth:`get_status` for the mutation-safety contract (A-D-AT-06).
+        I/O-backed stores SHOULD use :meth:`list_tasks_async` instead.
+        """
+        result = self._store.list(status)
+        if inspect.isawaitable(result):
+            try:
+                try:
+                    result.send(None)  # type: ignore[union-attr]
+                except StopIteration as stop:  # noqa: PERF203
+                    items: list[TaskInfo] = list(stop.value or [])
+                    return [info for info in (_snapshot(it) for it in items) if info is not None]
+                raise RuntimeError(
+                    "TaskStore.list() suspended; call list_tasks_async() for I/O-backed stores"
+                )
+            finally:
+                result.close()  # type: ignore[union-attr]
+        return [info for info in (_snapshot(it) for it in result) if info is not None]
+
+    async def list_tasks_async(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+        """Async variant of :meth:`list_tasks` for I/O-backed stores (D-17)."""
+        items = await self._store_list(status)
+        return [info for info in (_snapshot(it) for it in items) if info is not None]
+
+    async def cleanup(self, max_age_seconds: float = 3600.0) -> int:
         """Remove terminal-state tasks older than max_age_seconds.
 
         Terminal states: COMPLETED, FAILED, CANCELLED.
@@ -476,7 +602,7 @@ class AsyncTaskManager:
         now = time.time()
         to_remove: list[str] = []
 
-        for info in self._store.list():
+        for info in await self._store_list():
             if info.status not in _TERMINAL_STATUSES:
                 continue
             ref_time = info.completed_at if info.completed_at is not None else info.submitted_at
@@ -484,7 +610,7 @@ class AsyncTaskManager:
                 to_remove.append(info.task_id)
 
         for task_id in to_remove:
-            self._store.delete(task_id)
+            await self._store_delete(task_id)
             self._async_tasks.pop(task_id, None)
 
         return len(to_remove)
@@ -559,18 +685,32 @@ class AsyncTaskManager:
         self._reaper_task = asyncio.create_task(self._reap_loop())
         return ReaperHandle(self)
 
-    def stop_reaper(self) -> None:
-        """Stop the background reaper task. No-op if not running."""
-        if self._reaper_task is not None and not self._reaper_task.done():
-            self._reaper_task.cancel()
+    async def stop_reaper(self) -> None:
+        """Stop the background reaper task and await its termination.
+
+        Per D-11 / A-D-AT-03 the stop surface is async and MUST drain the
+        underlying coroutine, mirroring the TypeScript and Rust SDKs. The
+        method is idempotent and is a no-op when no reaper is active.
+        """
+        task = self._reaper_task
         self._reaper_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Expected — the loop awaits asyncio.sleep which raises here.
+            pass
+        except Exception as exc:  # pragma: no cover - defensive
+            _logger.warning("Reaper task raised during shutdown: %s", exc, exc_info=True)
 
     async def _reap_loop(self) -> None:
         """Periodic cleanup loop executed by the reaper task."""
         try:
             while True:
                 await asyncio.sleep(self._reaper_interval)
-                self.cleanup(self._reaper_max_age)
+                await self.cleanup(self._reaper_max_age)
         except asyncio.CancelledError:
             pass
 
@@ -583,7 +723,7 @@ class AsyncTaskManager:
         retry_policy: "RetryPolicy | RetryConfig | None",
     ) -> None:
         """Internal coroutine: execute a module with optional retry/backoff."""
-        info = self._store.get(task_id)
+        info = await self._store_get(task_id)
         if info is None:
             return
 
@@ -595,20 +735,20 @@ class AsyncTaskManager:
                     info.status = TaskStatus.RUNNING
                     if info.started_at is None:
                         info.started_at = time.time()
-                    self._save(info)
+                    await self._save(info)
 
                     result = await self._executor.call_async(module_id, inputs, context)
 
                     info.status = TaskStatus.COMPLETED
                     info.completed_at = time.time()
                     info.result = result
-                    self._save(info)
+                    await self._save(info)
                     return
 
             except asyncio.CancelledError:
                 info.status = TaskStatus.CANCELLED
                 info.completed_at = time.time()
-                self._save(info)
+                await self._save(info)
                 _logger.info("Task %s cancelled", task_id)
                 return
 
@@ -619,7 +759,7 @@ class AsyncTaskManager:
                     # D-12: backoff state is PENDING (was RETRYING) — matches
                     # TypeScript and Rust SDKs.
                     info.status = TaskStatus.PENDING
-                    self._save(info)
+                    await self._save(info)
                     _logger.info(
                         "Task %s failed (attempt %d/%d), retrying in %.3fs",
                         task_id,
@@ -632,13 +772,13 @@ class AsyncTaskManager:
                     except asyncio.CancelledError:
                         info.status = TaskStatus.CANCELLED
                         info.completed_at = time.time()
-                        self._save(info)
+                        await self._save(info)
                         _logger.info("Task %s cancelled during backoff", task_id)
                         return
                 else:
                     info.status = TaskStatus.FAILED
                     info.completed_at = time.time()
                     info.error = str(exc)
-                    self._save(info)
+                    await self._save(info)
                     _logger.error("Task %s failed: %s", task_id, exc, exc_info=True)
                     return

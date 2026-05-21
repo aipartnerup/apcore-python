@@ -276,7 +276,7 @@ class TestCleanup:
         assert info.status == TaskStatus.COMPLETED
 
         # With max_age=0, everything completed should be cleaned
-        removed = manager.cleanup(max_age_seconds=0.0)
+        removed = await manager.cleanup(max_age_seconds=0.0)
         assert removed == 1
         assert manager.get_status(task_id) is None
 
@@ -286,7 +286,7 @@ class TestCleanup:
         await asyncio.sleep(0.1)
 
         # With a large max_age, nothing should be removed
-        removed = manager.cleanup(max_age_seconds=3600.0)
+        removed = await manager.cleanup(max_age_seconds=3600.0)
         assert removed == 0
         assert len(manager.list_tasks()) == 1
 
@@ -296,7 +296,7 @@ class TestCleanup:
         await asyncio.sleep(0.1)
 
         # Running tasks should not be cleaned up even with max_age=0
-        removed = manager.cleanup(max_age_seconds=0.0)
+        removed = await manager.cleanup(max_age_seconds=0.0)
         assert removed == 0
 
         await manager.cancel(task_id)
@@ -370,7 +370,7 @@ class TestMaxTasksLimit:
         await asyncio.sleep(0.1)
 
         # Clean up completed tasks to free slots
-        mgr.cleanup(max_age_seconds=0.0)
+        await mgr.cleanup(max_age_seconds=0.0)
 
         # Now we should be able to submit again
         task_id = await mgr.submit("test.simple", {"x": 3})
@@ -450,35 +450,35 @@ class TestAsyncTaskAutoCleanup:
 
 
 class _SpyStore:
-    """TaskStore spy that records status at the time of each save() call.
+    """Async TaskStore spy that records status at the time of each save() call.
 
-    Implements the post-D-10 surface (``save``, ``list_expired``) and keeps
-    ``put`` as a back-compat shim for tests that still call it.
+    Implements the post-D-17 async surface (``save``, ``list_expired``)
+    and keeps ``put`` as a back-compat shim for tests that still call it.
     """
 
     def __init__(self) -> None:
         self._data: dict[str, TaskInfo] = {}
         self.put_statuses: list[TaskStatus] = []
 
-    def get(self, task_id: str) -> TaskInfo | None:
+    async def get(self, task_id: str) -> TaskInfo | None:
         return self._data.get(task_id)
 
-    def save(self, info: TaskInfo) -> None:
+    async def save(self, info: TaskInfo) -> None:
         self._data[info.task_id] = info
         self.put_statuses.append(info.status)
 
-    def put(self, info: TaskInfo) -> None:
-        self.save(info)
+    async def put(self, info: TaskInfo) -> None:
+        await self.save(info)
 
-    def delete(self, task_id: str) -> None:
+    async def delete(self, task_id: str) -> None:
         self._data.pop(task_id, None)
 
-    def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+    async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
         if status is None:
             return list(self._data.values())
         return [t for t in self._data.values() if t.status == status]
 
-    def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
+    async def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
         terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
         return [
             t
@@ -516,7 +516,7 @@ class TestTaskStoreProtocol:
 
 
 class TestInMemoryTaskStore:
-    """TC-003..006: InMemoryTaskStore CRUD and list filtering."""
+    """TC-003..006: InMemoryTaskStore CRUD and list filtering (async, post-D-17)."""
 
     def _make_info(self, status: TaskStatus = TaskStatus.COMPLETED) -> TaskInfo:
         import uuid
@@ -528,29 +528,33 @@ class TestInMemoryTaskStore:
             submitted_at=time.time(),
         )
 
-    def test_put_then_get_returns_same_object(self) -> None:
+    @pytest.mark.asyncio
+    async def test_put_then_get_returns_same_object(self) -> None:
         store = InMemoryTaskStore()
         info = self._make_info()
-        store.put(info)
-        assert store.get(info.task_id) is info
+        await store.put(info)
+        assert await store.get(info.task_id) is info
 
-    def test_get_unknown_returns_none(self) -> None:
-        assert InMemoryTaskStore().get("nonexistent") is None
+    @pytest.mark.asyncio
+    async def test_get_unknown_returns_none(self) -> None:
+        assert await InMemoryTaskStore().get("nonexistent") is None
 
-    def test_delete_removes_entry(self) -> None:
+    @pytest.mark.asyncio
+    async def test_delete_removes_entry(self) -> None:
         store = InMemoryTaskStore()
         info = self._make_info()
-        store.put(info)
-        store.delete(info.task_id)
-        assert store.get(info.task_id) is None
+        await store.put(info)
+        await store.delete(info.task_id)
+        assert await store.get(info.task_id) is None
 
-    def test_list_status_filter(self) -> None:
+    @pytest.mark.asyncio
+    async def test_list_status_filter(self) -> None:
         store = InMemoryTaskStore()
         completed = self._make_info(TaskStatus.COMPLETED)
         failed = self._make_info(TaskStatus.FAILED)
-        store.put(completed)
-        store.put(failed)
-        result = store.list(status=TaskStatus.COMPLETED)
+        await store.put(completed)
+        await store.put(failed)
+        result = await store.list(status=TaskStatus.COMPLETED)
         assert len(result) == 1
         assert result[0] is completed
 
@@ -565,8 +569,9 @@ class TestCustomStore:
         task_id = await mgr.submit("test.simple", {"x": 1})
         await asyncio.sleep(0.1)
 
-        assert spy.get(task_id) is not None
-        assert spy.get(task_id).status == TaskStatus.COMPLETED  # type: ignore[union-attr]
+        stored = await spy.get(task_id)
+        assert stored is not None
+        assert stored.status == TaskStatus.COMPLETED
 
     @pytest.mark.asyncio
     async def test_put_called_for_each_state_transition(self, executor: Executor) -> None:
@@ -707,7 +712,7 @@ class TestReaper:
 
         mgr.start_reaper(interval_seconds=0.05, max_age_seconds=0.0)
         await asyncio.sleep(0.2)
-        mgr.stop_reaper()
+        await mgr.stop_reaper()
 
         assert mgr.get_status(task_id) is None
 
@@ -723,7 +728,7 @@ class TestReaper:
 
         mgr.start_reaper(interval_seconds=0.05, max_age_seconds=0.0)
         await asyncio.sleep(0.2)
-        mgr.stop_reaper()
+        await mgr.stop_reaper()
 
         info = mgr.get_status(task_id)
         assert info is not None
@@ -735,7 +740,7 @@ class TestReaper:
         """TC-020: stop_reaper() prevents further automatic cleanup."""
         mgr = AsyncTaskManager(executor)
         mgr.start_reaper(interval_seconds=0.05, max_age_seconds=0.0)
-        mgr.stop_reaper()
+        await mgr.stop_reaper()
 
         task_id = await mgr.submit("test.simple", {"x": 1})
         await asyncio.sleep(0.2)
@@ -751,10 +756,11 @@ class TestReaper:
         await mgr.shutdown()
         # No exception means reaper was stopped cleanly
 
-    def test_stop_reaper_noop_when_not_running(self, executor: Executor) -> None:
+    @pytest.mark.asyncio
+    async def test_stop_reaper_noop_when_not_running(self, executor: Executor) -> None:
         """TC-022: stop_reaper() is safe when no reaper is active."""
         mgr = AsyncTaskManager(executor)
-        mgr.stop_reaper()  # must not raise
+        await mgr.stop_reaper()  # must not raise
 
     @pytest.mark.asyncio
     async def test_double_start_reaper_raises(self, executor: Executor) -> None:
@@ -763,7 +769,7 @@ class TestReaper:
         mgr.start_reaper(interval_seconds=60.0)
         with pytest.raises(RuntimeError, match="already running"):
             mgr.start_reaper(interval_seconds=60.0)
-        mgr.stop_reaper()
+        await mgr.stop_reaper()
 
 
 class TestRegression:
@@ -795,7 +801,7 @@ class TestRegression:
         assert mgr.get_result(task_id) == {"value": 5}
         assert len(mgr.list_tasks()) == 1
 
-        removed = mgr.cleanup(max_age_seconds=0.0)
+        removed = await mgr.cleanup(max_age_seconds=0.0)
         assert removed == 1
 
         await mgr.shutdown()
