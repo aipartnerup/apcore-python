@@ -432,7 +432,6 @@ class TestFullLifecycle:
 
         # Call with matching identity type: should succeed
         service_ctx = Context.create(
-            executor=executor,
             identity=Identity(id="svc-1", type="service"),
         )
         result = executor.call("mod.cond", {"name": "Svc"}, context=service_ctx)
@@ -440,7 +439,6 @@ class TestFullLifecycle:
 
         # Call with non-matching identity type: should be denied
         user_ctx = Context.create(
-            executor=executor,
             identity=Identity(id="user-1", type="user"),
         )
         with pytest.raises(ACLDeniedError):

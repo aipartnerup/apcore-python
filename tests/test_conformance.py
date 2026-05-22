@@ -1616,3 +1616,232 @@ def test_contextual_audit(case: dict[str, Any]) -> None:
 
     for forbidden in expected.get("data_must_not_contain_keys", []):
         assert forbidden not in data, f"[{case['id']}] data must not contain key {forbidden!r}; got={data!r}"
+
+
+# ---------------------------------------------------------------------------
+# Context.create unified-signature contract (PROTOCOL_SPEC §"Contract: Context.create",
+# §"Contract: Executor binding to Context", §"Contract: Distributed cancellation",
+# §"Contract: global_deadline distributed semantics"; apcore Issue #66)
+# ---------------------------------------------------------------------------
+
+import inspect as _inspect  # noqa: E402
+
+from apcore.cancel import CancelToken as _CancelToken  # noqa: E402
+from apcore.errors import ContextBindingError as _ContextBindingError  # noqa: E402
+from apcore.executor import Executor as _CtxCreateExecutor  # noqa: E402
+from apcore.module import Module as _CtxCreateModule  # noqa: E402
+from apcore.registry import Registry as _CtxCreateRegistry  # noqa: E402
+
+_context_create_data = _load("context_create")
+
+
+class _EchoModule(_CtxCreateModule):
+    """Minimal module used by Context.create conformance scenarios."""
+
+    description = "Echo module for Context.create conformance tests."
+    input_schema = None
+    output_schema = None
+
+    def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+        return dict(inputs)
+
+
+def _build_executor_with_echo(module_id: str = "test.echo") -> _CtxCreateExecutor:
+    reg = _CtxCreateRegistry()
+    reg.register(module_id, _EchoModule())
+    return _CtxCreateExecutor(registry=reg)
+
+
+def _assert_trace_id(trace_id: str) -> None:
+    assert len(trace_id) == 32, f"trace_id length expected 32, got {len(trace_id)}"
+    assert all(c in "0123456789abcdef" for c in trace_id), f"trace_id not lowercase hex: {trace_id!r}"
+
+
+@pytest.mark.parametrize(
+    "case",
+    _context_create_data["test_cases"],
+    ids=[c["id"] for c in _context_create_data["test_cases"]],
+)
+def test_context_create_unified_signature(case: dict[str, Any]) -> None:
+    """Conformance harness for context_create.json — exercises every scenario
+    defined in the cross-language fixture (Issue #66)."""
+    case_id = case["id"]
+
+    if case_id == "create_minimal_all_defaults":
+        ctx = Context.create()
+        _assert_trace_id(ctx.trace_id)
+        assert ctx.identity is None
+        assert ctx.executor is None
+        assert ctx.cancel_token is None
+        assert ctx.services is None
+        assert ctx.global_deadline is None
+        assert ctx.caller_id is None
+        assert ctx.call_chain == []
+        assert ctx.data == {}
+
+    elif case_id == "create_with_identity_only":
+        ident = Identity(
+            id=case["input"]["identity"]["id"],
+            type=case["input"]["identity"]["type"],
+            roles=tuple(case["input"]["identity"]["roles"]),
+        )
+        ctx = Context.create(identity=ident)
+        _assert_trace_id(ctx.trace_id)
+        assert ctx.identity is not None and ctx.identity.id == case["expected"]["identity_id"]
+        assert ctx.executor is None
+        assert ctx.cancel_token is None
+
+    elif case_id == "create_with_cancel_token":
+        token = _CancelToken()
+        ctx = Context.create(cancel_token=token)
+        assert ctx.cancel_token is token, "cancel_token must be the same instance passed in"
+        assert ctx.executor is None, "executor MUST NOT be bound at create() time"
+
+    elif case_id == "create_with_global_deadline":
+        deadline = case["input"]["global_deadline"]
+        ctx = Context.create(global_deadline=deadline)
+        assert ctx.global_deadline == deadline
+        assert ctx.executor is None
+
+    elif case_id == "create_rejects_executor_input":
+        # Conforming SDK: executor is not a parameter of Context.create.
+        params = _inspect.signature(Context.create).parameters
+        assert "executor" not in params, (
+            "Context.create MUST NOT accept an 'executor' parameter per PROTOCOL_SPEC "
+            "§Contract: Context.create (Issue #66)."
+        )
+
+    elif case_id == "create_rejects_caller_id_input":
+        params = _inspect.signature(Context.create).parameters
+        assert "caller_id" not in params, (
+            "Context.create MUST NOT accept a 'caller_id' parameter per PROTOCOL_SPEC "
+            "§Contract: Context.create (Issue #66)."
+        )
+        # And the field stays null on freshly created top-level contexts.
+        ctx = Context.create()
+        assert ctx.caller_id is None
+
+    elif case_id == "executor_binds_on_first_call_local":
+        executor = _build_executor_with_echo("test.echo")
+        ctx = Context.create()
+        assert ctx.executor is None, "executor must be null immediately after create()"
+        executor.call("test.echo", {"hello": "world"}, context=ctx)
+        assert ctx.executor is executor, "Executor MUST bind itself to ctx.executor before step 1"
+
+    elif case_id == "executor_binds_idempotent_same_instance":
+        executor = _build_executor_with_echo("test.echo")
+        ctx = Context.create()
+        for _ in range(3):
+            executor.call("test.echo", {}, context=ctx)
+        assert ctx.executor is executor, "Rebinding the same Executor MUST be a noop"
+
+    elif case_id == "executor_rejects_cross_executor_rebind":
+        executor_a = _build_executor_with_echo("test.echo")
+        executor_b = _build_executor_with_echo("test.echo")
+        ctx = Context.create()
+        executor_a.call("test.echo", {}, context=ctx)
+        assert ctx.executor is executor_a
+        # Python SDK chooses the "raise" branch of expected_one_of.
+        with pytest.raises(_ContextBindingError):
+            executor_b.call("test.echo", {}, context=ctx)
+
+    elif case_id == "child_propagates_executor":
+        executor = _build_executor_with_echo("test.echo")
+        ctx = Context.create()
+        ctx._bind_executor(executor)
+        child = ctx.child("test.target")
+        assert child.executor is executor
+        assert child.caller_id == (ctx.call_chain[-1] if ctx.call_chain else None)
+        assert child.call_chain[-1] == "test.target"
+
+    elif case_id == "child_propagates_cancel_token":
+        token = _CancelToken()
+        ctx = Context.create(cancel_token=token)
+        child = ctx.child(case["input"]["create_child_module_id"])
+        assert child.cancel_token is ctx.cancel_token
+        assert child.cancel_token is token
+
+    elif case_id == "deserialize_then_call_binds_local_executor":
+        serialized = case["input"]["serialized_context"]
+        restored = Context.deserialize(serialized)
+        assert restored.executor is None
+        assert restored.cancel_token is None
+        assert restored.services is None
+        assert restored.global_deadline is None
+        assert restored.caller_id == case["expected"]["caller_id_preserved"]
+        # Now a local Executor receives the deserialized Context and binds itself.
+        executor = _build_executor_with_echo("local.target")
+        executor.call("local.target", {}, context=restored)
+        assert restored.executor is executor
+
+    elif case_id == "distributed_cancel_token_synthesized_locally":
+        # Deserialized contexts arrive with cancel_token == None. The Python
+        # Executor synthesizes a per-call CancelToken inside the pipeline
+        # (Step 2 / BuiltinCallChainGuard). We exercise the end-to-end path
+        # by deserializing a Context and verifying no in-context token rode
+        # across the boundary.
+        serialized = {
+            "_context_version": 1,
+            "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+            "caller_id": "remote.caller",
+            "call_chain": ["remote.caller"],
+            "identity": None,
+            "data": {},
+        }
+        restored = Context.deserialize(serialized)
+        assert restored.cancel_token is None
+        executor = _build_executor_with_echo("local.slow")
+        executor.call("local.slow", {}, context=restored)
+        # After the call, ctx.cancel_token MAY still be None (synthesis is
+        # an Executor-internal concern, not necessarily surfaced on the
+        # outer Context). The normative requirement here is "no in-context
+        # token rode across deserialization" — re-asserted above.
+
+    elif case_id == "distributed_global_deadline_recomputed_locally":
+        # Deserialized contexts have global_deadline == None. The local
+        # Executor MUST recompute from local config.
+        serialized = {
+            "_context_version": 1,
+            "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+            "caller_id": "remote.caller",
+            "call_chain": [],
+            "identity": None,
+            "data": {},
+        }
+        restored = Context.deserialize(serialized)
+        assert restored.global_deadline is None
+        global_timeout_ms = case["input"]["local_executor_global_timeout_ms"]
+        reg = _CtxCreateRegistry()
+        reg.register("local.echo", _EchoModule())
+        executor = _CtxCreateExecutor(
+            registry=reg,
+            config=Config(data={"executor": {"global_timeout": global_timeout_ms}}),
+        )
+        executor.call("local.echo", {}, context=restored)
+        assert restored.global_deadline is not None, "Executor MUST recompute global_deadline from local config"
+
+    elif case_id == "tracestate_carried_inside_traceparent":
+        from apcore.trace_context import TraceParent as _TP
+
+        tp_in = case["input"]["trace_parent"]
+        tp = _TP(
+            version="00",
+            trace_id=tp_in["trace_id"],
+            parent_id=tp_in["parent_id"],
+            trace_flags=tp_in["trace_flags"],
+            tracestate=tuple((v[0], v[1]) for v in tp_in["tracestate"]),
+        )
+        ctx = Context.create(trace_parent=tp)
+        assert ctx.trace_id == case["expected"]["trace_id"]
+        # tracestate is carried via context.data per the SDK's TraceParent
+        # plumbing — verify it round-tripped.
+        carried = ctx.data.get("_apcore.trace.state")
+        assert carried is not None and len(carried) == len(tp_in["tracestate"])
+        # And the signature does NOT expose a separate tracestate parameter.
+        params = _inspect.signature(Context.create).parameters
+        assert "tracestate" not in params, (
+            "tracestate MUST live inside TraceParent — no separate Context.create parameter"
+        )
+
+    else:
+        pytest.fail(f"Unknown context_create fixture case id: {case_id!r}")

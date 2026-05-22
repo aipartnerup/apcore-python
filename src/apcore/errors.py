@@ -40,6 +40,7 @@ __all__ = [
     "CircularCallError",
     "CallFrequencyExceededError",
     "InvalidInputError",
+    "ContextBindingError",
     "FuncMissingTypeHintError",
     "FuncMissingReturnTypeError",
     "BindingInvalidTargetError",
@@ -664,6 +665,28 @@ class InvalidInputError(ModuleError):
         super().__init__(code=code, message=message, **kwargs)
 
 
+class ContextBindingError(ModuleError):
+    """Raised when an Executor attempts to bind itself to a Context that is
+    already bound to a *different* Executor instance.
+
+    Per apcore PROTOCOL_SPEC §"Contract: Executor binding to Context", a
+    Context whose ``executor`` field is non-null and refers to a different
+    Executor instance is a cross-executor conflict; rebinding the same
+    instance is a noop. SDKs SHOULD raise this error; SDKs that choose to
+    accept silently MUST document the deviation prominently.
+    """
+
+    _default_retryable: bool | None = False
+
+    def __init__(
+        self,
+        message: str = "Context is already bound to a different Executor instance",
+        code: str = "CONTEXT_BINDING_ERROR",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(code=code, message=message, **kwargs)
+
+
 class FuncMissingTypeHintError(ModuleError):
     """Raised when a function parameter has no type annotation or a forward reference cannot be resolved."""
 
@@ -1270,6 +1293,7 @@ class ErrorCodes:
     MODULE_RELOAD_CONFLICT = "MODULE_RELOAD_CONFLICT"
     SYS_MODULE_REGISTRATION_FAILED = "SYS_MODULE_REGISTRATION_FAILED"
     STREAMING_INTERFACE_MISMATCH = "STREAMING_INTERFACE_MISMATCH"
+    CONTEXT_BINDING_ERROR = "CONTEXT_BINDING_ERROR"
 
     # Note: this class is intentionally NOT instantiated. All callers access the
     # constants as class attributes (`ErrorCodes.MODULE_NOT_FOUND`). A previous
@@ -1304,6 +1328,7 @@ FRAMEWORK_ERROR_CODE_PREFIXES: frozenset[str] = frozenset(
         "ERROR_CODE_",
         "PIPELINE_",
         "STREAMING_",
+        "CONTEXT_",
     }
 )
 

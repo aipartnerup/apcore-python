@@ -26,7 +26,7 @@ class TestAsyncFlows:
 
     @pytest.mark.asyncio
     async def test_context_propagation_in_async(self, int_executor):
-        ctx = Context.create(executor=int_executor)
+        ctx = Context.create()
         result = await int_executor.call_async("async_greet", {"name": "Delta"}, context=ctx)
         assert result == {"message": "Hello, Delta!"}
         assert ctx.trace_id is not None

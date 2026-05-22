@@ -37,26 +37,29 @@ from apcore.registry import Registry
 
 
 class TestSaveRename:
-    def test_save_stores_task(self) -> None:
+    @pytest.mark.asyncio
+    async def test_save_stores_task(self) -> None:
         store = InMemoryTaskStore()
         info = TaskInfo(task_id="t1", module_id="m", status=TaskStatus.PENDING, submitted_at=time.time())
-        store.save(info)
-        assert store.get("t1") is info
+        await store.save(info)
+        assert await store.get("t1") is info
 
-    def test_put_emits_deprecation_warning(self) -> None:
+    @pytest.mark.asyncio
+    async def test_put_emits_deprecation_warning(self) -> None:
         store = InMemoryTaskStore()
         info = TaskInfo(task_id="t2", module_id="m", status=TaskStatus.PENDING, submitted_at=time.time())
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            store.put(info)
+            await store.put(info)
         # At least one DeprecationWarning mentioning save should have fired.
         assert any(issubclass(w.category, DeprecationWarning) for w in caught)
         # Functional behaviour preserved.
-        assert store.get("t2") is info
+        assert await store.get("t2") is info
 
 
 class TestListExpired:
-    def test_list_expired_returns_terminal_tasks_older_than(self) -> None:
+    @pytest.mark.asyncio
+    async def test_list_expired_returns_terminal_tasks_older_than(self) -> None:
         store = InMemoryTaskStore()
         old_completed = TaskInfo(
             task_id="old",
@@ -78,11 +81,11 @@ class TestListExpired:
             status=TaskStatus.RUNNING,
             submitted_at=time.time(),
         )
-        store.save(old_completed)
-        store.save(recent)
-        store.save(active)
+        await store.save(old_completed)
+        await store.save(recent)
+        await store.save(active)
 
-        expired = store.list_expired(before_timestamp=200.0)
+        expired = await store.list_expired(before_timestamp=200.0)
         ids = {t.task_id for t in expired}
         # old_completed is older than 200 → expired.  recent is newer.
         # active is non-terminal → never expired.
@@ -109,25 +112,25 @@ class _SpyStore:
         self._data: dict[str, TaskInfo] = {}
         self.statuses: list[TaskStatus] = []
 
-    def get(self, task_id: str) -> TaskInfo | None:
+    async def get(self, task_id: str) -> TaskInfo | None:
         return self._data.get(task_id)
 
-    def save(self, info: TaskInfo) -> None:
+    async def save(self, info: TaskInfo) -> None:
         self._data[info.task_id] = info
         self.statuses.append(info.status)
 
-    def put(self, info: TaskInfo) -> None:  # back-compat shim
-        self.save(info)
+    async def put(self, info: TaskInfo) -> None:  # back-compat shim
+        await self.save(info)
 
-    def delete(self, task_id: str) -> None:
+    async def delete(self, task_id: str) -> None:
         self._data.pop(task_id, None)
 
-    def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+    async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
         if status is None:
             return list(self._data.values())
         return [t for t in self._data.values() if t.status == status]
 
-    def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
+    async def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
         return [t for t in self._data.values() if t.completed_at is not None and t.completed_at < before_timestamp]
 
 

@@ -451,7 +451,7 @@ class TestApprovalAuditEvents:
         executor = Executor(registry=registry, approval_handler=handler)
 
         # Simulate a parent call that already has tracing spans (nested call scenario)
-        ctx = Context.create(executor=executor)
+        ctx = Context.create()
         ctx.data["_apcore.mw.tracing.spans"] = [MockSpan()]
         executor.call("test.approval_required", {}, context=ctx)
 
@@ -471,7 +471,7 @@ class TestApprovalAuditEvents:
             events = mock_span_events
 
         executor = Executor(registry=registry, approval_handler=AlwaysDenyHandler())
-        ctx = Context.create(executor=executor)
+        ctx = Context.create()
         ctx.data["_apcore.mw.tracing.spans"] = [MockSpan()]
 
         with pytest.raises(ApprovalDeniedError):

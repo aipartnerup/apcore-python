@@ -30,7 +30,6 @@ from apcore.errors import (
     ErrorCodes,
     InvalidInputError,
     ModuleError,
-    ModuleExecuteError,
     ModuleNotFoundError,
     ModuleTimeoutError,
     SchemaValidationError,
@@ -487,6 +486,13 @@ class Executor:
             checks.append(PreflightCheckResult(check="module_id", passed=False, error=e.to_dict()))
             return PreflightResult(valid=False, checks=checks)
 
+        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
+        # to the Context before pipeline step 1 (also applies to dry-run
+        # validation, since the pipeline expects a bound Context).
+        if context is None:
+            context = Context.create()
+        context._bind_executor(self)
+
         # Run pipeline in dry_run mode — pure=False steps are skipped
         pipe_ctx = PipelineContext(
             module_id=module_id,
@@ -751,6 +757,13 @@ class Executor:
         """
         self._validate_module_id(module_id)
 
+        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
+        # to the Context before pipeline step 1. Auto-create the Context when
+        # the caller did not supply one.
+        if context is None:
+            context = Context.create()
+        context._bind_executor(self)
+
         pipe_ctx = PipelineContext(
             module_id=module_id,
             inputs=inputs or {},
@@ -811,12 +824,25 @@ class Executor:
             - ``dict`` — a recovery output from the first handler that provided one.
             - :class:`RetrySignal` — a handler asked for a retry; the caller
               must re-run the pipeline.
-            - Never returns ``None``: if no handler recovered, the wrapped
-              error is raised (or a ``MiddlewareChainError`` is converted to
-              ``ModuleExecuteError``).
+            - Never returns ``None``: if no handler recovered, the unwrapped
+              original error is raised (D-22 / A-D-EXEC-005).
+
+        D-22 — Error Unwrap Rule: when middleware machinery wraps a
+        domain-typed error (e.g. ``ApprovalDeniedError``) in a
+        ``MiddlewareChainError`` for diagnostics, the executor MUST unwrap
+        the wrapper and propagate ``MiddlewareChainError.original`` to
+        ``propagate_error`` and to the caller. Replacing the cause with a
+        generic ``ModuleExecuteError`` collapses callers' ability to
+        dispatch on the typed cause (e.g. MCP/A2A bridges keying on
+        ``APPROVAL_DENIED`` vs ``MODULE_EXECUTE_ERROR``). This mirrors the
+        TypeScript and Rust SDKs.
         """
         ctx_obj = pipe_ctx.context
-        wrapped = propagate_error(exc, module_id, ctx_obj) if ctx_obj else exc
+        # Unwrap MiddlewareChainError BEFORE propagation so the wrapped
+        # typed cause is what middleware on_error handlers and the final
+        # caller observe — not the chain-machinery wrapper.
+        original = exc.original if isinstance(exc, MiddlewareChainError) else exc
+        wrapped = propagate_error(original, module_id, ctx_obj) if ctx_obj else original
         executed_mw = pipe_ctx.executed_middlewares
         if executed_mw:
             recovery = await self._middleware_manager.execute_on_error_async(
@@ -824,9 +850,7 @@ class Executor:
             )
             if recovery is not None:
                 return recovery
-        if isinstance(exc, MiddlewareChainError):
-            raise ModuleExecuteError(module_id=module_id, message=str(exc)) from exc
-        raise wrapped from exc
+        raise wrapped from original
 
     async def stream(
         self,
@@ -853,6 +877,12 @@ class Executor:
             Dict chunks from the module's stream() or a single call_async() result.
         """
         self._validate_module_id(module_id)
+
+        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
+        # to the Context before pipeline step 1.
+        if context is None:
+            context = Context.create()
+        context._bind_executor(self)
 
         pipe_ctx = PipelineContext(
             module_id=module_id,
@@ -1107,6 +1137,13 @@ class Executor:
             A tuple of (result dict, PipelineTrace).
         """
         effective_strategy = self._effective_strategy(strategy)
+
+        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
+        # to the Context before pipeline step 1.
+        if context is None:
+            context = Context.create()
+        context._bind_executor(self)
+
         pipe_ctx = PipelineContext(
             module_id=module_id,
             inputs=inputs or {},

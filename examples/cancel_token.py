@@ -33,8 +33,10 @@ if __name__ == "__main__":
     print("\n--- Run 2: Cancel after 80ms ---")
     token = CancelToken()
 
-    ctx = Context.create()
-    ctx.cancel_token = token  # inject the token into the context
+    # cancel_token is a first-class Context.create() parameter (v0.22.0,
+    # Issue #66). Pass it at construction time — the post-hoc
+    # ctx.cancel_token = token anti-pattern is no longer required.
+    ctx = Context.create(cancel_token=token)
 
     # Fire cancellation from a background thread after 80 ms
     timer = threading.Timer(0.08, token.cancel)

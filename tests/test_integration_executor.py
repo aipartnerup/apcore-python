@@ -121,7 +121,7 @@ class TestACLIntegration:
             ex.call("test.sync_module", {"name": "test"})
 
         # Service identity -> allowed
-        ctx = Context.create(executor=ex)
+        ctx = Context.create()
         ctx.identity = Identity(id="svc-1", type="service")
         result = ex.call("test.sync_module", {"name": "test"}, context=ctx)
         assert result == {"greeting": "Hello, test!"}

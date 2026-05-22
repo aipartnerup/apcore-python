@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Changed
+
+- **`Context.create()` signature unified across all SDKs (apcore PROTOCOL_SPEC §"Contract: Context.create", [apcore#66](https://github.com/aiperceivable/apcore/issues/66)).** The factory now accepts **exactly** six caller-supplied fields in this order: `identity`, `trace_parent`, `cancel_token`, `data`, `services`, `global_deadline`. The previous `executor=` parameter is **removed**; `executor` is now bound by the Executor at pipeline entry via the new SDK-internal `Context._bind_executor(executor)` helper (see PROTOCOL_SPEC §"Contract: Executor binding to Context"). `caller_id` remains managed exclusively by `Context.child()` and was never a public input. Two parameters are newly first-class: `cancel_token` (eliminates the post-hoc `ctx.cancel_token = token` anti-pattern) and `global_deadline` (previously only settable via mutation). `Executor.call` / `call_async` / `stream` / `call_async_with_trace` / `_validate_async` all bind `self` to the supplied or auto-created Context before pipeline step 1; same-instance rebinds are idempotent noops, cross-Executor rebinds raise the new `ContextBindingError` (code `CONTEXT_BINDING_ERROR`). The root-call `global_deadline` computation moved out of "context-was-None" branch into a general "root call" check in `BuiltinContextStep`, ensuring local-config-driven recomputation per PROTOCOL_SPEC §"Contract: `global_deadline` distributed semantics" — including deserialized Contexts arriving at remote nodes. Tests and `examples/cancel_token.py` are updated to the new shape. **Breaking** for callers that passed `executor=` to `Context.create()` — pre-release v0.22.0, acceptable.
+
+- **`TaskStore` Protocol is now fully async (D-17 / A-D-AT-04).** All five methods (`save`, `get`, `delete`, `list`, `list_expired`) are declared `async def` on the Protocol and on `InMemoryTaskStore`. Custom stores written against the pre-0.22.x sync surface must be migrated; `AsyncTaskManager` keeps a transitional compatibility shim that awaits a returned coroutine if a legacy store still exposes sync methods. The uniform async shape unblocks Redis/SQL/network-backed stores without an extra blocking adapter, matching the TypeScript and Rust SDKs.
+
+- **`ReaperHandle.stop()` and `AsyncTaskManager.stop_reaper()` are now `async` and drain the reaper task (D-11 / A-D-AT-03).** Callers must `await handle.stop()` / `await manager.stop_reaper()`. After the coroutine returns the underlying `asyncio.Task` is guaranteed to be settled — previously the sync `stop()` only requested cancellation and required a manual `await asyncio.sleep(0)` for the task to finish. `AsyncTaskManager.shutdown()` now awaits `stop_reaper()` directly.
+
+- **`AsyncTaskManager.get_status()` and `list_tasks()` return defensive snapshots (A-D-AT-06).** Both methods now hand back shallow copies of `TaskInfo` via `dataclasses.replace`, matching the TypeScript SDK's `{ ...info }` and the Rust SDK's `info.clone()`. Mutating the returned objects no longer corrupts the live store. Async-friendly twins `get_status_async()` / `list_tasks_async()` are available for I/O-backed stores.
+
+- **`AsyncTaskManager.cleanup()` is now `async`.** Required because the store contract is async; callers must `await manager.cleanup(...)`. The reaper background loop already awaits internally — only direct in-process callers are affected.
+
+- **Legacy `RetryPolicy` defaults `max_retries` to `0` and emits `DeprecationWarning` on instantiation (D-14 / A-D-AT-09).** Earlier builds silently enabled three retries when callers used `RetryPolicy()` without arguments, contradicting the opt-in retry contract. The class is retained for one release; new code should use `RetryConfig` (canonical, ms-based, no deprecation noise).
+
+### Fixed
+
+- **Cancel token observed at Step 2 of the execution pipeline (D-21 / A-D-EXEC-002).** `BuiltinCallChainGuard` now checks `context.cancel_token.is_cancelled` before running any guard work; a cancelled token short-circuits with `ExecutionCancelledError` before ACL, middleware, validation, or module execution. Combined with the existing Step 8 check, the pipeline now satisfies the two-point cancel-token invariant — single-check implementations were leaking compute through ACL/middleware/validation even when the caller had already cancelled.
+
+- **`MiddlewareChainError` unwrap rule (D-22 / A-D-EXEC-005).** `Executor._recover_from_call_error` now unwraps `MiddlewareChainError` and propagates the original typed cause (e.g. `ApprovalDeniedError`, `ACLDeniedError`) unchanged. Previously the wrapper was collapsed to a generic `ModuleExecuteError`, breaking callers that dispatch on the typed error (notably MCP/A2A bridges keying on `APPROVAL_DENIED` vs `MODULE_EXECUTE_ERROR`). Mirrors the TypeScript and Rust SDK semantics.
+
+- **`Registry.register_internal` ephemeral-namespace rejection covers bare `"ephemeral"` (A-D-REG-002).** Previously the check used `module_id.startswith("ephemeral.")`, which missed the bare ID `"ephemeral"` and contradicted the canonical `_is_ephemeral` classifier used everywhere else in the registry. The helper is now shared between both call sites.
+
+- **Discover-path registration enforces the Issue #65 deferred-publish invariant (A-D-REG-003).** `_register_in_order` now reserves an in-flight slot, runs `on_load()` outside the lock, and only publishes into `_modules` / `_versioned_modules` on success. Previously the discover path published *before* invoking `on_load` and relied on rollback, leaving a window in which `registry.get()` callers could observe a module whose `on_load`-installed state (warmed pools, primed caches) was incomplete.
+
+- **`Registry.register_internal` enforces the Issue #65 deferred-publish invariant (A-D-REG-004).** `register_internal` now routes through the same three-phase protocol as `register()`: reserve in-flight slot → run `on_load` outside the lock → publish. On failure it removes the in-flight slot, emits `apcore.registry.module_load_failed`, and re-raises the original exception unchanged. The invariant now holds uniformly for every registration path (public `register`, `register_internal`, and discover).
+
+- **Discover-path emits `apcore.registry.module_load_failed` on `on_load` failure (A-D-REG-005).** Earlier the discover path logged at ERROR and silently dropped the module; subscribers had no portable hook to detect partial-init failures from the auto-discovery pipeline. The event payload matches the one emitted by `register()` (Issue #65) so a single subscriber covers all registration paths.
+
+### Removed
+
+- **Misplaced spec-style docs (B-005).** Deleted `docs/features/async-task-evolution.md`, `docs/features/middleware-architecture-hardening.md`, and `docs/async-task-evolution/test-cases.md`. Per the apcore protocol-spec repo policy (`apcore/CLAUDE.md`), implementation repos contain only code and a README — feature specs, test-case matrices, and design notes live in the apcore spec repo. The deleted files were also stale (referenced the obsolete `TaskStore.put` method and the removed `TaskStatus.RETRYING` enum value); the canonical authority is the implementation plus the upstream `apcore/docs/features/async-tasks.md` spec.
+
 ## [0.22.0] - 2026-05-20
 
 ### Added

@@ -128,15 +128,27 @@ class BuiltinContextCreation(BaseStep):
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
         if ctx.context is None:
-            new_ctx = Context.create(executor=self._executor)
-            new_ctx = new_ctx.child(ctx.module_id)
-            if self._global_timeout > 0:
-                new_ctx.global_deadline = time.monotonic() + self._global_timeout / 1000.0
-            ctx.context = new_ctx
+            # Fallback path: a Context was not bound at the Executor entry
+            # point (e.g. PipelineContext constructed directly in tests).
+            # Per PROTOCOL_SPEC §"Contract: Context.create", executor is not
+            # a public constructor input; bind via the private helper.
+            base_ctx = Context.create()
+            base_ctx._bind_executor(self._executor)
         else:
-            # Derive child context to add module_id to call chain
-            child = ctx.context.child(ctx.module_id)
-            ctx.context = child
+            base_ctx = ctx.context
+
+        # Root call detection — empty call_chain means this is a top-level
+        # invocation. Per PROTOCOL_SPEC §"Contract: `global_deadline`
+        # distributed semantics", the receiving Executor MUST (re)compute
+        # global_deadline from local config at pipeline entry. If the
+        # caller already populated global_deadline (in-process cooperation),
+        # preserve it; only fill in when unset.
+        is_root_call = not base_ctx.call_chain
+        if is_root_call and base_ctx.global_deadline is None and self._global_timeout > 0:
+            base_ctx.global_deadline = time.monotonic() + self._global_timeout / 1000.0
+
+        # Derive child context to add module_id to call chain.
+        ctx.context = base_ctx.child(ctx.module_id)
         return StepResult(action="continue")
 
 
@@ -168,6 +180,16 @@ class BuiltinCallChainGuard(BaseStep):
             self._max_module_repeat = Config.get_default("executor.max_module_repeat")
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
+        # D-21 / A-D-EXEC-002: short-circuit before any expensive validation
+        # or middleware work if the caller already cancelled. The pipeline
+        # also re-checks at the Execute step (defensive backstop for tokens
+        # cancelled while later steps run), but observing the token here is
+        # what makes the two-point invariant hold — single-check
+        # implementations leak compute through ACL/middleware/validation.
+        cancel_token = getattr(ctx.context, "cancel_token", None)
+        if cancel_token is not None and getattr(cancel_token, "is_cancelled", False):
+            raise ExecutionCancelledError()
+
         call_chain = getattr(ctx.context, "call_chain", [])
         guard_call_chain(
             ctx.module_id,

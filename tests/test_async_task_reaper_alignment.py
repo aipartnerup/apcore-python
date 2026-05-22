@@ -43,8 +43,7 @@ async def test_start_reaper_new_signature_returns_handle() -> None:
         assert mgr._reaper_max_age == pytest.approx(10.0)
         assert mgr._reaper_interval == pytest.approx(60.0)  # ms → s
     finally:
-        handle.stop()
-        await asyncio.sleep(0)  # let cancellation settle
+        await handle.stop()
 
 
 @pytest.mark.asyncio
@@ -59,8 +58,7 @@ async def test_start_reaper_legacy_aliases_emit_deprecation_warning() -> None:
             assert mgr._reaper_interval == pytest.approx(120.0)
             assert mgr._reaper_max_age == pytest.approx(30.0)
         finally:
-            handle.stop()
-            await asyncio.sleep(0)
+            await handle.stop()
 
     deprecation = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     msgs = " | ".join(str(w.message) for w in deprecation)
@@ -75,11 +73,10 @@ async def test_reaper_handle_stop_cancels_loop() -> None:
     mgr = AsyncTaskManager(executor=_StubExecutor())
     handle = mgr.start_reaper(ttl_seconds=1.0, sweep_interval_ms=1_000)
     assert handle.is_running()
-    handle.stop()
-    await asyncio.sleep(0)
+    await handle.stop()
     assert not handle.is_running()
     # Idempotent — no exception on second stop.
-    handle.stop()
+    await handle.stop()
 
 
 @pytest.mark.asyncio
