@@ -119,8 +119,6 @@ class TestMiddlewareChainErrorUnwrap:
         try:
             await executor.call_async("test.plain", {})
         except ModuleExecuteError as exc:
-            pytest.fail(
-                f"Caller received generic ModuleExecuteError instead of typed cause: {exc!r}"
-            )
+            pytest.fail(f"Caller received generic ModuleExecuteError instead of typed cause: {exc!r}")
         except ApprovalDeniedError:
             pass  # expected

@@ -494,9 +494,7 @@ class AsyncTaskManager:
                     get.send(None)  # type: ignore[union-attr]
                 except StopIteration as stop:  # noqa: PERF203 — coroutine return value
                     return _snapshot(stop.value)
-                raise RuntimeError(
-                    "TaskStore.get() suspended; call get_status_async() for I/O-backed stores"
-                )
+                raise RuntimeError("TaskStore.get() suspended; call get_status_async() for I/O-backed stores")
             finally:
                 get.close()  # type: ignore[union-attr]
         return _snapshot(get)
@@ -579,9 +577,7 @@ class AsyncTaskManager:
                 except StopIteration as stop:  # noqa: PERF203
                     items: list[TaskInfo] = list(stop.value or [])
                     return [info for info in (_snapshot(it) for it in items) if info is not None]
-                raise RuntimeError(
-                    "TaskStore.list() suspended; call list_tasks_async() for I/O-backed stores"
-                )
+                raise RuntimeError("TaskStore.list() suspended; call list_tasks_async() for I/O-backed stores")
             finally:
                 result.close()  # type: ignore[union-attr]
         return [info for info in (_snapshot(it) for it in result) if info is not None]
