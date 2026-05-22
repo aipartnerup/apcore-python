@@ -52,18 +52,14 @@ class TestTaskStoreProtocolIsAsync:
     def test_in_memory_store_methods_are_coroutines(self) -> None:
         store = InMemoryTaskStore()
         for name in ("save", "get", "delete", "list", "list_expired"):
-            assert inspect.iscoroutinefunction(getattr(store, name)), (
-                f"InMemoryTaskStore.{name} must be async (D-17)"
-            )
+            assert inspect.iscoroutinefunction(getattr(store, name)), f"InMemoryTaskStore.{name} must be async (D-17)"
 
     def test_protocol_methods_declared_async(self) -> None:
         # Walk the Protocol annotations: every declared method must be an
         # async function so custom stores share the contract.
         for name in ("save", "get", "delete", "list", "list_expired"):
             method = getattr(TaskStore, name)
-            assert inspect.iscoroutinefunction(method), (
-                f"TaskStore Protocol method {name!r} must be async (D-17)"
-            )
+            assert inspect.iscoroutinefunction(method), f"TaskStore Protocol method {name!r} must be async (D-17)"
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +142,7 @@ class TestRetryPolicyOptInDefault:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             policy = RetryPolicy()
-        assert policy.max_retries == 0, (
-            "RetryPolicy() must default to max_retries=0 (D-14) so retries are opt-in"
-        )
+        assert policy.max_retries == 0, "RetryPolicy() must default to max_retries=0 (D-14) so retries are opt-in"
 
     def test_instantiation_emits_deprecation_warning(self) -> None:
         with warnings.catch_warnings(record=True) as caught:
@@ -156,8 +150,7 @@ class TestRetryPolicyOptInDefault:
             RetryPolicy(max_retries=1)
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert deprecations, (
-            "Constructing RetryPolicy must emit a DeprecationWarning steering "
-            "callers to RetryConfig (A-D-AT-09)"
+            "Constructing RetryPolicy must emit a DeprecationWarning steering " "callers to RetryConfig (A-D-AT-09)"
         )
 
 
@@ -193,11 +186,7 @@ class _AsyncOnlyStore:
 
     async def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
         await asyncio.sleep(0)
-        return [
-            t
-            for t in self._data.values()
-            if t.completed_at is not None and t.completed_at < before_timestamp
-        ]
+        return [t for t in self._data.values() if t.completed_at is not None and t.completed_at < before_timestamp]
 
 
 class TestManagerWithAsyncStore:

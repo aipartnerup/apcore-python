@@ -952,9 +952,7 @@ class Registry:
             # visible — concurrent discover invocations must not double-load.
             with self._lock:
                 if mod_id in self._in_flight or mod_id in self._modules:
-                    logger.warning(
-                        "Discover skipping '%s' — already registered or in-flight", mod_id
-                    )
+                    logger.warning("Discover skipping '%s' — already registered or in-flight", mod_id)
                     continue
                 self._in_flight.add(mod_id)
 

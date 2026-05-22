@@ -89,20 +89,24 @@ class TestDiscoverPathDeferredPublish:
         # ordering, not the upstream stages of the 8-step pipeline.
         reg._register_in_order(
             load_order=["system.probe"],
-            valid_classes={"system.probe": type(
-                "_ProbeFactory",
-                (),
-                {"__init__": lambda self_, m=module: setattr(self_, "_proxy", m) or None,
-                 "__getattr__": lambda self_, n: getattr(self_._proxy, n)},
-            )},
+            valid_classes={
+                "system.probe": type(
+                    "_ProbeFactory",
+                    (),
+                    {
+                        "__init__": lambda self_, m=module: setattr(self_, "_proxy", m) or None,
+                        "__getattr__": lambda self_, n: getattr(self_._proxy, n),
+                    },
+                )
+            },
             raw_metadata={},
         )
         # Probe-style assertion: the on_load callback's snapshot of
         # ``registry.get(...)`` must have been ``None`` — i.e. the
         # module was NOT yet published when the callback ran.
-        assert module.visible_during_on_load is False, (
-            "Deferred-publish invariant violated: module was visible during on_load"
-        )
+        assert (
+            module.visible_during_on_load is False
+        ), "Deferred-publish invariant violated: module was visible during on_load"
 
     def test_on_load_failure_does_not_publish(self) -> None:
         reg = Registry()
@@ -166,12 +170,10 @@ class TestDiscoverPathEmitsModuleLoadFailed:
         # The emitter MUST have received an apcore.registry.module_load_failed
         # event for the failing module — the discover path is no longer
         # silent about on_load failures.
-        emitted_types = [
-            call.args[0].event_type for call in emitter.emit.call_args_list
-        ]
-        assert "apcore.registry.module_load_failed" in emitted_types, (
-            f"Expected module_load_failed event from discover path, got: {emitted_types}"
-        )
+        emitted_types = [call.args[0].event_type for call in emitter.emit.call_args_list]
+        assert (
+            "apcore.registry.module_load_failed" in emitted_types
+        ), f"Expected module_load_failed event from discover path, got: {emitted_types}"
 
     def test_register_internal_emits_module_load_failed(self) -> None:
         # Sanity: register_internal's load-failed event was already covered
@@ -184,7 +186,5 @@ class TestDiscoverPathEmitsModuleLoadFailed:
         with pytest.raises(RuntimeError):
             reg.register_internal("system.fail", _FailingOnLoadModule())
 
-        emitted_types = [
-            call.args[0].event_type for call in emitter.emit.call_args_list
-        ]
+        emitted_types = [call.args[0].event_type for call in emitter.emit.call_args_list]
         assert "apcore.registry.module_load_failed" in emitted_types

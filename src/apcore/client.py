@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 from apcore.config import Config
 from apcore.context import Context
+from apcore.errors import SysModulesDisabledError
 from apcore.decorator import module as decorator_module
 from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
 from apcore.executor import Executor
@@ -303,11 +304,13 @@ class APCore:
             The created EventSubscriber (for use with ``off()``).
 
         Raises:
-            RuntimeError: If events are not enabled.
+            SysModulesDisabledError: If events are not enabled (code
+                ``SYS_MODULES_DISABLED``). Cross-language equivalent of Rust's
+                ``ModuleError(code=SysModulesDisabled)``.
         """
         emitter = self.events
         if emitter is None:
-            raise RuntimeError(
+            raise SysModulesDisabledError(
                 "Events are not enabled. Set sys_modules.enabled=true and sys_modules.events.enabled=true in config."
             )
         subscriber = _CallbackSubscriber(event_type=event_type, handler=handler)
@@ -321,11 +324,12 @@ class APCore:
             subscriber: The subscriber returned by ``on()``.
 
         Raises:
-            RuntimeError: If events are not enabled.
+            SysModulesDisabledError: If events are not enabled (code
+                ``SYS_MODULES_DISABLED``).
         """
         emitter = self.events
         if emitter is None:
-            raise RuntimeError(
+            raise SysModulesDisabledError(
                 "Events are not enabled. Set sys_modules.enabled=true and sys_modules.events.enabled=true in config."
             )
         emitter.unsubscribe(subscriber)
@@ -347,7 +351,8 @@ class APCore:
             Result dict with ``success``, ``module_id``, ``enabled``.
 
         Raises:
-            RuntimeError: If sys_modules are not enabled in config.
+            SysModulesDisabledError: If sys_modules are not enabled in config
+                (code ``SYS_MODULES_DISABLED``).
 
         Cross-language note:
             TypeScript and Rust expose this as an async method.
@@ -372,7 +377,8 @@ class APCore:
             Result dict with ``success``, ``module_id``, ``enabled``.
 
         Raises:
-            RuntimeError: If sys_modules are not enabled in config.
+            SysModulesDisabledError: If sys_modules are not enabled in config
+                (code ``SYS_MODULES_DISABLED``).
 
         Cross-language note:
             TypeScript and Rust expose this as an async method.
@@ -385,9 +391,12 @@ class APCore:
         )
 
     def _require_sys_modules(self, method_name: str) -> None:
-        """Raise RuntimeError if sys_modules are not configured."""
+        """Raise SysModulesDisabledError if sys_modules are not configured.
+
+        Cross-language equivalent of Rust's ``ModuleError(code=SysModulesDisabled)``.
+        """
         if not self._sys_modules_context:
-            raise RuntimeError(
+            raise SysModulesDisabledError(
                 f"{method_name}() requires sys_modules to be enabled. "
                 "Pass a Config with sys_modules.enabled=true to APCore()."
             )

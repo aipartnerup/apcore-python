@@ -565,6 +565,7 @@ class TestPublicAPIAll:
         "ModuleReloadConflictError",
         "ReloadFailedError",
         "SysModuleRegistrationError",
+        "SysModulesDisabledError",
         "StreamingInterfaceError",
         # Streaming Protocol (apcore #62)
         "StreamingModule",

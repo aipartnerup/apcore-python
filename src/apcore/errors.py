@@ -58,6 +58,7 @@ __all__ = [
     "ReloadFailedError",
     "ModuleReloadConflictError",
     "SysModuleRegistrationError",
+    "SysModulesDisabledError",
     "DependencyNotFoundError",
     "DependencyVersionMismatchError",
     "TaskLimitExceededError",
@@ -1052,6 +1053,25 @@ class SysModuleRegistrationError(ModuleError):
         )
 
 
+class SysModulesDisabledError(ModuleError):
+    """Raised when an APCore client method requires sys_modules to be enabled.
+
+    Cross-language equivalent of Rust's ``ErrorCode::SysModulesDisabled``.
+    Replaces bare ``RuntimeError`` in ``APCore.on``/``off``/``disable``/``enable``
+    so callers can dispatch on ``error.code == "SYS_MODULES_DISABLED"`` instead
+    of catching the generic ``Exception`` base.
+    """
+
+    _default_retryable: bool | None = False
+
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        super().__init__(
+            code="SYS_MODULES_DISABLED",
+            message=message,
+            **kwargs,
+        )
+
+
 class TaskLimitExceededError(ModuleError):
     """Raised when ``AsyncTaskManager.submit`` is called at the task-slot limit.
 
@@ -1292,6 +1312,7 @@ class ErrorCodes:
     ID_TOO_LONG = "ID_TOO_LONG"
     MODULE_RELOAD_CONFLICT = "MODULE_RELOAD_CONFLICT"
     SYS_MODULE_REGISTRATION_FAILED = "SYS_MODULE_REGISTRATION_FAILED"
+    SYS_MODULES_DISABLED = "SYS_MODULES_DISABLED"
     STREAMING_INTERFACE_MISMATCH = "STREAMING_INTERFACE_MISMATCH"
     CONTEXT_BINDING_ERROR = "CONTEXT_BINDING_ERROR"
 
