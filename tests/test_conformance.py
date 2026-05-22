@@ -1839,9 +1839,37 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         assert carried is not None and len(carried) == len(tp_in["tracestate"])
         # And the signature does NOT expose a separate tracestate parameter.
         params = _inspect.signature(Context.create).parameters
-        assert "tracestate" not in params, (
-            "tracestate MUST live inside TraceParent — no separate Context.create parameter"
-        )
+        assert (
+            "tracestate" not in params
+        ), "tracestate MUST live inside TraceParent — no separate Context.create parameter"
+
+    elif case_id == "distributed_cancel_token_post_deserialize_null":
+        # Negative invariant: cancel_token MUST NOT serialize. A deserialized
+        # Context on a remote node has cancel_token == None (PROTOCOL_SPEC §5.7).
+        serialized: dict[str, Any] = {
+            "_context_version": 1,
+            "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+            "caller_id": "remote.caller",
+            "call_chain": ["remote.caller"],
+            "identity": None,
+            "data": {},
+        }
+        restored = Context.deserialize(serialized)
+        assert restored.cancel_token is None, "cancel_token MUST be null after deserialization"
+
+    elif case_id == "distributed_global_deadline_post_deserialize_null":
+        # Negative invariant: global_deadline MUST NOT serialize. A deserialized
+        # Context on a remote node has global_deadline == None (PROTOCOL_SPEC §5.7).
+        serialized = {
+            "_context_version": 1,
+            "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+            "caller_id": "remote.caller",
+            "call_chain": [],
+            "identity": None,
+            "data": {},
+        }
+        restored = Context.deserialize(serialized)
+        assert restored.global_deadline is None, "global_deadline MUST be null after deserialization"
 
     else:
         pytest.fail(f"Unknown context_create fixture case id: {case_id!r}")

@@ -44,17 +44,17 @@ CANONICAL_STEPS: tuple[str, ...] = (
 
 # Per-step roles, used by TracingMiddleware to narrate the pipeline.
 STEP_ROLES: dict[str, str] = {
-    "context_creation":  "create execution context, set global deadline",
-    "call_chain_guard":  "check call depth & repeat limits",
-    "module_lookup":     "resolve module from registry",
-    "acl_check":         "enforce access control (default-deny)",
-    "approval_gate":     "human approval gate (if required)",
+    "context_creation": "create execution context, set global deadline",
+    "call_chain_guard": "check call depth & repeat limits",
+    "module_lookup": "resolve module from registry",
+    "acl_check": "enforce access control (default-deny)",
+    "approval_gate": "human approval gate (if required)",
     "middleware_before": "run before-middleware chain (in order)",
-    "input_validation":  "validate inputs against schema",
-    "execute":           "invoke the module",
+    "input_validation": "validate inputs against schema",
+    "execute": "invoke the module",
     "output_validation": "validate output against schema",
-    "middleware_after":  "run after-middleware chain (reverse order)",
-    "return_result":     "finalize and return output",
+    "middleware_after": "run after-middleware chain (reverse order)",
+    "return_result": "finalize and return output",
 }
 
 
@@ -80,16 +80,12 @@ class TracingMiddleware:
             role = "CUSTOM step inserted via insert_after / replace"
         print(f"  {label} {step_name:<19} — {role}")
 
-    def after_step(
-        self, step_name: str, state: PipelineState, result: StepResult
-    ) -> None:
+    def after_step(self, step_name: str, state: PipelineState, result: StepResult) -> None:
         elapsed_ms = (time.perf_counter() - self._starts.pop(step_name, time.perf_counter())) * 1000
         detail = self._summarize(step_name, state.context, result)
         print(f"          ✓ {elapsed_ms:>6.2f} ms · {detail}")
 
-    def on_step_error(
-        self, step_name: str, state: PipelineState, error: Exception
-    ) -> None:
+    def on_step_error(self, step_name: str, state: PipelineState, error: Exception) -> None:
         print(f"          ✗ {type(error).__name__}: {error}")
         # Returning None lets the original exception propagate.
 
@@ -177,8 +173,7 @@ def main() -> None:
     banner("Section 3: Orchestration — insert_after + replace")
     strategy.insert_after("output_validation", AuditLogStep())
     custom = [n for n in strategy.step_names() if n not in CANONICAL_STEPS]
-    print(f"after insert_after: 11 standard + {len(custom)} custom = "
-          f"{len(strategy.steps)} steps")
+    print(f"after insert_after: 11 standard + {len(custom)} custom = " f"{len(strategy.steps)} steps")
     for i, name in enumerate(strategy.step_names(), start=1):
         marker = "  ← CUSTOM (inserted)" if name not in CANONICAL_STEPS else ""
         print(f"  {i:>2}. {name}{marker}")
@@ -187,8 +182,10 @@ def main() -> None:
     client.call("math.add", {"a": 2, "b": 3})
 
     strategy.replace("audit_log", QuietAuditLogStep())
-    print(f"\nafter replace: {len(strategy.steps)} steps "
-          f"(audit_log still at index {strategy.step_names().index('audit_log')})")
+    print(
+        f"\nafter replace: {len(strategy.steps)} steps "
+        f"(audit_log still at index {strategy.step_names().index('audit_log')})"
+    )
 
     print("\ncalling with the quiet replacement:")
     client.call("math.add", {"a": 7, "b": 9})

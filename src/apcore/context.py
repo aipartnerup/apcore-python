@@ -133,9 +133,7 @@ class Context(Generic[T]):
             # Imported lazily to avoid a circular import (errors -> context).
             from apcore.errors import ContextBindingError
 
-            raise ContextBindingError(
-                "Context already bound to a different Executor instance"
-            )
+            raise ContextBindingError("Context already bound to a different Executor instance")
         # else: same executor instance, noop.
 
     def serialize(self) -> dict[str, Any]:

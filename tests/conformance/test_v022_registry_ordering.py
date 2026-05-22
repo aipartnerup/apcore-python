@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -14,11 +15,17 @@ from apcore.errors import InvalidInputError
 from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.registry import Registry
 
-_FIXTURE_PATH = Path("/Users/tercel/WorkSpace/aipartnerup/apcore/conformance/fixtures/registry_load_ordering.json")
+
+def _fixture_path() -> Path:
+    env = os.environ.get("APCORE_SPEC_REPO")
+    if env:
+        return Path(env) / "conformance" / "fixtures" / "registry_load_ordering.json"
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    return repo_root.parent / "apcore" / "conformance" / "fixtures" / "registry_load_ordering.json"
 
 
 def _load_fixture() -> dict:
-    with _FIXTURE_PATH.open() as f:
+    with _fixture_path().open() as f:
         return json.load(f)
 
 

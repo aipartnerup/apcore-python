@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -11,11 +12,17 @@ import pytest
 from apcore.events.emitter import ApCoreEvent, EventEmitter, _DLQ_EVENT_TYPE
 from apcore.events.retry import EventRetryConfig
 
-_FIXTURE_PATH = Path("/Users/tercel/WorkSpace/aipartnerup/apcore/conformance/fixtures/event_delivery_semantics.json")
+
+def _fixture_path() -> Path:
+    env = os.environ.get("APCORE_SPEC_REPO")
+    if env:
+        return Path(env) / "conformance" / "fixtures" / "event_delivery_semantics.json"
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    return repo_root.parent / "apcore" / "conformance" / "fixtures" / "event_delivery_semantics.json"
 
 
 def _load_fixture() -> dict:
-    with _FIXTURE_PATH.open() as f:
+    with _fixture_path().open() as f:
         return json.load(f)
 
 
