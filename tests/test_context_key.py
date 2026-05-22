@@ -11,7 +11,7 @@ class TestContextKey:
 
     def _make_ctx(self) -> Context:
         """Create a minimal Context for testing."""
-        return Context.create(executor=None)
+        return Context.create()
 
     def test_get_returns_typed_value(self) -> None:
         """AC-001: get() returns typed value from context.data."""

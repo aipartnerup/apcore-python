@@ -48,13 +48,22 @@ class Context(Generic[T]):
     @classmethod
     def create(
         cls,
-        executor: Any = None,
         identity: Identity | None = None,
-        data: dict[str, Any] | None = None,
         trace_parent: TraceParent | None = None,
+        cancel_token: CancelToken | None = None,
+        data: dict[str, Any] | None = None,
         services: T = None,  # type: ignore[assignment]
+        global_deadline: float | None = None,
     ) -> Context[T]:
         """Create a new top-level Context with a generated trace_id.
+
+        Unified signature per apcore PROTOCOL_SPEC §"Contract: Context.create"
+        (v0.22.0, Issue #66). The accepted caller inputs are exactly:
+        ``identity``, ``trace_parent``, ``cancel_token``, ``data``,
+        ``services``, ``global_deadline``. ``executor`` and ``caller_id`` are
+        intentionally NOT inputs — the executor is bound by the Executor at
+        pipeline entry (see ``Context._bind_executor``), and ``caller_id`` is
+        managed exclusively by ``Context.child()``.
 
         When *trace_parent* is provided, its ``trace_id`` is accepted only if
         it is exactly 32 lowercase hex characters and not the W3C-reserved
@@ -96,11 +105,38 @@ class Context(Generic[T]):
             trace_id=trace_id,
             caller_id=None,
             call_chain=[],
-            executor=executor,
+            executor=None,
             identity=identity,
             data=ctx_data,
             services=services,  # type: ignore[arg-type]
+            cancel_token=cancel_token,
+            global_deadline=global_deadline,
         )
+
+    def _bind_executor(self, executor: Any) -> None:
+        """SDK-internal. Bind the Executor to this Context.
+
+        Implements PROTOCOL_SPEC §"Contract: Executor binding to Context":
+        - If ``self.executor`` is None, bind it.
+        - If ``self.executor`` is already the same Executor instance
+          (identity comparison), the rebind is a noop.
+        - If ``self.executor`` is a *different* Executor instance, raise
+          :class:`apcore.errors.ContextBindingError`.
+
+        Not intended for public callers; the Executor invokes this before
+        pipeline step 1 on every entry point that accepts a caller-supplied
+        Context.
+        """
+        if self.executor is None:
+            self.executor = executor
+        elif self.executor is not executor:
+            # Imported lazily to avoid a circular import (errors -> context).
+            from apcore.errors import ContextBindingError
+
+            raise ContextBindingError(
+                "Context already bound to a different Executor instance"
+            )
+        # else: same executor instance, noop.
 
     def serialize(self) -> dict[str, Any]:
         """Serialize Context to a JSON-encodable dict.

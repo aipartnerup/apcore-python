@@ -71,9 +71,10 @@ class TestCancelTokenAtCallChainGuard:
 
         token = CancelToken()
         token.cancel()
-        ctx = Context.create(executor=executor, services={"cancel_token": token})
-        # Plant the token directly on Context so Step 2 can observe it.
-        ctx.cancel_token = token
+        # cancel_token is a first-class Context.create() parameter (v0.22.0 +
+        # Issue #66 unified signature). The Executor auto-binds itself at
+        # entry, so executor= is no longer accepted as a public input.
+        ctx = Context.create(cancel_token=token)
 
         with pytest.raises(ExecutionCancelledError):
             await executor.call_async("test.noop", {}, context=ctx)

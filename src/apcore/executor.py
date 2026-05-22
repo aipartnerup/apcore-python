@@ -486,6 +486,13 @@ class Executor:
             checks.append(PreflightCheckResult(check="module_id", passed=False, error=e.to_dict()))
             return PreflightResult(valid=False, checks=checks)
 
+        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
+        # to the Context before pipeline step 1 (also applies to dry-run
+        # validation, since the pipeline expects a bound Context).
+        if context is None:
+            context = Context.create()
+        context._bind_executor(self)
+
         # Run pipeline in dry_run mode — pure=False steps are skipped
         pipe_ctx = PipelineContext(
             module_id=module_id,
@@ -750,6 +757,13 @@ class Executor:
         """
         self._validate_module_id(module_id)
 
+        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
+        # to the Context before pipeline step 1. Auto-create the Context when
+        # the caller did not supply one.
+        if context is None:
+            context = Context.create()
+        context._bind_executor(self)
+
         pipe_ctx = PipelineContext(
             module_id=module_id,
             inputs=inputs or {},
@@ -863,6 +877,12 @@ class Executor:
             Dict chunks from the module's stream() or a single call_async() result.
         """
         self._validate_module_id(module_id)
+
+        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
+        # to the Context before pipeline step 1.
+        if context is None:
+            context = Context.create()
+        context._bind_executor(self)
 
         pipe_ctx = PipelineContext(
             module_id=module_id,
@@ -1117,6 +1137,13 @@ class Executor:
             A tuple of (result dict, PipelineTrace).
         """
         effective_strategy = self._effective_strategy(strategy)
+
+        # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
+        # to the Context before pipeline step 1.
+        if context is None:
+            context = Context.create()
+        context._bind_executor(self)
+
         pipe_ctx = PipelineContext(
             module_id=module_id,
             inputs=inputs or {},

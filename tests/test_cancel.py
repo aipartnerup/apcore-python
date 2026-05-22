@@ -67,8 +67,7 @@ class TestExecutorCancellation:
 
         token = CancelToken()
         token.cancel()
-        ctx = Context.create(executor=executor)
-        ctx.cancel_token = token
+        ctx = Context.create(cancel_token=token)
 
         with pytest.raises(ExecutionCancelledError):
             executor.call("test.module", {}, context=ctx)

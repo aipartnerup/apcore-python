@@ -455,6 +455,7 @@ class TestPublicAPIAll:
         "CircularDependencyError",
         "ConfigError",
         "ConfigNotFoundError",
+        "ContextBindingError",
         "DependencyNotFoundError",
         "DependencyVersionMismatchError",
         "TaskLimitExceededError",

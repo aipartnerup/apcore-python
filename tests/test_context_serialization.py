@@ -13,7 +13,7 @@ class TestContextSerialize:
     """AC-003, AC-004, AC-005: Context.serialize() protocol compliance."""
 
     def _make_ctx(self) -> Context:
-        ctx = Context.create(executor=None)
+        ctx = Context.create()
         ctx.identity = Identity(
             id="user-1",
             type="user",
@@ -97,7 +97,7 @@ class TestContextDeserialize:
 
     def test_deserialize_roundtrip(self) -> None:
         """Serialize then deserialize preserves fields."""
-        ctx = Context.create(executor=None)
+        ctx = Context.create()
         ctx.identity = Identity(id="user-1", type="user", roles=("admin",), attrs={"org": "acme"})
         ctx.data["app.counter"] = 42
         serialized = ctx.serialize()
@@ -110,28 +110,33 @@ class TestContextDeserialize:
 
     def test_deserialize_executor_is_none(self) -> None:
         """After deserialization, executor is None."""
-        ctx = Context.create(executor="some-executor")
+        ctx = Context.create()
+        # Simulate a Context that an Executor has already bound itself to.
+        # Under the unified Context.create() signature (Issue #66), executor
+        # is no longer a constructor input; binding happens via the private
+        # helper.
+        ctx._bind_executor("some-executor")
         serialized = ctx.serialize()
         restored = Context.deserialize(serialized)
         assert restored.executor is None
 
     def test_deserialize_services_is_none(self) -> None:
         """After deserialization, services is None."""
-        ctx = Context.create(executor=None)
+        ctx = Context.create()
         serialized = ctx.serialize()
         restored = Context.deserialize(serialized)
         assert restored.services is None
 
     def test_deserialize_cancel_token_is_none(self) -> None:
         """After deserialization, cancel_token is None."""
-        ctx = Context.create(executor=None)
+        ctx = Context.create()
         serialized = ctx.serialize()
         restored = Context.deserialize(serialized)
         assert restored.cancel_token is None
 
     def test_deserializeglobal_deadline_is_none(self) -> None:
         """After deserialization, global_deadline is None."""
-        ctx = Context.create(executor=None)
+        ctx = Context.create()
         serialized = ctx.serialize()
         restored = Context.deserialize(serialized)
         assert restored.global_deadline is None

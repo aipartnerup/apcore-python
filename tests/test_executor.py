@@ -166,7 +166,7 @@ class TestCallFlow:
         """Step 1: Derives child context when context provided."""
         mod = MockModule()
         ex = _make_executor(module=mod)
-        parent_ctx = Context.create(executor=ex)
+        parent_ctx = Context.create()
         ex.call("test.module", {"name": "Alice"}, context=parent_ctx)
         _, ctx = mod.execute_calls[0]
         assert "test.module" in ctx.call_chain
@@ -178,7 +178,7 @@ class TestCallFlow:
         config = Config(data={"executor": {"max_call_depth": 2}})
         ex = _make_executor(module=mod, config=config)
         # Create a context with a deep call chain
-        ctx = Context.create(executor=ex)
+        ctx = Context.create()
         ctx.call_chain = ["a", "b", "c"]
         with pytest.raises(CallDepthExceededError):
             ex.call("test.module", {"name": "Alice"}, context=ctx)
@@ -187,7 +187,7 @@ class TestCallFlow:
         """Step 2: Raises CircularCallError for a->b->a."""
         mod = MockModule()
         ex = _make_executor(module=mod, module_id="a")
-        ctx = Context.create(executor=ex)
+        ctx = Context.create()
         ctx.call_chain = ["a", "b"]
         with pytest.raises(CircularCallError):
             ex.call("a", {"name": "Alice"}, context=ctx)
@@ -196,7 +196,7 @@ class TestCallFlow:
         """Step 2: Raises CircularCallError for a->b->c->a."""
         mod = MockModule()
         ex = _make_executor(module=mod, module_id="a")
-        ctx = Context.create(executor=ex)
+        ctx = Context.create()
         ctx.call_chain = ["a", "b", "c"]
         with pytest.raises(CircularCallError):
             ex.call("a", {"name": "Alice"}, context=ctx)
@@ -205,7 +205,7 @@ class TestCallFlow:
         """Step 2: Self-call a->a is NOT circular, governed by frequency."""
         mod = MockModule()
         ex = _make_executor(module=mod, module_id="a")
-        ctx = Context.create(executor=ex)
+        ctx = Context.create()
         ctx.call_chain = ["a"]
         # Self-call should not raise CircularCallError; frequency limit governs it
         ex.call("a", {"name": "Alice"}, context=ctx)
@@ -216,7 +216,7 @@ class TestCallFlow:
         mod = MockModule()
         config = Config(data={"executor": {"max_module_repeat": 2}})
         ex = _make_executor(module=mod, module_id="a", config=config)
-        ctx = Context.create(executor=ex)
+        ctx = Context.create()
         ctx.call_chain = ["a", "a", "a"]
         with pytest.raises(CallFrequencyExceededError):
             ex.call("a", {"name": "Alice"}, context=ctx)

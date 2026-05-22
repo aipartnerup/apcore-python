@@ -191,7 +191,7 @@ class TestApprovalCallback:
         handler = CallbackApprovalHandler(capture)
         executor = Executor(registry=registry, approval_handler=handler)
         identity = Identity(id="user-42", type="user", roles=("admin",))
-        ctx = Context.create(executor=executor, identity=identity)
+        ctx = Context.create(identity=identity)
 
         executor.call("admin.delete_user", {"user_id": "123"}, context=ctx)
 
@@ -213,7 +213,6 @@ class TestApprovalCallback:
 
         # Admin user → approved
         admin_ctx = Context.create(
-            executor=executor,
             identity=Identity(id="admin-1", roles=("admin",)),
         )
         result = executor.call("admin.delete_user", {"user_id": "123"}, context=admin_ctx)
@@ -221,7 +220,6 @@ class TestApprovalCallback:
 
         # Regular user → denied
         user_ctx = Context.create(
-            executor=executor,
             identity=Identity(id="user-1", roles=("viewer",)),
         )
         with pytest.raises(ApprovalDeniedError) as exc_info:
