@@ -11,7 +11,7 @@ from apcore.client import APCore
 from apcore.config import Config
 from apcore.context import Context
 from apcore.decorator import FunctionModule
-from apcore.errors import ModuleNotFoundError
+from apcore.errors import ModuleNotFoundError, SysModulesDisabledError
 from apcore.events.emitter import ApCoreEvent
 from apcore.executor import Executor
 from apcore.middleware import Middleware
@@ -392,12 +392,12 @@ class TestEvents:
 
     def test_on_raises_without_events(self) -> None:
         client = APCore()
-        with pytest.raises(RuntimeError, match="Events are not enabled"):
+        with pytest.raises(SysModulesDisabledError, match="Events are not enabled"):
             client.on("test_event", lambda e: None)
 
     def test_off_raises_without_events(self) -> None:
         client = APCore()
-        with pytest.raises(RuntimeError, match="Events are not enabled"):
+        with pytest.raises(SysModulesDisabledError, match="Events are not enabled"):
             client.off(object())  # type: ignore[arg-type]
 
     def test_on_subscribes_and_fires(self) -> None:
@@ -537,26 +537,29 @@ class TestEnableDisable:
         result = client.disable("math.add", reason="Maintenance window")
         assert result["success"] is True
 
-    def test_disable_without_sys_modules_raises_runtime_error(self) -> None:
-        """disable() should raise RuntimeError, not ModuleNotFoundError, when sys_modules not configured."""
+    def test_disable_without_sys_modules_raises_sys_modules_disabled(self) -> None:
+        """disable() should raise SysModulesDisabledError (typed framework error,
+        cross-language equivalent of Rust's SysModulesDisabled), not
+        ModuleNotFoundError, when sys_modules not configured."""
         client = APCore()
 
         @client.module(id="math.add")
         def add(a: int, b: int) -> int:
             return a + b
 
-        with pytest.raises(RuntimeError, match="sys_modules"):
+        with pytest.raises(SysModulesDisabledError, match="sys_modules"):
             client.disable("math.add")
 
-    def test_enable_without_sys_modules_raises_runtime_error(self) -> None:
-        """enable() should raise RuntimeError, not ModuleNotFoundError, when sys_modules not configured."""
+    def test_enable_without_sys_modules_raises_sys_modules_disabled(self) -> None:
+        """enable() should raise SysModulesDisabledError, not ModuleNotFoundError,
+        when sys_modules not configured."""
         client = APCore()
 
         @client.module(id="math.add")
         def add(a: int, b: int) -> int:
             return a + b
 
-        with pytest.raises(RuntimeError, match="sys_modules"):
+        with pytest.raises(SysModulesDisabledError, match="sys_modules"):
             client.enable("math.add")
 
 
