@@ -1277,7 +1277,8 @@ class Registry:
         tags: list[str] | None = None,
         prefix: str | None = None,
         *,
-        include_hidden: bool = False,
+        visibility: list[str] | None = None,
+        include_hidden: bool | None = None,
     ) -> list[str]:
         """Return sorted list of unique registered module IDs, optionally filtered.
 
@@ -1285,22 +1286,38 @@ class Registry:
             tags: When supplied, only modules carrying *all* of the given tags
                 are returned.
             prefix: When supplied, only IDs starting with the prefix are returned.
-            include_hidden: When ``True``, modules whose
-                :class:`ModuleAnnotations` set ``discoverable=False`` are also
-                returned. Defaults to ``False`` so the apcore RFC's
-                ``discoverable`` annotation is honored on all enumeration
-                surfaces. Callers that legitimately need to see every module
-                ID (introspection tools, debug consoles) can pass
-                ``include_hidden=True``.
+            visibility: Filter by module visibility. Supported: ``["public", "hidden"]``.
+                Defaults to ``["public"]``. Pass ``["public", "hidden"]`` to see
+                all modules. Aligned with apcore D-24.
+            include_hidden: Deprecated. Use ``visibility=["public", "hidden"]`` instead.
         """
+        # D-24 alignment: visibility list takes precedence over legacy include_hidden bool.
+        if visibility is not None:
+            vis = set(visibility)
+            show_public = "public" in vis
+            show_hidden = "hidden" in vis
+        elif include_hidden is True:
+            show_public = True
+            show_hidden = True
+        else:
+            # Default per D-24: public only.
+            show_public = True
+            show_hidden = False
+
         with self._lock:
             snapshot = dict(self._modules)
             meta_snapshot = dict(self._module_meta)
 
         ids = list(snapshot.keys())
 
-        if not include_hidden:
-            ids = [mid for mid in ids if self._is_discoverable(mid, snapshot, meta_snapshot)]
+        # Filter by visibility
+        filtered_ids: list[str] = []
+        for mid in ids:
+            is_disc = self._is_discoverable(mid, snapshot, meta_snapshot)
+            if (is_disc and show_public) or (not is_disc and show_hidden):
+                filtered_ids.append(mid)
+
+        ids = filtered_ids
 
         if prefix is not None:
             ids = [mid for mid in ids if mid.startswith(prefix)]

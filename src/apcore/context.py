@@ -28,6 +28,22 @@ class Identity:
     roles: tuple[str, ...] = field(default_factory=tuple)
     attrs: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # Ensure attrs is a dict if None was passed, and protect against mutation
+        # of the original dict passed to the constructor.
+        if not isinstance(self.attrs, dict):
+            object.__setattr__(self, "attrs", {})
+        else:
+            object.__setattr__(self, "attrs", dict(self.attrs))
+
+    def get_attr(self, key: str, default: Any = None) -> Any:
+        """Get an attribute value by key.
+
+        Aligned with apcore D-03. May trigger a fetch if the identity
+        is lazy-loaded (future extension).
+        """
+        return self.attrs.get(key, default)
+
 
 @dataclass
 class Context(Generic[T]):
