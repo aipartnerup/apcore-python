@@ -138,6 +138,37 @@ def _close_if_alive(ref: "weakref.ref[Executor]") -> None:
             _logger.warning("atexit Executor.close() failed", exc_info=True)
 
 
+async def _aenumerate(
+    aiter: "AsyncIterator[Any]", start: int = 0
+) -> "AsyncIterator[tuple[int, Any]]":
+    """Async equivalent of ``enumerate`` for async iterators."""
+    idx = start
+    async for item in aiter:
+        yield idx, item
+        idx += 1
+
+
+def _json_type_name(value: Any) -> str:
+    """Return the JSON type name for *value*, matching Rust's ``json_type_name``.
+
+    Used to label invalid streaming chunks identically across SDKs. ``bool``
+    MUST be checked before ``int`` because ``bool`` is a subclass of ``int``.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any], *, _depth: int = 0) -> None:
     """Recursively merge *override* into *base* in-place.
 
@@ -938,11 +969,31 @@ class Executor:
         accumulated: dict[str, Any] = {}
         global_deadline = getattr(pipe_ctx.context, "global_deadline", None)
         try:
-            async for chunk in pipe_ctx.output_stream:
+            async for idx, chunk in _aenumerate(pipe_ctx.output_stream):
                 if global_deadline is not None and time.monotonic() > global_deadline:
                     raise ModuleTimeoutError(
                         module_id=module_id,
                         timeout_ms=self._global_timeout,
+                    )
+                # Cross-SDK contract (Rust ``deep_merge_chunks_checked``):
+                # a stream chunk is valid iff it is a JSON object (dict).
+                # Reject the first non-object chunk BEFORE merge and BEFORE
+                # yield so the invalid chunk is never delivered to the
+                # consumer; deep_merge can only accumulate objects.
+                if not isinstance(chunk, dict):
+                    actual_type = _json_type_name(chunk)
+                    raise InvalidInputError(
+                        message=(
+                            f"Streaming chunk at index {idx} is not a JSON object "
+                            f"(got {actual_type}); chunks must be objects so "
+                            f"deep_merge can accumulate them."
+                        ),
+                        code="GENERAL_INVALID_INPUT",
+                        details={
+                            "code": "STREAM_CHUNK_NOT_OBJECT",
+                            "chunk_index": idx,
+                            "actual_type": actual_type,
+                        },
                     )
                 _deep_merge(accumulated, chunk)
                 yield chunk

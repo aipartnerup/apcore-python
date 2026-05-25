@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from apcore.context import Context
-from apcore.errors import ModuleNotFoundError, ModuleTimeoutError
+from apcore.errors import InvalidInputError, ModuleNotFoundError, ModuleTimeoutError
 from apcore.executor import Executor
 from apcore.middleware import Middleware
 from apcore.registry import Registry
@@ -262,6 +262,102 @@ class TestStreamPostValidationFailure:
         assert event.module_id == "failstream"
         assert event.severity == "error"
         assert "error_type" in event.data
+
+
+class BadChunkStreamingModule:
+    """Yields a valid object chunk followed by a single non-object chunk.
+
+    The non-object chunk is supplied at construction time so a single class can
+    exercise strings, arrays, numbers, etc. Per the cross-SDK contract (Rust
+    ``deep_merge_chunks_checked``), the executor MUST reject the first
+    non-object chunk BEFORE yielding it.
+    """
+
+    def __init__(self, bad_chunk: Any) -> None:
+        self.input_schema = None
+        self.output_schema = None
+        self._bad_chunk = bad_chunk
+
+    def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+        return {}
+
+    async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
+        yield {"a": 1}
+        yield self._bad_chunk  # type: ignore[misc]  # deliberately invalid
+
+
+class TestStreamChunkShapeValidation:
+    """Stream chunks MUST be JSON objects; the first non-object chunk is
+    rejected with InvalidInputError(STREAM_CHUNK_NOT_OBJECT) before delivery.
+
+    Mirrors apcore-rust ``deep_merge_chunks_checked`` +
+    ``tests/test_chunk_shape.rs`` for cross-SDK parity (audit D10-001).
+    """
+
+    @pytest.mark.asyncio
+    async def test_rejects_string_chunk_before_delivery(self) -> None:
+        ex = _make_executor(module=BadChunkStreamingModule("not an object"), module_id="badstream")
+
+        delivered: list[Any] = []
+        with pytest.raises(InvalidInputError) as exc_info:
+            async for chunk in ex.stream("badstream", {}):
+                delivered.append(chunk)
+
+        # Hard requirement: the invalid chunk is never delivered to the consumer.
+        assert "not an object" not in delivered
+        assert delivered == [{"a": 1}]
+
+        err = exc_info.value
+        assert err.code == "GENERAL_INVALID_INPUT"
+        assert err.details["code"] == "STREAM_CHUNK_NOT_OBJECT"
+        assert err.details["actual_type"] == "string"
+        assert err.details["chunk_index"] == 1
+
+    @pytest.mark.asyncio
+    async def test_rejects_array_chunk_before_delivery(self) -> None:
+        ex = _make_executor(module=BadChunkStreamingModule([1, 2, 3]), module_id="badstream")
+
+        delivered: list[Any] = []
+        with pytest.raises(InvalidInputError) as exc_info:
+            async for chunk in ex.stream("badstream", {}):
+                delivered.append(chunk)
+
+        assert [1, 2, 3] not in delivered
+        assert delivered == [{"a": 1}]
+
+        err = exc_info.value
+        assert err.code == "GENERAL_INVALID_INPUT"
+        assert err.details["code"] == "STREAM_CHUNK_NOT_OBJECT"
+        assert err.details["actual_type"] == "array"
+        assert err.details["chunk_index"] == 1
+
+    @pytest.mark.asyncio
+    async def test_accepts_all_object_stream(self) -> None:
+        mod = DisjointKeyModule()
+
+        after_output: dict[str, Any] = {}
+
+        class CaptureAfter(Middleware):
+            def after(
+                self,
+                module_id: str,
+                inputs: dict[str, Any],
+                output: dict[str, Any],
+                context: Context,
+            ) -> dict[str, Any] | None:
+                nonlocal after_output
+                after_output = dict(output)
+                return None
+
+        ex = _make_executor(module=mod, module_id="disjoint", middlewares=[CaptureAfter()])
+
+        delivered: list[dict[str, Any]] = []
+        async for chunk in ex.stream("disjoint", {}):
+            delivered.append(chunk)
+
+        assert delivered == [{"a": "val_a"}, {"b": "val_b"}]
+        # Accumulated result is the deep merge of both object chunks.
+        assert after_output == {"a": "val_a", "b": "val_b"}
 
 
 class SlowStreamingModule:
