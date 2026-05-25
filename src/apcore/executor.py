@@ -138,9 +138,7 @@ def _close_if_alive(ref: "weakref.ref[Executor]") -> None:
             _logger.warning("atexit Executor.close() failed", exc_info=True)
 
 
-async def _aenumerate(
-    aiter: "AsyncIterator[Any]", start: int = 0
-) -> "AsyncIterator[tuple[int, Any]]":
+async def _aenumerate(aiter: "AsyncIterator[Any]", start: int = 0) -> "AsyncIterator[tuple[int, Any]]":
     """Async equivalent of ``enumerate`` for async iterators."""
     idx = start
     async for item in aiter:
