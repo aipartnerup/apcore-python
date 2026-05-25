@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Legacy `RetryPolicy` defaults `max_retries` to `0` and emits `DeprecationWarning` on instantiation (D-14 / A-D-AT-09).** Earlier builds silently enabled three retries when callers used `RetryPolicy()` without arguments, contradicting the opt-in retry contract. The class is retained for one release; new code should use `RetryConfig` (canonical, ms-based, no deprecation noise).
 
+- **Middleware circuit-breaker state enum renamed `CircuitState` → `CircuitBreakerState` (audit D2-001).** Adopts the cross-SDK canonical name for naming parity (matches `apcore-rust`; the TypeScript SDK uses `MiddlewareCircuitState`) and disambiguates from the unrelated events circuit-breaker `CircuitState` (`apcore.events`), which is unchanged. The top-level export `from apcore import CircuitBreakerState` and `apcore.middleware.CircuitBreakerState` now resolve to the renamed enum; members (`CLOSED`, `OPEN`, `HALF_OPEN`) are unchanged. No deprecation alias is provided. **Breaking** for direct importers of the middleware `CircuitState` — pre-1.0 0.x, acceptable.
+
 ### Fixed
 
 - **Cancel token observed at Step 2 of the execution pipeline (D-21 / A-D-EXEC-002).** `BuiltinCallChainGuard` now checks `context.cancel_token.is_cancelled` before running any guard work; a cancelled token short-circuits with `ExecutionCancelledError` before ACL, middleware, validation, or module execution. Combined with the existing Step 8 check, the pipeline now satisfies the two-point cancel-token invariant — single-check implementations were leaking compute through ACL/middleware/validation even when the caller had already cancelled.

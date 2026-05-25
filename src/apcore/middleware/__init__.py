@@ -2,7 +2,7 @@
 
 from apcore.middleware.adapters import AfterMiddleware, BeforeMiddleware
 from apcore.middleware.base import Middleware, RetrySignal
-from apcore.middleware.circuit_breaker import CircuitBreakerMiddleware, CircuitState
+from apcore.middleware.circuit_breaker import CircuitBreakerMiddleware, CircuitBreakerState
 from apcore.middleware.error_history_middleware import ErrorHistoryMiddleware
 from apcore.middleware.logging import LoggingMiddleware
 from apcore.middleware.manager import MiddlewareChainError, MiddlewareManager
@@ -22,5 +22,5 @@ __all__ = [
     "ErrorHistoryMiddleware",
     "PlatformNotifyMiddleware",
     "CircuitBreakerMiddleware",
-    "CircuitState",
+    "CircuitBreakerState",
 ]

@@ -134,7 +134,7 @@ from apcore.middleware import (
     AfterMiddleware,
     BeforeMiddleware,
     CircuitBreakerMiddleware,
-    CircuitState,
+    CircuitBreakerState,
     ErrorHistoryMiddleware,
     LoggingMiddleware,
     Middleware,
@@ -688,7 +688,7 @@ __all__ = [
     "ErrorHistoryMiddleware",
     "PlatformNotifyMiddleware",
     "CircuitBreakerMiddleware",
-    "CircuitState",
+    "CircuitBreakerState",
     # Decorators
     "module",
     "FunctionModule",

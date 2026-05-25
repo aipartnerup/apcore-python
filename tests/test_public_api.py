@@ -487,7 +487,7 @@ class TestPublicAPIAll:
         "RetryConfig",
         "RetryMiddleware",
         "CircuitBreakerMiddleware",
-        "CircuitState",
+        "CircuitBreakerState",
         # Decorators
         "module",
         "FunctionModule",

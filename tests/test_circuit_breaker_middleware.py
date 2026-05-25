@@ -10,7 +10,7 @@ import pytest
 
 from apcore.errors import CircuitOpenError
 from apcore.middleware.base import RetrySignal
-from apcore.middleware.circuit_breaker import CircuitBreakerMiddleware, CircuitState
+from apcore.middleware.circuit_breaker import CircuitBreakerMiddleware, CircuitBreakerState
 
 
 # ---------------------------------------------------------------------------
@@ -40,13 +40,49 @@ def _call_on_error(
 
 
 # ---------------------------------------------------------------------------
+# Public API naming (audit D2-001 — cross-SDK parity, matches apcore-rust)
+# ---------------------------------------------------------------------------
+
+
+def test_circuit_breaker_state_exported_from_top_level() -> None:
+    """`from apcore import CircuitBreakerState` resolves to the middleware enum."""
+    import apcore
+    from apcore.middleware.circuit_breaker import (
+        CircuitBreakerState as MiddlewareState,
+    )
+
+    assert apcore.CircuitBreakerState is MiddlewareState
+    assert "CircuitBreakerState" in apcore.__all__
+
+
+def test_circuit_breaker_state_has_expected_members() -> None:
+    """The renamed enum keeps the CLOSED / OPEN / HALF_OPEN members."""
+    from apcore import CircuitBreakerState
+
+    assert {m.name for m in CircuitBreakerState} == {"CLOSED", "OPEN", "HALF_OPEN"}
+
+
+def test_old_middleware_circuit_state_name_is_gone() -> None:
+    """The middleware enum is no longer reachable under the old `CircuitState` name.
+
+    Top-level `apcore` must not re-export the middleware enum as `CircuitState`, and the
+    middleware module itself must not retain the old attribute (no deprecation alias).
+    """
+    import apcore
+    import apcore.middleware.circuit_breaker as cb_module
+
+    assert "CircuitState" not in apcore.__all__
+    assert not hasattr(cb_module, "CircuitState")
+
+
+# ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
 
 
 def test_default_state_is_closed() -> None:
     cb = CircuitBreakerMiddleware()
-    assert cb.get_state("m1") == CircuitState.CLOSED
+    assert cb.get_state("m1") == CircuitBreakerState.CLOSED
 
 
 def test_custom_priority() -> None:
@@ -80,7 +116,7 @@ def test_circuit_opens_after_threshold_failures() -> None:
         _call_before(cb)
         _call_on_error(cb)
 
-    assert cb.get_state("m1") == CircuitState.OPEN
+    assert cb.get_state("m1") == CircuitBreakerState.OPEN
 
 
 def test_circuit_stays_closed_below_threshold() -> None:
@@ -89,7 +125,7 @@ def test_circuit_stays_closed_below_threshold() -> None:
         _call_before(cb)
         _call_on_error(cb)
 
-    assert cb.get_state("m1") == CircuitState.CLOSED
+    assert cb.get_state("m1") == CircuitBreakerState.CLOSED
 
 
 def test_success_resets_failure_counter() -> None:
@@ -106,7 +142,7 @@ def test_success_resets_failure_counter() -> None:
     _call_on_error(cb)
     _call_before(cb)
     _call_on_error(cb)
-    assert cb.get_state("m1") == CircuitState.CLOSED
+    assert cb.get_state("m1") == CircuitBreakerState.CLOSED
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +157,7 @@ def test_circuit_open_raises_circuit_open_error() -> None:
     _call_before(cb)
     _call_on_error(cb)
 
-    assert cb.get_state("m1") == CircuitState.OPEN
+    assert cb.get_state("m1") == CircuitBreakerState.OPEN
     # Per sync A-001 the canonical class is CircuitBreakerOpenError.
     with pytest.raises(CircuitBreakerOpenError) as exc_info:
         _call_before(cb)
@@ -138,9 +174,9 @@ def test_circuit_open_does_not_affect_other_modules() -> None:
     _call_before(cb, "m1")
     _call_on_error(cb, "m1")
 
-    assert cb.get_state("m1") == CircuitState.OPEN
+    assert cb.get_state("m1") == CircuitBreakerState.OPEN
     # m2 is unaffected
-    assert cb.get_state("m2") == CircuitState.CLOSED
+    assert cb.get_state("m2") == CircuitBreakerState.CLOSED
     _call_before(cb, "m2")  # must not raise
 
 
@@ -157,7 +193,7 @@ def test_circuit_transitions_to_half_open_after_recovery_window() -> None:
     _call_on_error(cb)
     # A tiny sleep ensures elapsed_ms > 0 so the condition is met cleanly.
     time.sleep(0.001)
-    assert cb.get_state("m1") == CircuitState.HALF_OPEN
+    assert cb.get_state("m1") == CircuitBreakerState.HALF_OPEN
 
 
 def test_circuit_closes_after_success_in_half_open() -> None:
@@ -168,7 +204,7 @@ def test_circuit_closes_after_success_in_half_open() -> None:
     # should be HALF_OPEN now; one success closes it
     _call_before(cb)
     _call_after(cb)
-    assert cb.get_state("m1") == CircuitState.CLOSED
+    assert cb.get_state("m1") == CircuitBreakerState.CLOSED
 
 
 def test_circuit_closes_after_multiple_successes_in_half_open() -> None:
@@ -179,11 +215,11 @@ def test_circuit_closes_after_multiple_successes_in_half_open() -> None:
     # first success — still HALF_OPEN
     _call_before(cb)
     _call_after(cb)
-    assert cb.get_state("m1") == CircuitState.HALF_OPEN
+    assert cb.get_state("m1") == CircuitBreakerState.HALF_OPEN
     # second success — now CLOSED
     _call_before(cb)
     _call_after(cb)
-    assert cb.get_state("m1") == CircuitState.CLOSED
+    assert cb.get_state("m1") == CircuitBreakerState.CLOSED
 
 
 def test_failure_in_half_open_reopens_circuit() -> None:
@@ -193,14 +229,14 @@ def test_failure_in_half_open_reopens_circuit() -> None:
     _call_before(cb)
     _call_on_error(cb)
     time.sleep(0.001)
-    assert cb.get_state("m1") == CircuitState.HALF_OPEN
+    assert cb.get_state("m1") == CircuitBreakerState.HALF_OPEN
 
     # Inject a failure while in HALF_OPEN — state must flip to OPEN
     _call_on_error(cb)
     # Use a large-recovery-window copy to assert OPEN without auto-transition
     # by inspecting the raw circuit record state directly.
     record = cb._circuits["m1"]
-    assert record.state == CircuitState.OPEN
+    assert record.state == CircuitBreakerState.OPEN
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +250,7 @@ def test_on_error_ignores_circuit_open_error() -> None:
     err = CircuitOpenError(module_id="m1")
     result = _call_on_error(cb, error=err)
     assert result is None
-    assert cb.get_state("m1") == CircuitState.CLOSED
+    assert cb.get_state("m1") == CircuitBreakerState.CLOSED
 
 
 # ---------------------------------------------------------------------------
@@ -226,9 +262,9 @@ def test_reset_closes_open_circuit() -> None:
     cb = CircuitBreakerMiddleware(failure_threshold=1)
     _call_before(cb)
     _call_on_error(cb)
-    assert cb.get_state("m1") == CircuitState.OPEN
+    assert cb.get_state("m1") == CircuitBreakerState.OPEN
     cb.reset("m1")
-    assert cb.get_state("m1") == CircuitState.CLOSED
+    assert cb.get_state("m1") == CircuitBreakerState.CLOSED
 
 
 # ---------------------------------------------------------------------------
@@ -364,4 +400,4 @@ def test_concurrent_access_does_not_corrupt_state() -> None:
 
     assert not errors, f"Concurrency errors: {errors}"
     # State must be one of the valid enum values — no corruption
-    assert cb.get_state("shared") in CircuitState.__members__.values()
+    assert cb.get_state("shared") in CircuitBreakerState.__members__.values()

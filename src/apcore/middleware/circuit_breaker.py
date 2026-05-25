@@ -12,12 +12,12 @@ from typing import Any
 from apcore.errors import CircuitBreakerOpenError
 from apcore.middleware.base import Context, Middleware, RetrySignal
 
-__all__ = ["CircuitState", "CircuitBreakerMiddleware"]
+__all__ = ["CircuitBreakerState", "CircuitBreakerMiddleware"]
 
 _logger = logging.getLogger(__name__)
 
 
-class CircuitState(Enum):
+class CircuitBreakerState(Enum):
     CLOSED = "CLOSED"
     OPEN = "OPEN"
     HALF_OPEN = "HALF_OPEN"
@@ -27,7 +27,7 @@ class CircuitState(Enum):
 class _CircuitRecord:
     """Per-module circuit state."""
 
-    state: CircuitState = CircuitState.CLOSED
+    state: CircuitBreakerState = CircuitBreakerState.CLOSED
     consecutive_failures: int = 0
     last_failure_at: datetime | None = None
     half_open_successes: int = 0
@@ -72,7 +72,7 @@ class CircuitBreakerMiddleware(Middleware):
     # Public introspection
     # ------------------------------------------------------------------
 
-    def get_state(self, module_id: str) -> CircuitState:
+    def get_state(self, module_id: str) -> CircuitBreakerState:
         """Return the current circuit state for *module_id*."""
         record = self._get_record(module_id)
         with record.lock:
@@ -83,7 +83,7 @@ class CircuitBreakerMiddleware(Middleware):
         """Manually close the circuit for *module_id* (e.g., for testing or ops override)."""
         record = self._get_record(module_id)
         with record.lock:
-            record.state = CircuitState.CLOSED
+            record.state = CircuitBreakerState.CLOSED
             record.consecutive_failures = 0
             record.last_failure_at = None
             record.half_open_successes = 0
@@ -96,7 +96,7 @@ class CircuitBreakerMiddleware(Middleware):
         record = self._get_record(module_id)
         with record.lock:
             self._maybe_transition_to_half_open(record, module_id)
-            if record.state == CircuitState.OPEN:
+            if record.state == CircuitBreakerState.OPEN:
                 raise CircuitBreakerOpenError(module_id=module_id)
         return None
 
@@ -138,21 +138,21 @@ class CircuitBreakerMiddleware(Middleware):
 
     def _maybe_transition_to_half_open(self, record: _CircuitRecord, module_id: str) -> None:
         """Transition OPEN → HALF_OPEN if recovery window has elapsed. Caller holds record.lock."""
-        if record.state != CircuitState.OPEN or record.last_failure_at is None:
+        if record.state != CircuitBreakerState.OPEN or record.last_failure_at is None:
             return
         elapsed_ms = (datetime.now(timezone.utc) - record.last_failure_at).total_seconds() * 1000
         if elapsed_ms >= self._recovery_window_ms:
-            record.state = CircuitState.HALF_OPEN
+            record.state = CircuitBreakerState.HALF_OPEN
             record.half_open_successes = 0
             _logger.info("Circuit HALF_OPEN for module '%s' after recovery window", module_id)
 
     def _record_success(self, record: _CircuitRecord) -> None:
         """Update state on success. Caller holds record.lock."""
         record.consecutive_failures = 0
-        if record.state == CircuitState.HALF_OPEN:
+        if record.state == CircuitBreakerState.HALF_OPEN:
             record.half_open_successes += 1
             if record.half_open_successes >= self._success_threshold:
-                record.state = CircuitState.CLOSED
+                record.state = CircuitBreakerState.CLOSED
                 record.last_failure_at = None
                 record.half_open_successes = 0
 
@@ -161,11 +161,11 @@ class CircuitBreakerMiddleware(Middleware):
         record.consecutive_failures += 1
         record.last_failure_at = datetime.now(timezone.utc)
 
-        opens = record.state == CircuitState.HALF_OPEN or (
-            record.state == CircuitState.CLOSED and record.consecutive_failures >= self._failure_threshold
+        opens = record.state == CircuitBreakerState.HALF_OPEN or (
+            record.state == CircuitBreakerState.CLOSED and record.consecutive_failures >= self._failure_threshold
         )
         if opens:
-            record.state = CircuitState.OPEN
+            record.state = CircuitBreakerState.OPEN
             _logger.warning(
                 "Circuit OPEN for module '%s' after %d consecutive failures",
                 module_id,
