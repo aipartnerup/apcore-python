@@ -139,7 +139,7 @@ def _map_error_code(errors: list[JsonschemaError]) -> str:
             return "SCHEMA_UNION_NO_MATCH"
         if error.validator == "anyOf":
             return "SCHEMA_UNION_NO_MATCH"
-    return "SCHEMA_VALIDATION_FAILED"
+    return "SCHEMA_VALIDATION_ERROR"
 
 
 def _error_to_detail(error: JsonschemaError) -> SchemaValidationErrorDetail:

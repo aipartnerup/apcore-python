@@ -1269,6 +1269,9 @@ class ErrorCodes:
     RELOAD_FAILED = "RELOAD_FAILED"
     EXECUTION_CANCELLED = "EXECUTION_CANCELLED"
     SCHEMA_VALIDATION_ERROR = "SCHEMA_VALIDATION_ERROR"
+    # Deprecated, retired alias — no longer emitted by any code path. All schema
+    # validation failures use SCHEMA_VALIDATION_ERROR (PROTOCOL_SPEC §8.2 registers
+    # only ERROR). Retained for backward-compatible imports only.
     SCHEMA_VALIDATION_FAILED = "SCHEMA_VALIDATION_FAILED"
     SCHEMA_UNION_NO_MATCH = "SCHEMA_UNION_NO_MATCH"
     SCHEMA_UNION_AMBIGUOUS = "SCHEMA_UNION_AMBIGUOUS"

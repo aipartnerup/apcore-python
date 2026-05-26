@@ -28,7 +28,7 @@ def _make_context(
     roles: list[str] | None = None,
     call_chain: list[str] | None = None,
 ) -> Context:
-    identity = Identity(id="test-user", type=identity_type, roles=roles or [])
+    identity = Identity(id="test-user", type=identity_type, roles=tuple(roles or ()))
     ctx = Context.create(identity=identity)
     ctx.call_chain = call_chain or []
     return ctx
