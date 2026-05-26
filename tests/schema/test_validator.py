@@ -80,6 +80,19 @@ class TestValidate:
         assert result.valid is False
         assert any(e.constraint == "required" for e in result.errors)
 
+    def test_failure_populates_error_code(self, validator: SchemaValidator) -> None:
+        """A-D-036 / A-D-034: a plain validation failure result must carry the
+        canonical error_code SCHEMA_VALIDATION_ERROR (spec §8.2), not None."""
+        result = validator.validate({"name": "Alice"}, SimpleModel)
+        assert result.valid is False
+        assert result.error_code == "SCHEMA_VALIDATION_ERROR"
+
+    def test_success_has_no_error_code(self, validator: SchemaValidator) -> None:
+        """A successful validation must not set an error_code."""
+        result = validator.validate({"name": "Alice", "age": 30}, SimpleModel)
+        assert result.valid is True
+        assert result.error_code is None
+
     def test_wrong_type_strict(self, strict_validator: SchemaValidator) -> None:
         result = strict_validator.validate({"name": "Alice", "age": "not_a_number"}, SimpleModel)
         assert result.valid is False

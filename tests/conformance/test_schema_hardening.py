@@ -224,3 +224,60 @@ class TestCacheFixture:
         )
         assert len(hash_a) == 64, "SHA-256 hex digest must be 64 characters"
         assert len(hash_b) == 64, "SHA-256 hex digest must be 64 characters"
+
+
+# ---------------------------------------------------------------------------
+# Fixture 6: Cross-repo content-hash parity for tricky canonicalization cases
+# (A-D-037). No `expected` hash is recorded — each SDK computes its own; the
+# digests below are reported so cross-repo byte-for-byte agreement can be
+# checked manually/by the harness. See schema_content_hash.json.
+# ---------------------------------------------------------------------------
+
+
+# Reference digests computed by this SDK (apcore-python, SHA-256 over the
+# canonical JSON form: json.dumps(sort_keys=True, separators=(",", ":"))).
+# Recorded for cross-repo parity comparison; update only if canonicalization
+# intentionally changes.
+PYTHON_CONTENT_HASHES: dict[str, str] = {
+    "float_one_point_zero": "3213ddad2217bdd811e24bd32fa5cb7e055d8183468fdccfe38924165742f203",
+    "non_ascii_unicode_key_and_value": "6f59ca33f434a234ec46ad8a2bee0e5ae2d4253f375288d8aacfe81464feca28",
+    "large_integer": "82ef34e554fd0838c22ca2e871d4eec23623ad58b9db621d510056b32043a82a",
+    "nested_unsorted_keys": "6a94e1c77af06f49b5507c607ae73ec8429eac1d070beba0a2ff7f5a0ae8208c",
+    "baseline_simple_object": "7d2a526161b8fd53a2661ffad166def49e7167ddbbac3497737c155021dfd09f",
+}
+
+
+class TestContentHashParity:
+    """schema_content_hash.json — A-D-037 cross-repo canonicalization parity."""
+
+    _fixture = _load("schema_content_hash.json")
+
+    @pytest.mark.parametrize(
+        "tc",
+        _fixture["test_cases"],
+        ids=lambda tc: tc["id"],
+    )
+    def test_content_hash_is_stable_and_matches_reference(self, tc: dict[str, Any]) -> None:
+        schema: dict[str, Any] = tc["schema"]
+        digest = content_hash(schema)
+
+        # 64-char SHA-256 hex and idempotent across two computations.
+        assert len(digest) == 64
+        assert digest == content_hash(schema), f"[{tc['id']}] content_hash is not idempotent"
+
+        # Pin against the recorded reference so an accidental canonicalization
+        # change (e.g. float rendering or key-sort regression) is caught.
+        assert digest == PYTHON_CONTENT_HASHES[tc["id"]], (
+            f"[{tc['id']}] content_hash drifted: got {digest}, "
+            f"reference {PYTHON_CONTENT_HASHES[tc['id']]}"
+        )
+
+    def test_report_all_digests(self) -> None:
+        """Print all computed digests for cross-repo parity inspection."""
+        lines = [
+            f"{tc['id']:35s} {content_hash(tc['schema'])}"
+            for tc in self._fixture["test_cases"]
+        ]
+        print("\n[A-D-037] apcore-python content_hash digests:\n" + "\n".join(lines))
+        # Every case is covered by the reference table.
+        assert {tc["id"] for tc in self._fixture["test_cases"]} == set(PYTHON_CONTENT_HASHES)
