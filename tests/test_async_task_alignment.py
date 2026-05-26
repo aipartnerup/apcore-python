@@ -93,6 +93,31 @@ class TestListExpired:
         assert "recent" not in ids
         assert "active" not in ids
 
+    @pytest.mark.asyncio
+    async def test_list_expired_excludes_terminal_task_with_null_completed_at(self) -> None:
+        """Regression (A-D-004): a terminal task whose ``completed_at`` is None
+        MUST NOT be returned, even when ``submitted_at`` predates the threshold.
+
+        The TaskStore.list_expired contract (async-tasks.md) and the TS/Rust
+        SDKs require ``completed_at`` to be non-null; there is no ``submitted_at``
+        fallback for this method (that fallback belongs to cleanup, not here).
+        """
+        store = InMemoryTaskStore()
+        # Terminal status but no completed_at, with an old submitted_at.
+        terminal_no_completed = TaskInfo(
+            task_id="terminal_no_completed",
+            module_id="m",
+            status=TaskStatus.CANCELLED,
+            submitted_at=100.0,
+            completed_at=None,
+        )
+        await store.save(terminal_no_completed)
+
+        expired = await store.list_expired(before_timestamp=200.0)
+        ids = {t.task_id for t in expired}
+        # submitted_at (100) < 200, but completed_at is None → MUST NOT expire.
+        assert "terminal_no_completed" not in ids
+
 
 # ---------------------------------------------------------------------------
 # D-12: TaskStatus.RETRYING removed — backoff state is PENDING
@@ -103,7 +128,7 @@ class _FailingModule:
     input_schema = None
     output_schema = None
 
-    def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+    def execute(self, _inputs: dict[str, Any], _context: Context) -> dict[str, Any]:
         raise RuntimeError("intentional failure")
 
 

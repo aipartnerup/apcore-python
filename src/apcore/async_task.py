@@ -248,8 +248,10 @@ class InMemoryTaskStore:
         for info in self._data.values():
             if info.status not in terminal:
                 continue
-            ref = info.completed_at if info.completed_at is not None else info.submitted_at
-            if ref < before_timestamp:
+            # A task without ``completed_at`` MUST NOT be returned — there is no
+            # ``submitted_at`` fallback here (that fallback belongs to cleanup).
+            # Matches the TaskStore.list_expired contract and the TS/Rust SDKs.
+            if info.completed_at is not None and info.completed_at < before_timestamp:
                 result.append(info)
         return result
 
