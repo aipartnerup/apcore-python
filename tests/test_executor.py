@@ -516,6 +516,21 @@ class TestValidate:
         assert result.valid is False
         assert any(e.get("code") == "MODULE_NOT_FOUND" for e in result.errors)
 
+    def test_validate_with_foreign_bound_context_does_not_raise(self) -> None:
+        """A-D-008: validate() is non-throwing — a Context already bound to a
+        DIFFERENT executor returns PreflightResult(valid=False) with a failed
+        ``executor_binding`` check instead of raising ContextBindingError."""
+        mod = MockModule()
+        ex_a = _make_executor(module=mod)
+        ex_b = _make_executor(module=MockModule())
+
+        ctx = Context.create()
+        ctx._bind_executor(ex_b)  # bind to a different executor
+
+        result = ex_a.validate("test.module", {"name": "Alice", "age": 30}, context=ctx)
+        assert result.valid is False
+        assert any(c.check == "executor_binding" and c.passed is False for c in result.checks)
+
     def test_acl_check(self) -> None:
         """validate() checks ACL and reports denial without executing."""
         mod = MockModule()
