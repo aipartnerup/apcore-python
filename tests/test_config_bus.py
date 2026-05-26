@@ -279,6 +279,52 @@ class TestNamespaceModeGet:
         config = self._make_ns_config({"apcore-mcp": {"transport": "stdio"}})
         assert config.get("apcore-mcp.transport") == "stdio"
 
+    def test_scalar_segment_with_remainder_returns_default_no_implicit_fallback(self) -> None:
+        """A-D-049: when a top-level segment resolves to a non-dict scalar and a
+        remainder sub-path is requested, get() returns the default — it must NOT
+        recurse into the implicit ``apcore.{key}`` namespace.
+
+        Spec §9.9.1 does not define this fallback; Rust is spec-correct.
+        """
+        config = self._make_ns_config({"foo": 5, "apcore": {"foo": {"bar": 9}}})
+        assert config.get("foo.bar", "DEFAULT") == "DEFAULT"
+        # And the bare scalar still resolves directly.
+        assert config.get("foo") == 5
+
+
+class TestNamespaceModeSet:
+    def setup_method(self) -> None:
+        _clear_ns_registry_except_builtins()
+
+    def teardown_method(self) -> None:
+        _clear_ns_registry_except_builtins()
+
+    def test_set_is_namespace_aware_round_trips_with_get(self) -> None:
+        """A-D-050: set() must be symmetric with get() — for a registered
+        namespace, set(ns_key, v) writes where get() reads, so a round-trip
+        returns the same value.
+
+        Uses a dotted namespace name (``my.app``) where the asymmetry is
+        provable: get() resolves the whole ``my.app`` prefix, but a naive
+        dot-path set() would otherwise nest under ``my`` -> ``app``.
+        """
+        Config.register_namespace("my.app")
+        config = Config(data={"my.app": {}})
+        config._mode = "namespace"
+
+        config.set("my.app.transport", "http")
+        assert config.get("my.app.transport") == "http"
+
+    def test_set_hyphenated_namespace_round_trips(self) -> None:
+        """A-D-050: a deeper key under a registered (hyphenated) namespace
+        round-trips too."""
+        Config.register_namespace("apcore-mcp")
+        config = Config(data={"apcore-mcp": {}})
+        config._mode = "namespace"
+
+        config.set("apcore-mcp.cache.ttl", 30)
+        assert config.get("apcore-mcp.cache.ttl") == 30
+
 
 # ---------------------------------------------------------------------------
 # namespace() method
