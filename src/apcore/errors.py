@@ -36,6 +36,7 @@ __all__ = [
     "SchemaNotFoundError",
     "SchemaParseError",
     "SchemaCircularRefError",
+    "SchemaMaxDepthExceededError",
     "CallDepthExceededError",
     "CircularCallError",
     "CallFrequencyExceededError",
@@ -551,6 +552,20 @@ class SchemaCircularRefError(ModuleError):
         super().__init__(
             code="SCHEMA_CIRCULAR_REF",
             message=f"Circular reference detected: {ref_path}",
+            details={"ref_path": ref_path},
+            **kwargs,
+        )
+
+
+class SchemaMaxDepthExceededError(ModuleError):
+    """Raised when $ref resolution exceeds the maximum reference depth cap."""
+
+    _default_retryable: bool | None = False
+
+    def __init__(self, ref_path: str, **kwargs: Any) -> None:
+        super().__init__(
+            code="SCHEMA_MAX_DEPTH_EXCEEDED",
+            message=f"Maximum reference depth exceeded: {ref_path}",
             details={"ref_path": ref_path},
             **kwargs,
         )

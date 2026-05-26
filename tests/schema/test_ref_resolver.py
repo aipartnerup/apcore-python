@@ -8,7 +8,12 @@ from typing import Any
 import pytest
 import yaml
 
-from apcore.errors import SchemaCircularRefError, SchemaNotFoundError, SchemaParseError
+from apcore.errors import (
+    SchemaCircularRefError,
+    SchemaMaxDepthExceededError,
+    SchemaNotFoundError,
+    SchemaParseError,
+)
 from apcore.schema.ref_resolver import RefResolver
 
 
@@ -218,7 +223,9 @@ class TestCircularRef:
             resolver.resolve(schema, current_file=file_a)
 
     def test_max_depth_exceeded(self, tmp_path: Path) -> None:
-        # Chain of 5 levels with max_depth=3
+        # Chain of 5 levels with max_depth=3.
+        # Depth-cap exhaustion (A-D-038) emits SCHEMA_MAX_DEPTH_EXCEEDED,
+        # distinct from a genuine cycle (SCHEMA_CIRCULAR_REF).
         write_yaml(tmp_path / "d.schema.yaml", {"V": {"$ref": "./e.schema.yaml#/W"}})
         write_yaml(tmp_path / "e.schema.yaml", {"W": {"type": "string"}})
         write_yaml(tmp_path / "c.schema.yaml", {"U": {"$ref": "./d.schema.yaml#/V"}})
@@ -227,8 +234,23 @@ class TestCircularRef:
         file_a = tmp_path / "a.schema.yaml"
         resolver = RefResolver(tmp_path, max_depth=3)
         schema = yaml.safe_load(file_a.read_text())
-        with pytest.raises(SchemaCircularRefError):
+        with pytest.raises(SchemaMaxDepthExceededError) as excinfo:
             resolver.resolve(schema, current_file=file_a)
+        assert excinfo.value.code == "SCHEMA_MAX_DEPTH_EXCEEDED"
+        # A genuine cycle must NOT be misreported as a depth-cap error.
+        assert not isinstance(excinfo.value, SchemaCircularRefError)
+
+    def test_self_ref_cycle_keeps_circular_code(self, tmp_path: Path) -> None:
+        # A genuine A->B->A cycle still raises SchemaCircularRefError
+        # (SCHEMA_CIRCULAR_REF), not the depth-cap code.
+        write_yaml(tmp_path / "a.schema.yaml", {"X": {"$ref": "./b.schema.yaml#/Y"}})
+        write_yaml(tmp_path / "b.schema.yaml", {"Y": {"$ref": "./a.schema.yaml#/X"}})
+        file_a = tmp_path / "a.schema.yaml"
+        resolver = RefResolver(tmp_path)
+        schema = yaml.safe_load(file_a.read_text())
+        with pytest.raises(SchemaCircularRefError) as excinfo:
+            resolver.resolve(schema, current_file=file_a)
+        assert excinfo.value.code == "SCHEMA_CIRCULAR_REF"
 
 
 # === $ref sibling handling ===

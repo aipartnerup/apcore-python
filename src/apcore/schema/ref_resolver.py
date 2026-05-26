@@ -8,7 +8,12 @@ from typing import Any
 
 import yaml
 
-from apcore.errors import SchemaCircularRefError, SchemaNotFoundError, SchemaParseError
+from apcore.errors import (
+    SchemaCircularRefError,
+    SchemaMaxDepthExceededError,
+    SchemaNotFoundError,
+    SchemaParseError,
+)
 
 __all__ = ["RefResolver"]
 
@@ -59,7 +64,7 @@ class RefResolver:
             raise SchemaCircularRefError(ref_path=ref_string)
 
         if depth >= self._max_depth:
-            raise SchemaCircularRefError(
+            raise SchemaMaxDepthExceededError(
                 ref_path=f"Maximum reference depth {self._max_depth} exceeded resolving: {ref_string}"
             )
 
