@@ -133,6 +133,21 @@ class TestPublicAPIImports:
 
         assert CircularCallError is not None
 
+    def test_module_id_errors_importable(self):
+        """A-001: ModuleIdConflictError, InvalidSegmentError, and
+        IdTooLongError are exported by the TS/Rust SDKs and the errors
+        submodule; they must also be importable from the top-level apcore
+        package and present in apcore.__all__."""
+        import apcore
+        from apcore import IdTooLongError, InvalidSegmentError, ModuleIdConflictError
+
+        assert ModuleIdConflictError is not None
+        assert InvalidSegmentError is not None
+        assert IdTooLongError is not None
+        assert "ModuleIdConflictError" in apcore.__all__
+        assert "InvalidSegmentError" in apcore.__all__
+        assert "IdTooLongError" in apcore.__all__
+
     def test_call_frequency_exceeded_error_importable(self):
         from apcore import CallFrequencyExceededError
 
@@ -462,9 +477,12 @@ class TestPublicAPIAll:
         "VersionConstraintError",
         "FuncMissingReturnTypeError",
         "FuncMissingTypeHintError",
+        "IdTooLongError",
         "InternalError",
         "InvalidInputError",
+        "InvalidSegmentError",
         "ModuleExecuteError",
+        "ModuleIdConflictError",
         "ModuleLoadError",
         "ModuleNotFoundError",
         "ModuleTimeoutError",
