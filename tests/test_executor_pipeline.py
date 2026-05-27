@@ -224,9 +224,7 @@ class TestCallWithTrace:
         reg = _make_registry()
         ex = Executor(registry=reg, strategy="testing")
 
-        result, trace = await ex.call_async_with_trace(
-            "test.echo", {"msg": "hi"}, version_hint="1.0.0"
-        )
+        result, trace = await ex.call_async_with_trace("test.echo", {"msg": "hi"}, version_hint="1.0.0")
         assert isinstance(result, dict)
         assert trace.success is True
 

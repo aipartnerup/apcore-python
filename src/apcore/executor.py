@@ -1194,9 +1194,7 @@ class Executor:
             A tuple of (result dict, PipelineTrace).
         """
         return self._run_async_in_sync(
-            self.call_async_with_trace(
-                module_id, inputs, context, version_hint=version_hint, strategy=strategy
-            ),
+            self.call_async_with_trace(module_id, inputs, context, version_hint=version_hint, strategy=strategy),
             module_id,
         )
 

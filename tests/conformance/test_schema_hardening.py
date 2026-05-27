@@ -268,16 +268,12 @@ class TestContentHashParity:
         # Pin against the recorded reference so an accidental canonicalization
         # change (e.g. float rendering or key-sort regression) is caught.
         assert digest == PYTHON_CONTENT_HASHES[tc["id"]], (
-            f"[{tc['id']}] content_hash drifted: got {digest}, "
-            f"reference {PYTHON_CONTENT_HASHES[tc['id']]}"
+            f"[{tc['id']}] content_hash drifted: got {digest}, " f"reference {PYTHON_CONTENT_HASHES[tc['id']]}"
         )
 
     def test_report_all_digests(self) -> None:
         """Print all computed digests for cross-repo parity inspection."""
-        lines = [
-            f"{tc['id']:35s} {content_hash(tc['schema'])}"
-            for tc in self._fixture["test_cases"]
-        ]
+        lines = [f"{tc['id']:35s} {content_hash(tc['schema'])}" for tc in self._fixture["test_cases"]]
         print("\n[A-D-037] apcore-python content_hash digests:\n" + "\n".join(lines))
         # Every case is covered by the reference table.
         assert {tc["id"] for tc in self._fixture["test_cases"]} == set(PYTHON_CONTENT_HASHES)
