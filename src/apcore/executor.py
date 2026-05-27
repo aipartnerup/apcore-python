@@ -1174,6 +1174,7 @@ class Executor:
         inputs: dict[str, Any] | None = None,
         context: Any | None = None,
         *,
+        version_hint: str | None = None,
         strategy: ExecutionStrategy | str | None = None,
     ) -> tuple[dict[str, Any], PipelineTrace]:
         """Sync call that returns (result, trace).
@@ -1186,13 +1187,16 @@ class Executor:
             module_id: The module to execute.
             inputs: Input data dict. None is treated as {}.
             context: Optional execution context.
+            version_hint: Optional semver hint for version negotiation.
             strategy: Override strategy for this call.
 
         Returns:
             A tuple of (result dict, PipelineTrace).
         """
         return self._run_async_in_sync(
-            self.call_async_with_trace(module_id, inputs, context, strategy=strategy),
+            self.call_async_with_trace(
+                module_id, inputs, context, version_hint=version_hint, strategy=strategy
+            ),
             module_id,
         )
 
@@ -1202,6 +1206,7 @@ class Executor:
         inputs: dict[str, Any] | None = None,
         context: Any | None = None,
         *,
+        version_hint: str | None = None,
         strategy: ExecutionStrategy | str | None = None,
     ) -> tuple[dict[str, Any], PipelineTrace]:
         """Async call that returns (result, trace).
@@ -1234,6 +1239,7 @@ class Executor:
             inputs=inputs or {},
             context=context,
             strategy=effective_strategy,
+            version_hint=version_hint,
         )
         engine = PipelineEngine()
         try:
