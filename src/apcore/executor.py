@@ -851,11 +851,19 @@ class Executor:
     def _unwrap_cancellation(exc: Exception) -> "ExecutionCancelledError | None":
         """Return the ExecutionCancelledError ``exc`` is/wraps, else None.
 
-        D-20: cancellation must propagate ahead of on_error recovery. A
-        MiddlewareChainError may wrap the typed cancellation cause for
-        diagnostics, so unwrap it before checking.
+        D-20: cancellation must propagate ahead of on_error recovery. The
+        typed cancellation may be wrapped twice on the way out of the engine:
+        ``PipelineEngine.run`` wraps the step's failure in a
+        ``PipelineStepError`` (cause), and middleware machinery may wrap it in
+        a ``MiddlewareChainError`` (original). Peel both layers before
+        checking so every entry point (call_async, stream, call_with_trace)
+        detects the cancellation regardless of how deeply it is wrapped.
         """
-        unwrapped = exc.original if isinstance(exc, MiddlewareChainError) else exc
+        unwrapped = exc
+        if isinstance(unwrapped, PipelineStepError) and isinstance(unwrapped.cause, Exception):
+            unwrapped = unwrapped.cause
+        if isinstance(unwrapped, MiddlewareChainError):
+            unwrapped = unwrapped.original
         return unwrapped if isinstance(unwrapped, ExecutionCancelledError) else None
 
     @staticmethod
@@ -897,7 +905,19 @@ class Executor:
         dispatch on the typed cause (e.g. MCP/A2A bridges keying on
         ``APPROVAL_DENIED`` vs ``MODULE_EXECUTE_ERROR``). This mirrors the
         TypeScript and Rust SDKs.
+
+        D-20 — Cancellation short-circuit: an ExecutionCancelledError raised
+        mid-pipeline MUST bypass on_error recovery entirely. The engine wraps
+        it in a PipelineStepError (and machinery may further wrap it in a
+        MiddlewareChainError), so re-check the unwrapped cause here as a
+        backstop. This guarantees ALL entry points — call_async, stream, and
+        call_with_trace — honour the bypass even if their caller did not
+        unwrap first. Idempotent for callers (call_async/stream) that already
+        short-circuited: they pass in the typed cause, not the wrapper.
         """
+        cancelled = self._unwrap_cancellation(exc)
+        if cancelled is not None:
+            raise cancelled
         ctx_obj = pipe_ctx.context
         # Unwrap MiddlewareChainError BEFORE propagation so the wrapped
         # typed cause is what middleware on_error handlers and the final

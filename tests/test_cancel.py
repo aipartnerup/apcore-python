@@ -130,3 +130,20 @@ class TestCancellationShortCircuitsOnError:
             async for _chunk in executor.stream("test.cancel", {}, context=ctx):
                 pass
         assert mw.on_error_called is False
+
+    @pytest.mark.asyncio
+    async def test_call_with_trace_cancellation_skips_on_error(self) -> None:
+        """A-D-001 (D-19/D-20): call_with_trace must mirror call() — a
+        step-raised ExecutionCancelledError must propagate directly and NOT be
+        observed or swallowed by on_error middleware. The pipeline wraps the
+        cancellation in a PipelineStepError, so the trace variant's
+        ``except Exception`` path must still short-circuit it."""
+        registry = Registry()
+        registry.register("test.cancel", _CancellingModule())
+        mw = _RecoveringMiddleware()
+        executor = Executor(registry=registry, middlewares=[mw])
+
+        ctx = Context.create()
+        with pytest.raises(ExecutionCancelledError):
+            await executor.call_async_with_trace("test.cancel", {}, context=ctx)
+        assert mw.on_error_called is False
