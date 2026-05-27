@@ -36,6 +36,7 @@ __all__ = [
     "SchemaNotFoundError",
     "SchemaParseError",
     "SchemaCircularRefError",
+    "SchemaMaxDepthExceededError",
     "CallDepthExceededError",
     "CircularCallError",
     "CallFrequencyExceededError",
@@ -551,6 +552,20 @@ class SchemaCircularRefError(ModuleError):
         super().__init__(
             code="SCHEMA_CIRCULAR_REF",
             message=f"Circular reference detected: {ref_path}",
+            details={"ref_path": ref_path},
+            **kwargs,
+        )
+
+
+class SchemaMaxDepthExceededError(ModuleError):
+    """Raised when $ref resolution exceeds the maximum reference depth cap."""
+
+    _default_retryable: bool | None = False
+
+    def __init__(self, ref_path: str, **kwargs: Any) -> None:
+        super().__init__(
+            code="SCHEMA_MAX_DEPTH_EXCEEDED",
+            message=f"Maximum reference depth exceeded: {ref_path}",
             details={"ref_path": ref_path},
             **kwargs,
         )
@@ -1269,6 +1284,9 @@ class ErrorCodes:
     RELOAD_FAILED = "RELOAD_FAILED"
     EXECUTION_CANCELLED = "EXECUTION_CANCELLED"
     SCHEMA_VALIDATION_ERROR = "SCHEMA_VALIDATION_ERROR"
+    # Deprecated, retired alias — no longer emitted by any code path. All schema
+    # validation failures use SCHEMA_VALIDATION_ERROR (PROTOCOL_SPEC §8.2 registers
+    # only ERROR). Retained for backward-compatible imports only.
     SCHEMA_VALIDATION_FAILED = "SCHEMA_VALIDATION_FAILED"
     SCHEMA_UNION_NO_MATCH = "SCHEMA_UNION_NO_MATCH"
     SCHEMA_UNION_AMBIGUOUS = "SCHEMA_UNION_AMBIGUOUS"

@@ -867,10 +867,10 @@ class Config:
             # segment target like ``port``). Return the value directly.
             return ns_data
         if not isinstance(ns_data, dict):
-            # Remainder requested but the resolved top-level value is not a
-            # dict — fall back to implicit apcore namespace.
-            if namespace != "apcore":
-                return self._get_namespace_mode(f"apcore.{key}", default)
+            # A-D-049: remainder requested but the resolved top-level value is a
+            # non-dict scalar. Spec §9.9.1 does NOT define an implicit-apcore
+            # fallback here (Rust is spec-correct), so return the default rather
+            # than recursing into ``apcore.{key}``.
             return default
         return _get_nested(ns_data, remainder, default)
 
@@ -913,8 +913,27 @@ class Config:
         return key[:dot_index], key[dot_index + 1 :]
 
     def set(self, key: str, value: Any) -> None:
-        """Set a configuration value by dot-path key."""
+        """Set a configuration value by dot-path key.
+
+        A-D-050: in namespace mode, set() is symmetric with get() — it resolves
+        the registered-namespace longest-prefix first, then writes the remainder
+        within that namespace. This matters when a namespace name itself
+        contains dots (e.g. ``my.app``): a naive dot-path write would nest under
+        ``my`` -> ``app`` where get() reads the whole ``my.app`` key.
+        """
         with self._lock:
+            if self._mode == "namespace":
+                namespace, remainder = self._split_namespace_key(key)
+                if namespace is not None:
+                    if remainder is None:
+                        self._data[namespace] = value
+                        return
+                    ns_data = self._data.get(namespace)
+                    if not isinstance(ns_data, dict):
+                        ns_data = {}
+                        self._data[namespace] = ns_data
+                    _set_nested(ns_data, remainder, value)
+                    return
             _set_nested(self._data, key, value)
 
     @property

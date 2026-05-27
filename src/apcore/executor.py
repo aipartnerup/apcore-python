@@ -27,6 +27,7 @@ from apcore.errors import (
     CallDepthExceededError,
     CallFrequencyExceededError,
     CircularCallError,
+    ContextBindingError,
     ErrorCodes,
     InvalidInputError,
     ModuleError,
@@ -518,9 +519,22 @@ class Executor:
         # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
         # to the Context before pipeline step 1 (also applies to dry-run
         # validation, since the pipeline expects a bound Context).
+        # A-D-008: validate() MUST be non-throwing. A Context already bound to
+        # a DIFFERENT executor raises ContextBindingError on bind; surface that
+        # as a failed check rather than letting it escape (mirrors Rust).
         if context is None:
             context = Context.create()
-        context._bind_executor(self)
+        try:
+            context._bind_executor(self)
+        except ContextBindingError as e:
+            checks.append(
+                PreflightCheckResult(
+                    check="executor_binding",
+                    passed=False,
+                    error=e.to_dict(),
+                )
+            )
+            return PreflightResult(valid=False, checks=checks)
 
         # Run pipeline in dry_run mode — pure=False steps are skipped
         pipe_ctx = PipelineContext(
@@ -811,6 +825,13 @@ class Executor:
                 # PipelineStepError is the engine-level contract (§1.1); the
                 # executor exposes the underlying typed error to callers.
                 underlying = e.cause if isinstance(e.cause, Exception) else e
+                # D-20: cancellation MUST short-circuit BEFORE on_error. A step
+                # may wrap an ExecutionCancelledError in PipelineStepError (or a
+                # MiddlewareChainError); re-check the unwrapped cause and
+                # propagate it directly without running the recovery chain.
+                cancelled = self._unwrap_cancellation(underlying)
+                if cancelled is not None:
+                    raise cancelled
                 result = await self._recover_from_call_error(underlying, pipe_ctx, module_id)
                 if isinstance(result, RetrySignal):
                     self._reset_pipe_ctx_for_retry(pipe_ctx, result.inputs)
@@ -825,6 +846,17 @@ class Executor:
                     continue
                 return result
             return output
+
+    @staticmethod
+    def _unwrap_cancellation(exc: Exception) -> "ExecutionCancelledError | None":
+        """Return the ExecutionCancelledError ``exc`` is/wraps, else None.
+
+        D-20: cancellation must propagate ahead of on_error recovery. A
+        MiddlewareChainError may wrap the typed cancellation cause for
+        diagnostics, so unwrap it before checking.
+        """
+        unwrapped = exc.original if isinstance(exc, MiddlewareChainError) else exc
+        return unwrapped if isinstance(unwrapped, ExecutionCancelledError) else None
 
     @staticmethod
     def _reset_pipe_ctx_for_retry(pipe_ctx: PipelineContext, new_inputs: dict[str, Any]) -> None:
@@ -929,6 +961,10 @@ class Executor:
             raise self._translate_abort(e) from e
         except PipelineStepError as e:
             underlying = e.cause if isinstance(e.cause, Exception) else e
+            # D-20: cancellation short-circuits BEFORE on_error (mirror call_async).
+            cancelled = self._unwrap_cancellation(underlying)
+            if cancelled is not None:
+                raise cancelled
             recovery = await self._recover_from_call_error(underlying, pipe_ctx, module_id)
             if isinstance(recovery, RetrySignal):
                 _logger.warning(
@@ -1138,6 +1174,7 @@ class Executor:
         inputs: dict[str, Any] | None = None,
         context: Any | None = None,
         *,
+        version_hint: str | None = None,
         strategy: ExecutionStrategy | str | None = None,
     ) -> tuple[dict[str, Any], PipelineTrace]:
         """Sync call that returns (result, trace).
@@ -1150,13 +1187,16 @@ class Executor:
             module_id: The module to execute.
             inputs: Input data dict. None is treated as {}.
             context: Optional execution context.
+            version_hint: Optional semver hint for version negotiation.
             strategy: Override strategy for this call.
 
         Returns:
             A tuple of (result dict, PipelineTrace).
         """
         return self._run_async_in_sync(
-            self.call_async_with_trace(module_id, inputs, context, strategy=strategy),
+            self.call_async_with_trace(
+                module_id, inputs, context, version_hint=version_hint, strategy=strategy
+            ),
             module_id,
         )
 
@@ -1166,6 +1206,7 @@ class Executor:
         inputs: dict[str, Any] | None = None,
         context: Any | None = None,
         *,
+        version_hint: str | None = None,
         strategy: ExecutionStrategy | str | None = None,
     ) -> tuple[dict[str, Any], PipelineTrace]:
         """Async call that returns (result, trace).
@@ -1198,6 +1239,7 @@ class Executor:
             inputs=inputs or {},
             context=context,
             strategy=effective_strategy,
+            version_hint=version_hint,
         )
         engine = PipelineEngine()
         try:

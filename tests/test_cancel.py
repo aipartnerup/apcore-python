@@ -9,6 +9,7 @@ import pytest
 from apcore.cancel import CancelToken, ExecutionCancelledError
 from apcore.context import Context
 from apcore.executor import Executor
+from apcore.middleware.base import Middleware
 from apcore.registry import Registry
 
 
@@ -71,3 +72,61 @@ class TestExecutorCancellation:
 
         with pytest.raises(ExecutionCancelledError):
             executor.call("test.module", {}, context=ctx)
+
+
+class _RecoveringMiddleware(Middleware):
+    """on_error always recovers with a sentinel dict (records invocation)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_error_called = False
+
+    def on_error(
+        self,
+        module_id: str,
+        inputs: dict[str, Any],
+        error: Exception,
+        context: Context,
+    ) -> dict[str, Any] | None:
+        self.on_error_called = True
+        return {"recovered": True}
+
+
+class _CancellingModule:
+    """A module that raises ExecutionCancelledError mid-execution."""
+
+    input_schema = None
+    output_schema = None
+
+    def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+        raise ExecutionCancelledError()
+
+
+class TestCancellationShortCircuitsOnError:
+    """A-D-003 / A-D-004 (D-20): step-raised ExecutionCancelledError must
+    short-circuit BEFORE the on_error middleware recovery chain."""
+
+    @pytest.mark.asyncio
+    async def test_call_async_cancellation_skips_on_error(self) -> None:
+        registry = Registry()
+        registry.register("test.cancel", _CancellingModule())
+        mw = _RecoveringMiddleware()
+        executor = Executor(registry=registry, middlewares=[mw])
+
+        ctx = Context.create()
+        with pytest.raises(ExecutionCancelledError):
+            await executor.call_async("test.cancel", {}, context=ctx)
+        assert mw.on_error_called is False
+
+    @pytest.mark.asyncio
+    async def test_stream_cancellation_skips_on_error(self) -> None:
+        registry = Registry()
+        registry.register("test.cancel", _CancellingModule())
+        mw = _RecoveringMiddleware()
+        executor = Executor(registry=registry, middlewares=[mw])
+
+        ctx = Context.create()
+        with pytest.raises(ExecutionCancelledError):
+            async for _chunk in executor.stream("test.cancel", {}, context=ctx):
+                pass
+        assert mw.on_error_called is False

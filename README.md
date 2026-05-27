@@ -30,10 +30,10 @@ A schema-enforced module standard for the AI-Perceivable era.
 - **Async task management** -- Background module execution with status tracking, cancellation, and concurrency limiting
 - **Behavioral annotations** -- Declare module traits (readonly, destructive, idempotent, cacheable, paginated, streaming) for AI-aware orchestration
 - **W3C Trace Context** -- traceparent header injection/extraction for distributed tracing interop
-- **Circuit breakers** -- `CircuitBreakerMiddleware` for per-module OPEN/CLOSED/HALF_OPEN protection; `CircuitBreakerWrapper` for per-subscriber event delivery resilience
-- **Multi-class module discovery** -- Opt-in `@multi_class` decorator for multiple Module classes per file with snake_case ID derivation (PROTOCOL_SPEC §2.1.1)
+- **Circuit breakers** -- `CircuitBreakerMiddleware` for per-module OPEN/CLOSED/HALF_OPEN protection; `CircuitBreakerWrapper` (`from apcore.events.circuit_breaker import CircuitBreakerWrapper`) for per-subscriber event delivery resilience
+- **Multi-class module discovery** -- Opt-in `@multi_class` decorator (`from apcore.registry.multi_class import multi_class`) for multiple Module classes per file with snake_case ID derivation (PROTOCOL_SPEC §2.1.1)
 - **Pluggable stores** -- `TaskStore` for async task persistence; `ObservabilityStore` for error/metric backends; `AuditStore` for control-module audit trails
-- **Prometheus / K8s integration** -- `PrometheusExporter` with `/metrics`, `/healthz`, `/readyz` endpoints; `UsageCollector` and `MetricsCollector` emit standard Prometheus gauge/counter metrics
+- **Prometheus / K8s integration** -- `PrometheusExporter` (`from apcore.observability import PrometheusExporter`) with `/metrics`, `/healthz`, `/readyz` endpoints; `UsageCollector` and `MetricsCollector` emit standard Prometheus gauge/counter metrics
 
 ## API Overview
 
@@ -84,7 +84,7 @@ A schema-enforced module standard for the AI-Perceivable era.
 | Class | Description |
 |-------|-------------|
 | `TracingMiddleware` | Distributed tracing with span export |
-| `BatchSpanProcessor` | Non-blocking OTEL span export with configurable queue |
+| `BatchSpanProcessor` | Non-blocking OTEL span export with configurable queue (`from apcore.observability import BatchSpanProcessor`) |
 | `MetricsMiddleware` / `MetricsCollector` | Call count, latency, error rate metrics |
 | `ContextLogger` | Context-aware structured logging with `RedactionConfig` |
 | `ErrorHistory` | Min-heap error ring buffer with SHA-256 fingerprint deduplication |
@@ -94,7 +94,7 @@ A schema-enforced module standard for the AI-Perceivable era.
 | `InMemoryExporter` | Span exporter that stores spans in memory |
 | `StdoutExporter` | Span exporter that writes spans to stdout |
 | `OTLPExporter` | Span exporter using OpenTelemetry Protocol |
-| `PrometheusExporter` | HTTP server for `/metrics`, `/healthz`, `/readyz` endpoints |
+| `PrometheusExporter` | HTTP server for `/metrics`, `/healthz`, `/readyz` endpoints (`from apcore.observability import PrometheusExporter`) |
 
 **Events & Extensions**
 

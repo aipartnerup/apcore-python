@@ -469,6 +469,7 @@ class TestPublicAPIAll:
         "ModuleNotFoundError",
         "ModuleTimeoutError",
         "SchemaCircularRefError",
+        "SchemaMaxDepthExceededError",
         "SchemaNotFoundError",
         "SchemaParseError",
         "SchemaValidationError",

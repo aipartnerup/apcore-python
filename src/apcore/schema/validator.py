@@ -64,7 +64,14 @@ class SchemaValidator:
             model.model_validate(data, strict=not self._coerce_types)
             return SchemaValidationResult(valid=True, errors=[])
         except PydanticValidationError as e:
-            return SchemaValidationResult(valid=False, errors=self._pydantic_error_to_details(e))
+            # A-D-036 / A-D-034: populate the canonical error_code on the public
+            # validation path so consumers (and cross-SDK parity) see
+            # SCHEMA_VALIDATION_ERROR (spec §8.2) rather than None.
+            return SchemaValidationResult(
+                valid=False,
+                errors=self._pydantic_error_to_details(e),
+                error_code="SCHEMA_VALIDATION_ERROR",
+            )
 
     def validate_input(self, data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
         """Validate input data and return the validated dict. Raises SchemaValidationError on failure."""

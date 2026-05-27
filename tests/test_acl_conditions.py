@@ -28,7 +28,7 @@ def _make_context(
     roles: list[str] | None = None,
     call_chain: list[str] | None = None,
 ) -> Context:
-    identity = Identity(id="test-user", type=identity_type, roles=roles or [])
+    identity = Identity(id="test-user", type=identity_type, roles=tuple(roles or ()))
     ctx = Context.create(identity=identity)
     ctx.call_chain = call_chain or []
     return ctx
@@ -175,6 +175,30 @@ class TestMaxCallDepthHandler:
         handler = _MaxCallDepthHandler()
         ctx = _make_context()
         assert handler.evaluate("5", ctx) is False
+
+    def test_bool_true_does_not_match_fail_closed(self) -> None:
+        """A-D-012: ``max_call_depth: true`` must NOT match (fail closed).
+
+        Python ``bool`` is a subclass of ``int``; ``True`` coerces to 1, which
+        would otherwise ALLOW a call where ``call_chain`` length <= 1. This is
+        a security-relevant allow/deny flip, so a bool threshold must be
+        rejected just like any non-int value.
+        """
+        handler = _MaxCallDepthHandler()
+        ctx = _make_context(call_chain=["a"])
+        assert handler.evaluate(True, ctx) is False
+
+    def test_bool_false_does_not_match_fail_closed(self) -> None:
+        """A-D-012: ``max_call_depth: false`` must NOT match either."""
+        handler = _MaxCallDepthHandler()
+        ctx = _make_context(call_chain=[])
+        assert handler.evaluate(False, ctx) is False
+
+    def test_bool_in_lte_does_not_match_fail_closed(self) -> None:
+        """A-D-012: bool inside the ``lte`` form must also fail closed."""
+        handler = _MaxCallDepthHandler()
+        ctx = _make_context(call_chain=["a"])
+        assert handler.evaluate({"lte": True}, ctx) is False
 
 
 # ---------------------------------------------------------------------------

@@ -207,6 +207,29 @@ class TestCallWithTrace:
         _, trace = ex.call_with_trace("test.echo", {}, strategy="testing")
         assert trace.strategy_name == "testing"
 
+    def test_call_with_trace_accepts_version_hint(self) -> None:
+        """Sync finding A-D-005 (D-19): call_with_trace accepts and forwards
+        version_hint, like call(), so the trace variant shares call()'s
+        version-negotiation semantics."""
+        reg = _make_registry()
+        ex = Executor(registry=reg, strategy="testing")
+
+        result, trace = ex.call_with_trace("test.echo", {"msg": "hi"}, version_hint="1.0.0")
+        assert isinstance(result, dict)
+        assert trace.success is True
+
+    @pytest.mark.asyncio
+    async def test_call_async_with_trace_accepts_version_hint(self) -> None:
+        """Async variant also accepts version_hint (A-D-005 / D-19)."""
+        reg = _make_registry()
+        ex = Executor(registry=reg, strategy="testing")
+
+        result, trace = await ex.call_async_with_trace(
+            "test.echo", {"msg": "hi"}, version_hint="1.0.0"
+        )
+        assert isinstance(result, dict)
+        assert trace.success is True
+
 
 # ---------------------------------------------------------------------------
 # Task 4: introspection

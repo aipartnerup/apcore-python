@@ -77,7 +77,10 @@ class _MaxCallDepthHandler:
 
     def evaluate(self, value: Any, context: Context) -> bool:
         threshold = value.get("lte") if isinstance(value, dict) else value
-        if not isinstance(threshold, int):
+        # Reject bool explicitly: Python ``bool`` is a subclass of ``int``, so a
+        # YAML ``max_call_depth: true`` would coerce to threshold=1 and could
+        # ALLOW a shallow call where TS/Rust fail closed. Fail closed here too.
+        if isinstance(threshold, bool) or not isinstance(threshold, int):
             return False
         return len(context.call_chain) <= threshold
 
