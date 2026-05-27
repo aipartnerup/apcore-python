@@ -47,13 +47,12 @@ class _ThrowingConditionHandler:
 @pytest.fixture(autouse=True)
 def _register_throwing_handler():
     """Register the throwing handler for the fixture key, then clean up."""
-    had_previous = _THROWING_KEY in ACL._condition_handlers
     previous = ACL._condition_handlers.get(_THROWING_KEY)
     ACL.register_condition(_THROWING_KEY, _ThrowingConditionHandler())
     try:
         yield
     finally:
-        if had_previous:
+        if previous is not None:
             ACL._condition_handlers[_THROWING_KEY] = previous
         else:
             ACL._condition_handlers.pop(_THROWING_KEY, None)

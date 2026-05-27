@@ -129,7 +129,8 @@ async def test_cancel_during_backoff_stops_further_retries() -> None:
         # retry_delay is retry_delay_ms (>= 1000ms) so there is a wide window.
         for _ in range(200):
             await asyncio.sleep(0.005)
-            if executor.attempts >= 1 and manager.get_status(task_id).status == TaskStatus.PENDING:
+            info = manager.get_status(task_id)
+            if executor.attempts >= 1 and info is not None and info.status == TaskStatus.PENDING:
                 break
 
         assert executor.attempts == 1, "expected exactly one attempt before cancel landed in backoff"
