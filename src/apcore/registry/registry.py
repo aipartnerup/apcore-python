@@ -544,6 +544,21 @@ class Registry:
                 )
                 continue
 
+            # A-D-015: the reserved ``ephemeral.*`` namespace may only be
+            # populated via the explicit Registry.register() path, never via
+            # discovery. The filesystem path enforces this in
+            # ``_reject_ephemeral_discoveries``; mirror it here for the
+            # custom-discoverer path by skipping such entries with a warning
+            # (matching apcore-typescript ``_discoverCustom``).
+            if _is_ephemeral(mod_id):
+                logger.warning(
+                    "Skipping custom-discovered module '%s': the 'ephemeral.*' "
+                    "namespace is reserved for programmatic registration via "
+                    "Registry.register() and may not be populated by discovery.",
+                    mod_id,
+                )
+                continue
+
             # Apply custom validator if set
             if self._custom_validator is not None:
                 errors = self._custom_validator.validate(mod)

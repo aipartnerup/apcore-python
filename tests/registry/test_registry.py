@@ -1221,6 +1221,32 @@ class TestCustomDiscoverer:
         malformed_warnings = [r for r in caplog.records if "Malformed entry" in r.message]
         assert len(malformed_warnings) == 4
 
+    def test_ephemeral_custom_discovered_module_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A-D-015: a custom discoverer returning an ephemeral.* module must be
+        skipped (not registered) with a warning, mirroring the filesystem path
+        and apcore-typescript. Valid non-ephemeral entries still register."""
+        mod_ok = _ValidModule()
+        mod_ephemeral = _ValidModuleB()
+        discoverer = _MockDiscoverer(
+            [
+                {"module_id": "ephemeral.session.tmp", "module": mod_ephemeral},
+                {"module_id": "good.mod", "module": mod_ok},
+            ]
+        )
+
+        reg = Registry()
+        reg.set_discoverer(discoverer)
+        with caplog.at_level(logging.WARNING):
+            count = reg.discover()
+
+        assert count == 1
+        assert reg.has("good.mod")
+        assert not reg.has("ephemeral.session.tmp")
+        ephemeral_warnings = [
+            r for r in caplog.records if "ephemeral.session.tmp" in r.message and "ephemeral.*" in r.message
+        ]
+        assert len(ephemeral_warnings) == 1
+
 
 # ===== Custom Validator =====
 
