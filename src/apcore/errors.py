@@ -1348,26 +1348,30 @@ class ErrorCodes:
 # Framework reserved error code prefixes (Algorithm A17)
 # =============================================================================
 
+# The canonical 14 reserved prefixes (A-D-006). CIRCUIT_, PIPELINE_,
+# STREAMING_, and CONTEXT_ are intentionally NOT reserved as prefixes: the
+# framework only owns the specific codes under them (e.g. CIRCUIT_BREAKER_OPEN,
+# PIPELINE_STEP_ERROR, STREAMING_INTERFACE_MISMATCH, CONTEXT_BINDING_ERROR),
+# which remain protected by the exact-code collision check against
+# _FRAMEWORK_CODES. Reserving these as prefixes over-claimed the namespace and
+# diverged from the TypeScript/Rust SDKs, blocking legitimate module codes such
+# as STREAMING_CUSTOM.
 FRAMEWORK_ERROR_CODE_PREFIXES: frozenset[str] = frozenset(
     {
+        "ACL_",
+        "APPROVAL_",
+        "BINDING_",
+        "CALL_",
+        "CIRCULAR_",
+        "CONFIG_",
+        "DEPENDENCY_",
+        "ERROR_CODE_",
+        "FUNC_",
+        "GENERAL_",
+        "MIDDLEWARE_",
         "MODULE_",
         "SCHEMA_",
-        "ACL_",
-        "GENERAL_",
-        "CONFIG_",
-        "CIRCULAR_",
-        "DEPENDENCY_",
-        "CALL_",
-        "FUNC_",
-        "BINDING_",
-        "MIDDLEWARE_",
-        "CIRCUIT_",
-        "APPROVAL_",
         "VERSION_",
-        "ERROR_CODE_",
-        "PIPELINE_",
-        "STREAMING_",
-        "CONTEXT_",
     }
 )
 

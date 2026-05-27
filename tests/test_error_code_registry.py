@@ -32,6 +32,36 @@ class TestErrorCodeRegistry:
         with pytest.raises(ErrorCodeCollisionError, match="reserved prefix"):
             reg.register("my.module", {"MODULE_CUSTOM_THING"})
 
+    def test_narrowed_prefix_allows_streaming_custom(self) -> None:
+        """A-D-006: STREAMING_ is no longer a reserved prefix; a module may
+        register a STREAMING_-prefixed custom code that is not an exact
+        framework code."""
+        reg = ErrorCodeRegistry()
+        reg.register("my.module", {"STREAMING_CUSTOM"})
+        assert "STREAMING_CUSTOM" in reg.all_codes
+
+    def test_narrowed_prefix_allows_circuit_pipeline_context_custom(self) -> None:
+        """A-D-006: CIRCUIT_, PIPELINE_, CONTEXT_ are no longer reserved
+        prefixes for non-framework codes."""
+        reg = ErrorCodeRegistry()
+        reg.register("my.module", {"CIRCUIT_CUSTOM", "PIPELINE_CUSTOM", "CONTEXT_CUSTOM"})
+        assert {"CIRCUIT_CUSTOM", "PIPELINE_CUSTOM", "CONTEXT_CUSTOM"} <= reg.all_codes
+
+    def test_exact_streaming_framework_code_still_collides(self) -> None:
+        """A-D-006: the specific framework code STREAMING_INTERFACE_MISMATCH
+        is still protected by the exact-code check even after the prefix was
+        dropped."""
+        reg = ErrorCodeRegistry()
+        with pytest.raises(ErrorCodeCollisionError, match="framework"):
+            reg.register("my.module", {"STREAMING_INTERFACE_MISMATCH"})
+
+    def test_exact_context_framework_code_still_collides(self) -> None:
+        """A-D-006: CONTEXT_BINDING_ERROR remains protected as an exact
+        framework code."""
+        reg = ErrorCodeRegistry()
+        with pytest.raises(ErrorCodeCollisionError, match="framework"):
+            reg.register("my.module", {"CONTEXT_BINDING_ERROR"})
+
     def test_collision_between_modules(self) -> None:
         reg = ErrorCodeRegistry()
         reg.register("module.a", {"SHARED_CODE"})
