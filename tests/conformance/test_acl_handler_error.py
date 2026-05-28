@@ -85,9 +85,7 @@ def test_acl_handler_error(case: dict) -> None:
     context = Context.create()
     decision = acl.check(case["caller_id"], case["target_id"], context)
 
-    assert decision is case["expected"], (
-        f"expected decision {case['expected']} (fail-closed), got {decision}"
-    )
+    assert decision is case["expected"], f"expected decision {case['expected']} (fail-closed), got {decision}"
 
     assert len(captured) == 1, f"expected exactly one audit entry, got {len(captured)}"
     entry = captured[0]

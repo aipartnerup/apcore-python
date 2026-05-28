@@ -142,13 +142,11 @@ async def test_cancel_during_backoff_stops_further_retries() -> None:
 
         final = manager.get_status(task_id)
         assert final is not None
-        assert final.status == TaskStatus.CANCELLED, (
-            f"expected final status CANCELLED, got {final.status}"
-        )
+        assert final.status == TaskStatus.CANCELLED, f"expected final status CANCELLED, got {final.status}"
 
         # No further retry attempt may have been started after the cancel.
-        assert executor.attempts == attempts_at_cancel, (
-            f"attempt counter increased after cancel: {attempts_at_cancel} -> {executor.attempts}"
-        )
+        assert (
+            executor.attempts == attempts_at_cancel
+        ), f"attempt counter increased after cancel: {attempts_at_cancel} -> {executor.attempts}"
     finally:
         await manager.shutdown()

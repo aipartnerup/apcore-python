@@ -318,6 +318,20 @@ class TestPublicAPIImports:
 
         assert ModuleValidator is not None
 
+    # -- Multi-class discovery (cross-language root parity: TS/Rust export at root) --
+
+    def test_multi_class_discovery_importable_from_root(self):
+        from apcore import class_name_to_segment, discover_multi_class
+
+        assert class_name_to_segment is not None
+        assert discover_multi_class is not None
+
+    # NOTE (audit D1-003): the events-layer CircuitBreakerWrapper / CircuitState
+    # are intentionally NOT exposed at the apcore top level (see
+    # test_circuit_breaker_middleware.py::test_old_middleware_circuit_state_name_is_gone).
+    # The TS/Rust root export of CircuitState is an accepted cross-language
+    # divergence — Python avoids the ambiguous top-level CircuitState name.
+
     # -- Shadowing safety --
 
     def test_module_not_found_error_is_not_builtin(self):
@@ -440,6 +454,9 @@ class TestPublicAPIAll:
         # Registry protocols
         "Discoverer",
         "ModuleValidator",
+        # Multi-class discovery
+        "class_name_to_segment",
+        "discover_multi_class",
         # Config
         "Config",
         "RESERVED_NAMESPACES",

@@ -86,15 +86,15 @@ def test_trace_cancellation_bypasses_on_error(case: dict) -> None:
     with pytest.raises(ExecutionCancelledError) as exc_info:
         executor.call_with_trace("test.cancelling", {})
     assert exc_info.value.code == case["expected_error"]
-    assert mw.on_error_invoked is case["expected_on_error_invoked"], (
-        "on_error middleware must NOT be invoked for a cancellation in call_with_trace"
-    )
+    assert (
+        mw.on_error_invoked is case["expected_on_error_invoked"]
+    ), "on_error middleware must NOT be invoked for a cancellation in call_with_trace"
 
     # --- call(): MUST behave identically ---
     executor2, mw2 = _build()
     with pytest.raises(ExecutionCancelledError) as exc_info2:
         executor2.call("test.cancelling", {})
     assert exc_info2.value.code == case["expected_error"]
-    assert mw2.on_error_invoked is case["expected_on_error_invoked"], (
-        "on_error middleware must NOT be invoked for a cancellation in call()"
-    )
+    assert (
+        mw2.on_error_invoked is case["expected_on_error_invoked"]
+    ), "on_error middleware must NOT be invoked for a cancellation in call()"

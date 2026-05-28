@@ -27,7 +27,11 @@ from apcore.context_keys import (
     TRACING_SAMPLED,
     TRACING_SPANS,
 )
-from apcore.registry import Registry
+from apcore.registry import (
+    Registry,
+    class_name_to_segment,
+    discover_multi_class,
+)
 from apcore.registry.conflicts import (
     ConflictResult as ConflictResult,
     ConflictSeverity as ConflictSeverity,
@@ -242,6 +246,15 @@ from apcore.events import (
     create_subscriber_from_config,
     register_subscriber_factory,
 )
+
+# NOTE (audit D1-003, 2026-05-28): the events-layer circuit-breaker types
+# `CircuitBreakerWrapper` / `CircuitState` are intentionally NOT re-exported at
+# the top level. TypeScript and Rust export them at the package/crate root, but
+# Python deliberately keeps them under `apcore.events.circuit_breaker` to avoid
+# resurrecting a top-level `CircuitState` name (the middleware enum of that name
+# was renamed to `CircuitBreakerState`; a top-level `CircuitState` would be
+# ambiguous). This divergence is enforced by
+# tests/test_circuit_breaker_middleware.py::test_old_middleware_circuit_state_name_is_gone.
 
 # Pipeline
 from apcore.pipeline import (
@@ -616,6 +629,9 @@ __all__ = [
     # Registry protocols
     "Discoverer",
     "ModuleValidator",
+    # Multi-class discovery
+    "class_name_to_segment",
+    "discover_multi_class",
     # Errors
     "ErrorCodes",
     "ModuleError",
