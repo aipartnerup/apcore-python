@@ -489,7 +489,7 @@ class CircuitBreakerOpenError(ModuleError):
 
     _default_retryable: bool | None = True
 
-    def __init__(self, module_id: str, **kwargs: Any) -> None:
+    def __init__(self, module_id: str, caller_id: str | None = None, **kwargs: Any) -> None:
         kwargs.setdefault(
             "ai_guidance",
             f"Module '{module_id}' is temporarily unavailable (circuit open). "
@@ -502,7 +502,7 @@ class CircuitBreakerOpenError(ModuleError):
         super().__init__(
             code=code,
             message=f"Circuit open for module '{module_id}' — call rejected",
-            details={"module_id": module_id},
+            details={"module_id": module_id, "caller_id": caller_id},
             **kwargs,
         )
 
@@ -510,6 +510,11 @@ class CircuitBreakerOpenError(ModuleError):
     def module_id(self) -> str:
         """The module whose circuit is open."""
         return self.details["module_id"]
+
+    @property
+    def caller_id(self) -> str | None:
+        """The caller whose (module_id, caller_id) circuit is open, if known."""
+        return self.details.get("caller_id")
 
 
 class CircuitOpenError(CircuitBreakerOpenError):

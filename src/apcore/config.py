@@ -92,16 +92,20 @@ _CONSTRAINTS: dict[str, tuple[Any, str]] = {
         lambda v: isinstance(v, (int, float)) and v > 0,
         "must be a positive number",
     ),
-    "middleware.circuit_breaker.failure_threshold": (
-        lambda v: isinstance(v, int) and v >= 1,
-        "must be a positive integer",
+    "middleware.circuit_breaker.open_threshold": (
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= v <= 1.0,
+        "must be a number in [0.0, 1.0]",
     ),
     "middleware.circuit_breaker.recovery_window_ms": (
-        lambda v: isinstance(v, int) and v >= 0,
+        lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
         "must be a non-negative integer (milliseconds)",
     ),
-    "middleware.circuit_breaker.success_threshold": (
-        lambda v: isinstance(v, int) and v >= 1,
+    "middleware.circuit_breaker.window_size": (
+        lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
+        "must be a positive integer",
+    ),
+    "middleware.circuit_breaker.min_samples": (
+        lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
         "must be a positive integer",
     ),
 }
@@ -167,9 +171,10 @@ _DEFAULTS: dict[str, Any] = {
     },
     "middleware": {
         "circuit_breaker": {
-            "failure_threshold": 5,
-            "recovery_window_ms": 60000,
-            "success_threshold": 1,
+            "open_threshold": 0.5,
+            "recovery_window_ms": 30000,
+            "window_size": 20,
+            "min_samples": 5,
         },
     },
     "stream": {
