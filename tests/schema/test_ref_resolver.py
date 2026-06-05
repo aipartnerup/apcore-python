@@ -374,3 +374,73 @@ class TestEdgeCases:
         resolver = RefResolver(tmp_path)
         resolver.resolve(original)
         assert original == snapshot
+
+
+# === Path-traversal containment (security) ===
+
+
+class TestPathTraversalContainment:
+    """A $ref must never resolve to a file outside the schemas directory.
+
+    Mirrors apcore-typescript RefResolver._assertWithinSchemasDir, which
+    rejects relative-file and file#pointer $refs escaping the schemas dir
+    (e.g. ../../etc/passwd) by raising SchemaNotFoundError.
+    """
+
+    def test_plain_file_ref_escaping_schemas_dir_is_rejected(self, tmp_path: Path) -> None:
+        schemas_dir = tmp_path / "schemas"
+        # A real "secret" file outside the schemas directory that must not be read.
+        secret = tmp_path / "secret.yaml"
+        write_yaml(secret, {"password": "hunter2"})
+
+        main_file = write_yaml(
+            schemas_dir / "main.schema.yaml",
+            {"properties": {"x": {"$ref": "../secret.yaml"}}},
+        )
+        resolver = RefResolver(schemas_dir)
+        schema = yaml.safe_load(main_file.read_text())
+        with pytest.raises(SchemaNotFoundError, match="outside schemas directory"):
+            resolver.resolve(schema, current_file=main_file)
+
+    def test_file_pointer_ref_escaping_schemas_dir_is_rejected(self, tmp_path: Path) -> None:
+        schemas_dir = tmp_path / "schemas"
+        secret = tmp_path / "outside.yaml"
+        write_yaml(secret, {"foo": {"type": "string"}})
+
+        main_file = write_yaml(
+            schemas_dir / "main.schema.yaml",
+            {"properties": {"x": {"$ref": "../outside.yaml#/foo"}}},
+        )
+        resolver = RefResolver(schemas_dir)
+        schema = yaml.safe_load(main_file.read_text())
+        with pytest.raises(SchemaNotFoundError, match="outside schemas directory"):
+            resolver.resolve(schema, current_file=main_file)
+
+    def test_deep_traversal_ref_is_rejected_without_reading_target(self, tmp_path: Path) -> None:
+        schemas_dir = tmp_path / "schemas"
+        main_file = write_yaml(
+            schemas_dir / "main.schema.yaml",
+            {"properties": {"x": {"$ref": "../../../etc/passwd"}}},
+        )
+        resolver = RefResolver(schemas_dir)
+        schema = yaml.safe_load(main_file.read_text())
+        # The guard must fire before any attempt to read the outside file:
+        # _load_file would otherwise raise SchemaNotFoundError on the resolved
+        # path, so we assert the containment message specifically.
+        with pytest.raises(SchemaNotFoundError, match="outside schemas directory"):
+            resolver.resolve(schema, current_file=main_file)
+
+    def test_legitimate_relative_ref_inside_schemas_dir_still_works(self, tmp_path: Path) -> None:
+        schemas_dir = tmp_path / "schemas"
+        write_yaml(
+            schemas_dir / "common" / "error.schema.yaml",
+            {"definitions": {"E": {"type": "object"}}},
+        )
+        main_file = write_yaml(
+            schemas_dir / "main.schema.yaml",
+            {"properties": {"e": {"$ref": "./common/error.schema.yaml#/definitions/E"}}},
+        )
+        resolver = RefResolver(schemas_dir)
+        schema = yaml.safe_load(main_file.read_text())
+        result = resolver.resolve(schema, current_file=main_file)
+        assert result["properties"]["e"] == {"type": "object"}

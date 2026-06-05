@@ -140,10 +140,26 @@ class RefResolver:
         if "#" in ref_string:
             file_part, pointer = ref_string.split("#", 1)
             base = current_file.parent if current_file else self._schemas_dir
-            return (base / file_part).resolve(), pointer
+            resolved = (base / file_part).resolve()
+            self._assert_within_schemas_dir(resolved, ref_string)
+            return resolved, pointer
 
         base = current_file.parent if current_file else self._schemas_dir
-        return (base / ref_string).resolve(), ""
+        resolved = (base / ref_string).resolve()
+        self._assert_within_schemas_dir(resolved, ref_string)
+        return resolved, ""
+
+    def _assert_within_schemas_dir(self, resolved_path: Path, ref_string: str) -> None:
+        """Reject a $ref whose resolved path escapes the schemas directory.
+
+        Mirrors apcore-typescript RefResolver._assertWithinSchemasDir: blocks
+        path-traversal $refs (e.g. ``../../etc/passwd``) that would read files
+        outside ``self._schemas_dir``. The schemas directory itself is allowed.
+        """
+        if resolved_path == self._schemas_dir:
+            return
+        if not resolved_path.is_relative_to(self._schemas_dir):
+            raise SchemaNotFoundError(schema_id=f"Reference '{ref_string}' resolves outside schemas directory")
 
     def _convert_canonical_to_path(self, uri: str) -> tuple[Path, str]:
         """Convert an apcore:// canonical URI to (file_path, json_pointer)."""
