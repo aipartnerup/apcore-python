@@ -335,6 +335,181 @@ class TestA2ASubscriberHandlesSendFailure:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# HTTP 4xx-vs-5xx retry contract through the real EventEmitter retry path
+# (apcore #69). The conformance driver fails attempts via a generic ``raise``,
+# which bypasses the WebhookSubscriber HTTP-status logic — these tests lock the
+# status-based behavior by driving delivery through EventEmitter.emit() and
+# asserting on the HTTP-call count (the unambiguous signal).
+# ---------------------------------------------------------------------------
+
+
+def _build_aiohttp_mock(mock_aiohttp: MagicMock, status: int) -> MagicMock:
+    """Wire a patched ``aiohttp`` module to return a response with *status*.
+
+    Returns the mock session so callers can assert on ``post.call_count``.
+    """
+    mock_response = AsyncMock()
+    mock_response.status = status
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=False)
+
+    mock_session = AsyncMock()
+    mock_session.post = MagicMock(return_value=mock_response)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+    mock_aiohttp.ClientTimeout = MagicMock()
+    return mock_session
+
+
+class _DLQRecorder:
+    """Subscribes only to DLQ events and records them (matches emitter tests)."""
+
+    def __init__(self, subscriber_id: str = "dlq-recorder") -> None:
+        from apcore.events.emitter import _DLQ_EVENT_TYPE
+
+        self.subscriber_id = subscriber_id
+        self.event_pattern = _DLQ_EVENT_TYPE
+        self.retry = None  # emitter falls back to a default EventRetryConfig
+        self.received: list[ApCoreEvent] = []
+
+    async def on_event(self, event: ApCoreEvent) -> None:
+        self.received.append(event)
+
+
+class TestWebhookRetryContractThroughEmitter:
+    """Lock the 4xx-vs-5xx HTTP retry contract via the real emitter retry loop."""
+
+    @pytest.mark.asyncio
+    async def test_4xx_is_not_retried_through_emitter(self) -> None:
+        """HTTP 400 with max_attempts=3 → endpoint called exactly once (no retry)."""
+        from apcore.events.emitter import EventEmitter
+        from apcore.events.retry import EventRetryConfig
+        from apcore.events.subscribers import WebhookSubscriber
+
+        subscriber = WebhookSubscriber(
+            url="https://example.com/webhook",
+            retry=EventRetryConfig(max_attempts=3, initial_backoff_ms=1, max_backoff_ms=5),
+        )
+        emitter = EventEmitter()
+        dlq_recorder = _DLQRecorder()
+        emitter.subscribe(dlq_recorder)
+        emitter.subscribe(subscriber)
+
+        with patch("apcore.events.subscribers.aiohttp") as mock_aiohttp:
+            mock_session = _build_aiohttp_mock(mock_aiohttp, status=400)
+
+            emitter.emit(_make_event())
+            emitter.flush(timeout=5.0)
+            emitter.shutdown()
+
+            # 4xx is a permanent client error: a single HTTP call, no retries.
+            assert mock_session.post.call_count == 1
+            # 4xx is logged-permanent (does not raise into the emitter), so no
+            # DLQ event is emitted — matches src/apcore/events/subscribers.py
+            # and event-system.md §"Behavior on 4xx / 5xx Responses".
+            assert len(dlq_recorder.received) == 0
+
+    @pytest.mark.asyncio
+    async def test_5xx_is_retried_to_exhaustion_through_emitter(self) -> None:
+        """HTTP 503 with max_attempts=3 → endpoint called 3 times, then DLQ."""
+        from apcore.events.emitter import _DLQ_EVENT_TYPE, EventEmitter
+        from apcore.events.retry import EventRetryConfig
+        from apcore.events.subscribers import WebhookSubscriber
+
+        subscriber = WebhookSubscriber(
+            url="https://example.com/webhook",
+            id="webhook-5xx",
+            retry=EventRetryConfig(max_attempts=3, initial_backoff_ms=1, max_backoff_ms=5),
+        )
+        emitter = EventEmitter()
+        dlq_recorder = _DLQRecorder()
+        emitter.subscribe(dlq_recorder)
+        emitter.subscribe(subscriber)
+
+        with patch("apcore.events.subscribers.aiohttp") as mock_aiohttp:
+            mock_session = _build_aiohttp_mock(mock_aiohttp, status=503)
+
+            emitter.emit(_make_event())
+            emitter.flush(timeout=5.0)
+            emitter.shutdown()
+
+            # 5xx is retried to exhaustion: one HTTP call per attempt.
+            assert mock_session.post.call_count == 3
+            # On exhaustion the emitter emits a delivery_failed DLQ event.
+            assert len(dlq_recorder.received) == 1
+            dlq = dlq_recorder.received[0]
+            assert dlq.event_type == _DLQ_EVENT_TYPE
+            assert dlq.data["subscriber_id"] == "webhook-5xx"
+            assert dlq.data["attempt_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_a2a_4xx_is_not_retried_through_emitter(self) -> None:
+        """A2A HTTP 400 with max_attempts=3 → endpoint called once, no DLQ."""
+        from apcore.events.emitter import EventEmitter
+        from apcore.events.retry import EventRetryConfig
+        from apcore.events.subscribers import A2ASubscriber
+
+        subscriber = A2ASubscriber(
+            platform_url="https://platform.example.com",
+            retry=EventRetryConfig(max_attempts=3, initial_backoff_ms=1, max_backoff_ms=5),
+        )
+        emitter = EventEmitter()
+        dlq_recorder = _DLQRecorder()
+        emitter.subscribe(dlq_recorder)
+        emitter.subscribe(subscriber)
+
+        with patch("apcore.events.subscribers.aiohttp") as mock_aiohttp:
+            mock_session = _build_aiohttp_mock(mock_aiohttp, status=400)
+
+            emitter.emit(_make_event())
+            emitter.flush(timeout=5.0)
+            emitter.shutdown()
+
+            # 4xx is a permanent client error: a single HTTP call, no retries.
+            assert mock_session.post.call_count == 1
+            # 4xx is logged-permanent (does not raise into the emitter), so no
+            # DLQ event is emitted — matches src/apcore/events/subscribers.py
+            # and event-system.md §"Behavior on 4xx / 5xx Responses".
+            assert len(dlq_recorder.received) == 0
+
+    @pytest.mark.asyncio
+    async def test_a2a_5xx_is_retried_to_exhaustion_through_emitter(self) -> None:
+        """A2A HTTP 503 with max_attempts=3 → endpoint called 3 times, then DLQ."""
+        from apcore.events.emitter import _DLQ_EVENT_TYPE, EventEmitter
+        from apcore.events.retry import EventRetryConfig
+        from apcore.events.subscribers import A2ASubscriber
+
+        subscriber = A2ASubscriber(
+            platform_url="https://platform.example.com",
+            id="a2a-5xx",
+            retry=EventRetryConfig(max_attempts=3, initial_backoff_ms=1, max_backoff_ms=5),
+        )
+        emitter = EventEmitter()
+        dlq_recorder = _DLQRecorder()
+        emitter.subscribe(dlq_recorder)
+        emitter.subscribe(subscriber)
+
+        with patch("apcore.events.subscribers.aiohttp") as mock_aiohttp:
+            mock_session = _build_aiohttp_mock(mock_aiohttp, status=503)
+
+            emitter.emit(_make_event())
+            emitter.flush(timeout=5.0)
+            emitter.shutdown()
+
+            # 5xx is retried to exhaustion: one HTTP call per attempt.
+            assert mock_session.post.call_count == 3
+            # On exhaustion the emitter emits a delivery_failed DLQ event.
+            assert len(dlq_recorder.received) == 1
+            dlq = dlq_recorder.received[0]
+            assert dlq.event_type == _DLQ_EVENT_TYPE
+            assert dlq.data["subscriber_id"] == "a2a-5xx"
+            assert dlq.data["subscriber_type"] == "a2a"
+            assert dlq.data["attempt_count"] == 3
+
+
 class TestSubscriberConformsToProtocol:
     def test_subscriber_conforms_to_protocol(self) -> None:
         from apcore.events.subscribers import A2ASubscriber, WebhookSubscriber
@@ -347,7 +522,7 @@ class TestSubscriberConformsToProtocol:
 
 
 class TestSubscriberInstantiationFailureLogged:
-    def test_subscriber_instantiation_failure_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_subscriber_instantiation_failure_logged(self) -> None:
         """Verify that if a dependency fails during usage, it's logged not raised."""
         from apcore.events.subscribers import WebhookSubscriber
 

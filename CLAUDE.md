@@ -1,7 +1,7 @@
 # High-Quality Code Specification – Simplicity, Readability, and Maintainability First
 
 ## Project Overview
-The core of `apcore` is **task orchestration and execution specifications**. It provides a unified task orchestration framework that supports execution of multiple task types.
+The core of `apcore` is a **schema-enforced module/capability framework**: it defines, validates, governs (ACL/approval), and executes self-describing modules through a fixed execution pipeline. It is the AI-perceivable *capability* layer — **not** an agent/LLM runtime and **not** a workflow/orchestration engine (multi-step orchestration belongs to apflow; see `apcore/SCOPE.md`).
 
 ## Core Principles
 - Prioritize **simplicity, readability, and maintainability** above all.

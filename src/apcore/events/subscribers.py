@@ -242,7 +242,12 @@ class A2ASubscriber:
         self.event_pattern: str = event_pattern
 
     async def on_event(self, event: ApCoreEvent) -> None:
-        """Send the event to the A2A platform endpoint."""
+        """Send the event to the A2A platform endpoint.
+
+        Raises on 5xx responses and network errors so the emitter's retry loop
+        can act. 4xx responses are logged as warnings and treated as permanent
+        failures (no retry).
+        """
         payload = {
             "skillId": self._skill_id,
             "event": asdict(event),
@@ -259,5 +264,12 @@ class A2ASubscriber:
         timeout = aiohttp.ClientTimeout(total=self._timeout_ms / 1000.0)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(self._platform_url, json=payload, headers=headers) as response:
-                if response.status >= 400:
+                if response.status >= 500:
                     raise RuntimeError(f"A2A delivery to {self._platform_url} failed with status {response.status}")
+                if response.status >= 400:
+                    logger.warning(
+                        "A2A delivery to %s returned %d for event %s (permanent failure — no retry)",
+                        self._platform_url,
+                        response.status,
+                        event.event_type,
+                    )

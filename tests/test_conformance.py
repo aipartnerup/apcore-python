@@ -137,6 +137,39 @@ def test_pattern_matching(case: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Error-recovery metadata (user_fixable policy resolved by error code)
+# ---------------------------------------------------------------------------
+
+_error_recovery_data = _load("error_recovery_metadata")
+
+
+@pytest.mark.parametrize(
+    "case",
+    _error_recovery_data["test_cases"],
+    ids=[c["id"] for c in _error_recovery_data["test_cases"]],
+)
+def test_error_recovery_user_fixable(case: dict[str, Any]) -> None:
+    from apcore.errors import ModuleError
+
+    err = ModuleError(code=case["code"], message="conformance check")
+    assert (
+        err.user_fixable == case["expected"]["user_fixable"]
+    ), f"{case['code']}: user_fixable={err.user_fixable}, expected {case['expected']['user_fixable']}"
+
+
+def test_error_recovery_fixture_matches_source() -> None:
+    """The fixture's code->user_fixable map must match the _USER_FIXABLE_BY_CODE source of truth."""
+    from apcore.errors import _USER_FIXABLE_BY_CODE
+
+    fixture_map = {
+        c["code"]: c["expected"]["user_fixable"]
+        for c in _error_recovery_data["test_cases"]
+        if c["expected"]["user_fixable"] is not None
+    }
+    assert fixture_map == _USER_FIXABLE_BY_CODE
+
+
+# ---------------------------------------------------------------------------
 # 2. Specificity Scoring (A10)
 # ---------------------------------------------------------------------------
 

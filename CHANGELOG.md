@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.23.0] - 2026-06-05
+
+### Added
+
+- **AI error-recovery metadata is now populated at the source (#70).** Framework-deterministic errors carry default recovery metadata so the contract flows to every surface (MCP/CLI/A2A) from one definition instead of being backfilled per adapter. A new declarative `_USER_FIXABLE_BY_CODE` policy in `errors.py` resolves `user_fixable` from the error code in `ModuleError.__init__`: `True` for caller-fixable codes (`SCHEMA_VALIDATION_ERROR`, `GENERAL_INVALID_INPUT`, `MODULE_NOT_FOUND`, `VERSION_CONSTRAINT_INVALID`, `BINDING_SCHEMA_INFERENCE_FAILED`, `BINDING_SCHEMA_MODE_CONFLICT`, `BINDING_STRICT_SCHEMA_INCOMPATIBLE`, `DEPENDENCY_NOT_FOUND`, `DEPENDENCY_VERSION_MISMATCH`); `False` for governance/system/structural/transient codes (`ACL_DENIED`, `APPROVAL_DENIED`, `APPROVAL_TIMEOUT`, `MODULE_TIMEOUT`, `MODULE_DISABLED`, `CALL_DEPTH_EXCEEDED`, `CIRCULAR_CALL`, `CALL_FREQUENCY_EXCEEDED`, `GENERAL_INTERNAL_ERROR`). Codes absent from the policy (e.g. `MODULE_EXECUTE_ERROR`) leave `user_fixable` unset for the module author to supply. Missing `ai_guidance` defaults are filled on `InvalidInputError` and `CallFrequencyExceededError`. Explicit constructor values still override the policy; `to_dict()` now emits `user_fixable` for the mapped codes. Locked across SDKs by the new conformance fixture `error_recovery_metadata.json`. `suggestion` is intentionally left unset (redundant with `ai_guidance`); `x-*` metadata remains author-owned.
+
+
+### Fixed
+
+- **`A2ASubscriber` no longer retries 4xx responses (#69).** It previously raised on any HTTP `status >= 400`, contradicting the spec (`event-system.md`: 4xx MUST NOT be retried, for both Webhook and A2A) and diverging from `WebhookSubscriber`. `A2ASubscriber.on_event` now mirrors Webhook: 5xx (and connection/timeout) → raise → retried → `apcore.event.delivery_failed` on exhaustion; 4xx → logged permanent, no retry, no DLQ. Per-SDK regression tests lock both subscribers' 4xx/5xx behavior.
+
+
 ## [0.22.0] - 2026-05-28
 
 ### Changed

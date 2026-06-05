@@ -79,6 +79,36 @@ __all__ = [
 _UNSET: Any = object()
 
 
+# Declarative user_fixable policy, keyed by error code (single source of truth;
+# kept in lock-step with conformance/fixtures/error_recovery_metadata.json so the
+# language SDKs agree). True = the caller can resolve it by changing the input or
+# configuration they sent; False = governance / system / structural / transient,
+# not resolvable by changing input. Codes absent here leave user_fixable unset
+# (e.g. MODULE_EXECUTE_ERROR — the module author supplies the recovery guidance).
+_USER_FIXABLE_BY_CODE: dict[str, bool] = {
+    # Caller can fix by changing input/config:
+    "SCHEMA_VALIDATION_ERROR": True,
+    "GENERAL_INVALID_INPUT": True,
+    "MODULE_NOT_FOUND": True,
+    "VERSION_CONSTRAINT_INVALID": True,
+    "BINDING_SCHEMA_INFERENCE_FAILED": True,
+    "BINDING_SCHEMA_MODE_CONFLICT": True,
+    "BINDING_STRICT_SCHEMA_INCOMPATIBLE": True,
+    "DEPENDENCY_NOT_FOUND": True,
+    "DEPENDENCY_VERSION_MISMATCH": True,
+    # Governance / system / structural / transient — not caller-fixable by input:
+    "ACL_DENIED": False,
+    "APPROVAL_DENIED": False,
+    "APPROVAL_TIMEOUT": False,
+    "MODULE_TIMEOUT": False,
+    "MODULE_DISABLED": False,
+    "CALL_DEPTH_EXCEEDED": False,
+    "CIRCULAR_CALL": False,
+    "CALL_FREQUENCY_EXCEEDED": False,
+    "GENERAL_INTERNAL_ERROR": False,
+}
+
+
 class ModuleError(Exception):
     """Base error for all apcore errors."""
 
@@ -93,7 +123,7 @@ class ModuleError(Exception):
         trace_id: str | None = None,
         retryable: Any = _UNSET,
         ai_guidance: str | None = None,
-        user_fixable: bool | None = None,
+        user_fixable: Any = _UNSET,
         suggestion: str | None = None,
     ) -> None:
         super().__init__(message)
@@ -105,7 +135,7 @@ class ModuleError(Exception):
         self.timestamp = datetime.now(timezone.utc).isoformat()
         self.retryable = self._default_retryable if retryable is _UNSET else retryable
         self.ai_guidance = ai_guidance
-        self.user_fixable = user_fixable
+        self.user_fixable = _USER_FIXABLE_BY_CODE.get(code) if user_fixable is _UNSET else user_fixable
         self.suggestion = suggestion
 
     def __str__(self) -> str:
@@ -639,6 +669,12 @@ class CallFrequencyExceededError(ModuleError):
         call_chain: list[str],
         **kwargs: Any,
     ) -> None:
+        kwargs.setdefault(
+            "ai_guidance",
+            f"Module '{module_id}' was called {count} times in this chain "
+            f"(limit {max_repeat}), tripping the frequency guard. Reduce "
+            "repeated calls or batch the work before retrying.",
+        )
         super().__init__(
             code="CALL_FREQUENCY_EXCEEDED",
             message=f"Module {module_id} called {count} times, max is {max_repeat}",
@@ -678,6 +714,12 @@ class InvalidInputError(ModuleError):
         code: str = "GENERAL_INVALID_INPUT",
         **kwargs: Any,
     ) -> None:
+        kwargs.setdefault(
+            "ai_guidance",
+            "The input was malformed or missing required fields. Check the "
+            "values against the module's input_schema and retry with corrected "
+            "input.",
+        )
         super().__init__(code=code, message=message, **kwargs)
 
 

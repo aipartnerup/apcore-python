@@ -113,9 +113,21 @@ A schema-enforced module standard for the AI-Perceivable era.
 
 ## Cross-Language Parity Notes
 
-`AsyncTaskManager` and `ExtensionManager` are available in all three SDKs (Python, TypeScript, and Rust as of v0.19.0).
+The Python, TypeScript, and Rust SDKs share one verified contract. As of **v0.22.0**,
+the hardening features that originally landed Python-first are at parity across all
+three SDKs — including `AsyncTaskManager`, `ExtensionManager`, `CircuitBreakerMiddleware`,
+`TaskStore`/`InMemoryTaskStore` (pluggable interface + in-memory backend; Redis/SQL
+backends are shipped by none, by design), and `PrometheusExporter`. `version_hint`
+negotiation is honored by all three executors. As of **v0.23.0**, AI error-recovery
+metadata (per-code `user_fixable` defaults plus filled `ai_guidance`) is also at parity
+across all three SDKs, verified by the shared `error_recovery_metadata.json` conformance fixture.
 
-As of v0.20.0: `CircuitBreakerMiddleware`, `TaskStore`/`InMemoryTaskStore`, `RetryPolicy`, and `PrometheusExporter` are Python-SDK additions implementing PROTOCOL_SPEC v0.20.0 hardening areas (Issues #34, #42, #43, #44, #45). Cross-language parity for these features is tracked in the canonical apcore protocol repository.
+Intentional cross-language differences (e.g. Python's synchronous `call()` ergonomics,
+the legacy/deprecated `RetryPolicy`/`BackoffStrategy` aliases that exist only in Python,
+and the module-level convenience functions) are documented inline in the relevant feature
+specs as "Cross-language note" admonitions in the canonical protocol repo
+([apcore/docs/features](https://github.com/aiperceivable/apcore/tree/main/docs/features)).
+Anything that differs across SDKs without such a note is drift, not a feature.
 
 ## Configuration
 
