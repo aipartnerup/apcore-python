@@ -261,7 +261,10 @@ class EventEmitter:
                 "original_event": {
                     "name": original_event.event_type,
                     "payload": original_event.data,
-                    "metadata": {},
+                    "metadata": {
+                        "module_id": original_event.module_id,
+                        "timestamp": original_event.timestamp,
+                    },
                 },
                 "error": {
                     "type": type(error).__name__ if error is not None else "Unknown",

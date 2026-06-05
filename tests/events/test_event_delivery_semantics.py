@@ -150,6 +150,41 @@ def test_permanent_failure_emits_dlq_event() -> None:
         assert key in dlq.data
 
 
+def test_dlq_original_event_carries_envelope_metadata() -> None:
+    """DLQ original_event has shape {name, payload, metadata} with module_id+timestamp nested."""
+    emitter = EventEmitter()
+    dlq_recorder = _DLQRecorder(subscriber_id="dlq-recorder-meta")
+    emitter.subscribe(dlq_recorder)
+
+    sub = _CountingSubscriber(
+        fail_count=999,
+        subscriber_id="always-failing-meta",
+        retry=EventRetryConfig(max_attempts=1, initial_backoff_ms=1, max_backoff_ms=5),
+    )
+    emitter.subscribe(sub)
+
+    original = ApCoreEvent(
+        event_type="apcore.test.meta",
+        module_id="module-xyz",
+        timestamp="2026-06-05T12:00:00Z",
+        severity="info",
+        data={"k": "v"},
+    )
+    emitter.emit(original)
+    emitter.flush(timeout=5.0)
+    emitter.shutdown()
+
+    assert len(dlq_recorder.received) == 1
+    original_event = dlq_recorder.received[0].data["original_event"]
+    assert set(original_event.keys()) == {"name", "payload", "metadata"}
+    assert original_event["name"] == "apcore.test.meta"
+    assert original_event["payload"] == {"k": "v"}
+    assert original_event["metadata"] == {
+        "module_id": "module-xyz",
+        "timestamp": "2026-06-05T12:00:00Z",
+    }
+
+
 def test_on_failure_called_after_exhaustion() -> None:
     """on_failure callback is invoked after all retry attempts are exhausted."""
     emitter = EventEmitter()

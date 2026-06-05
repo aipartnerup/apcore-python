@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **DLQ `original_event` now nests `module_id`/`timestamp` under `metadata` [D11-002].** The `apcore.event.delivery_failed` payload built by `EventEmitter._emit_dlq` previously emitted `original_event.metadata` as an empty `{}`, dropping the originating module and timestamp. It now carries `metadata: {module_id, timestamp}` from the original `ApCoreEvent` envelope, matching the canonical `{name, payload, metadata:{...}}` shape in `event-system.md`.
+
 - **`A2ASubscriber` no longer retries 4xx responses (#69).** It previously raised on any HTTP `status >= 400`, contradicting the spec (`event-system.md`: 4xx MUST NOT be retried, for both Webhook and A2A) and diverging from `WebhookSubscriber`. `A2ASubscriber.on_event` now mirrors Webhook: 5xx (and connection/timeout) → raise → retried → `apcore.event.delivery_failed` on exhaustion; 4xx → logged permanent, no retry, no DLQ. Per-SDK regression tests lock both subscribers' 4xx/5xx behavior.
 
 
