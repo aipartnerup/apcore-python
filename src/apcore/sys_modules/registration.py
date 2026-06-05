@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, TypedDict
 
 
@@ -293,25 +292,6 @@ def _load_overrides_from_store(
         logger.warning("Overrides store %r did not return a mapping; skipping", store)
         return
     _apply_overrides(config, overrides, toggle_state=toggle_state, source=repr(store))
-
-
-def _load_overrides(
-    config: Config,
-    overrides_path: str,
-    toggle_state: Any | None = None,
-) -> None:
-    """Backwards-compatible disk loader — delegates to :class:`FileOverridesStore`.
-
-    Retained because external code paths (legacy callers, tests) still
-    reference this helper. New code should prefer
-    :func:`_load_overrides_from_store` with an explicit
-    :class:`OverridesStore` instance.
-    """
-    p = Path(overrides_path)
-    if not p.exists():
-        return
-    store = FileOverridesStore(p)
-    _load_overrides_from_store(config, store, toggle_state=toggle_state)
 
 
 def register_sys_modules(
