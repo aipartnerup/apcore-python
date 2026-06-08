@@ -53,7 +53,20 @@ class SchemaValidator:
 
         For models generated from an empty JSON Schema (``{}``), any input
         value is accepted per Draft 2020-12 (the always-true schema).
+
+        A-D-08: when the model's source JSON Schema declares a top-level
+        ``oneOf`` / ``anyOf``, validation is routed through the
+        jsonschema-backed exhaustive check (``hardening.validate_schema_dict``)
+        so union semantics — including ``SCHEMA_UNION_NO_MATCH`` (zero matches)
+        and ``SCHEMA_UNION_AMBIGUOUS`` (multiple ``oneOf`` matches) — are
+        surfaced, matching the TS and Rust validators. Pydantic's
+        ``model_validate`` accepts a union on first match and cannot detect
+        ``oneOf`` ambiguity, so it is not used for union schemas.
         """
+        union_result = self._validate_top_level_union(data, model)
+        if union_result is not None:
+            return union_result
+
         # Empty schema (always-true) — accept any value, including non-dict.
         if not model.model_fields:
             extra_cfg = model.model_config.get("extra", "ignore")
@@ -72,6 +85,26 @@ class SchemaValidator:
                 errors=self._pydantic_error_to_details(e),
                 error_code="SCHEMA_VALIDATION_ERROR",
             )
+
+    @staticmethod
+    def _validate_top_level_union(data: Any, model: type[BaseModel]) -> SchemaValidationResult | None:
+        """Run the jsonschema union check if the model's source schema is a top-level union.
+
+        Returns the union validation result when the source JSON Schema declares a
+        top-level ``oneOf`` or ``anyOf``; otherwise returns None so the caller falls
+        through to the standard Pydantic path. Importing ``hardening`` lazily avoids
+        a module-level import cycle and keeps the jsonschema dependency off the hot
+        path for non-union schemas.
+        """
+        source_schema = getattr(model, "__apcore_source_schema__", None)
+        if not isinstance(source_schema, dict):
+            return None
+        if "oneOf" not in source_schema and "anyOf" not in source_schema:
+            return None
+
+        from apcore.schema.hardening import validate_schema_dict
+
+        return validate_schema_dict(data, source_schema)
 
     def validate_input(self, data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
         """Validate input data and return the validated dict. Raises SchemaValidationError on failure."""

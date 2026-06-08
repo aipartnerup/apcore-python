@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 from pydantic import BaseModel, Field
 
 from apcore.errors import SchemaValidationError
 from apcore.schema.validator import SchemaValidator
+
+if TYPE_CHECKING:
+    from apcore.schema.loader import SchemaLoader
 
 
 # --- Inline test models ---
@@ -151,6 +154,77 @@ class TestValidate:
     def test_optional_fields(self, validator: SchemaValidator) -> None:
         result = validator.validate({}, OptionalFieldsModel)
         assert result.valid is True
+
+
+# === union schemas (A-D-08): top-level oneOf/anyOf ===
+
+
+class TestUnionValidation:
+    """A-D-08: SchemaValidator must surface union codes for top-level oneOf/anyOf.
+
+    Peer parity: TS validator.ts _validateOneOf and Rust jsonschema emit
+    SCHEMA_UNION_NO_MATCH / SCHEMA_UNION_AMBIGUOUS. The model carries its
+    source schema so validate() can route union schemas through the
+    jsonschema-backed exhaustive check in hardening.validate_schema_dict.
+    """
+
+    def test_oneof_ambiguous(self, validator: SchemaValidator, schema_loader: "SchemaLoader") -> None:
+        # Two branches both match an integer -> ambiguous.
+        schema = {
+            "oneOf": [
+                {"type": "integer", "minimum": 0},
+                {"type": "integer", "maximum": 100},
+            ]
+        }
+        model = schema_loader.generate_model(schema, "AmbiguousUnion")
+        result = validator.validate(5, model)
+        assert result.valid is False
+        assert result.error_code == "SCHEMA_UNION_AMBIGUOUS"
+
+    def test_oneof_no_match(self, validator: SchemaValidator, schema_loader: "SchemaLoader") -> None:
+        schema = {
+            "oneOf": [
+                {"type": "integer"},
+                {"type": "boolean"},
+            ]
+        }
+        model = schema_loader.generate_model(schema, "NoMatchUnion")
+        result = validator.validate("a string", model)
+        assert result.valid is False
+        assert result.error_code == "SCHEMA_UNION_NO_MATCH"
+
+    def test_oneof_single_match_valid(self, validator: SchemaValidator, schema_loader: "SchemaLoader") -> None:
+        schema = {
+            "oneOf": [
+                {"type": "integer"},
+                {"type": "string"},
+            ]
+        }
+        model = schema_loader.generate_model(schema, "SingleMatchUnion")
+        result = validator.validate(42, model)
+        assert result.valid is True
+        assert result.error_code is None
+
+    def test_anyof_no_match(self, validator: SchemaValidator, schema_loader: "SchemaLoader") -> None:
+        schema = {
+            "anyOf": [
+                {"type": "integer"},
+                {"type": "boolean"},
+            ]
+        }
+        model = schema_loader.generate_model(schema, "AnyOfNoMatch")
+        result = validator.validate("nope", model)
+        assert result.valid is False
+        assert result.error_code == "SCHEMA_UNION_NO_MATCH"
+
+    def test_normal_object_schema_unaffected(self, validator: SchemaValidator) -> None:
+        """A normal object schema must still validate via the Pydantic path."""
+        result = validator.validate({"name": "Alice", "age": 30}, SimpleModel)
+        assert result.valid is True
+        assert result.error_code is None
+        bad = validator.validate({"name": "Alice"}, SimpleModel)
+        assert bad.valid is False
+        assert bad.error_code == "SCHEMA_VALIDATION_ERROR"
 
 
 # === validate_input() ===
