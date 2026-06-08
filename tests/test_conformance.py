@@ -246,6 +246,9 @@ _CALL_CHAIN_ERROR_MAP: dict[str, type[Exception]] = {
     "CALL_DEPTH_EXCEEDED": CallDepthExceededError,
     "CIRCULAR_CALL": CircularCallError,
     "CALL_FREQUENCY_EXCEEDED": CallFrequencyExceededError,
+    # Non-positive limit floor (T-B-005): each SDK rejects with its idiomatic
+    # invalid-argument signal — Python ValueError, TS Error, Rust ModuleError.
+    "INVALID_LIMIT": ValueError,
 }
 
 _call_chain_data = _load("call_chain")
