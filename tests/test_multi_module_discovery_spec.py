@@ -36,7 +36,6 @@ from apcore.registry.multi_class import (
     MAX_MODULE_ID_LEN,
     class_name_to_segment,
     discover_multi_class,
-    multi_class,
 )
 
 # ---------------------------------------------------------------------------
@@ -107,9 +106,7 @@ def test_discover_multi_class_return_single_class_identity(tmp_path: Path) -> No
 
 def test_discover_multi_class_return_two_class_distinct_ids(tmp_path: Path) -> None:
     """multi_module_discovery.discover_multi_class.return.two_class_distinct_ids"""
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"])
     result = discover_multi_class(f, extensions_root="extensions")
     ids = sorted(mid for mid, _ in result)
     assert ids == ["math.math_ops.addition", "math.math_ops.subtraction"]
@@ -117,9 +114,7 @@ def test_discover_multi_class_return_two_class_distinct_ids(tmp_path: Path) -> N
 
 def test_discover_multi_class_return_pairs_shape(tmp_path: Path) -> None:
     """multi_module_discovery.discover_multi_class.return.pairs_shape"""
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"])
     result = discover_multi_class(f, extensions_root="extensions")
     for entry in result:
         assert isinstance(entry, tuple) and len(entry) == 2
@@ -143,9 +138,7 @@ def test_discover_multi_class_input_file_path_missing(tmp_path: Path) -> None:
 def test_discover_multi_class_input_extensions_root_default(tmp_path: Path) -> None:
     """multi_module_discovery.discover_multi_class.input.extensions_root.default"""
     # Default extensions_root="extensions": directory context beneath it is kept.
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"])
     result = discover_multi_class(f)  # rely on default extensions_root
     ids = sorted(mid for mid, _ in result)
     assert ids == ["math.math_ops.addition", "math.math_ops.subtraction"]
@@ -194,9 +187,7 @@ def test_discover_multi_class_input_pre_approval_hook_allows(tmp_path: Path) -> 
 def test_discover_multi_class_error_module_id_conflict(tmp_path: Path) -> None:
     """multi_module_discovery.discover_multi_class.error.MODULE_ID_CONFLICT"""
     # MyModule and My_Module both produce segment "my_module".
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "pkg", "dup.py"), ["MyModule", "My_Module"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "pkg", "dup.py"), ["MyModule", "My_Module"])
     with pytest.raises(ModuleIdConflictError) as exc:
         discover_multi_class(f, extensions_root="extensions")
     assert exc.value.code == "MODULE_ID_CONFLICT"
@@ -211,9 +202,7 @@ def test_discover_multi_class_error_invalid_segment(tmp_path: Path) -> None:
     """multi_module_discovery.discover_multi_class.error.INVALID_SEGMENT"""
     # A class whose snake_case segment starts with a digit violates the grammar.
     # Need >=2 classes to enter the multi-class validation path.
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "pkg", "bad.py"), ["Addition", "_3D"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "pkg", "bad.py"), ["Addition", "_3D"])
     with pytest.raises(InvalidSegmentError) as exc:
         discover_multi_class(f, extensions_root="extensions")
     assert exc.value.code == "INVALID_SEGMENT"
@@ -224,9 +213,7 @@ def test_discover_multi_class_error_id_too_long(tmp_path: Path) -> None:
     # Force the full module_id over MAX_MODULE_ID_LEN (192) via a very long
     # class name. Two classes are needed to enter the multi-class path.
     long_name = "A" + "b" * (MAX_MODULE_ID_LEN + 10)
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "pkg", "long.py"), [long_name, "Subtraction"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "pkg", "long.py"), [long_name, "Subtraction"])
     with pytest.raises(IdTooLongError) as exc:
         discover_multi_class(f, extensions_root="extensions")
     assert exc.value.code == "ID_TOO_LONG"
@@ -244,9 +231,7 @@ def test_discover_multi_class_error_id_too_long(tmp_path: Path) -> None:
         ("MyModule_V2", "my_module_v2"),
     ],
 )
-def test_discover_multi_class_property_snake_case_conversion(
-    class_name: str, expected: str
-) -> None:
+def test_discover_multi_class_property_snake_case_conversion(class_name: str, expected: str) -> None:
     """multi_module_discovery.discover_multi_class.property.snake_case_conversion"""
     assert class_name_to_segment(class_name) == expected
 
@@ -278,9 +263,7 @@ def test_discover_multi_class_property_pure_false_reads_fs(tmp_path: Path) -> No
 def test_discover_multi_class_property_idempotent(tmp_path: Path) -> None:
     """multi_module_discovery.discover_multi_class.property.idempotent"""
     # idempotent: true — repeated calls with the same file yield the same IDs.
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"])
     ids1 = sorted(mid for mid, _ in discover_multi_class(f, extensions_root="extensions"))
     ids2 = sorted(mid for mid, _ in discover_multi_class(f, extensions_root="extensions"))
     ids3 = sorted(mid for mid, _ in discover_multi_class(f, extensions_root="extensions"))
@@ -306,18 +289,11 @@ async def test_discover_multi_class_property_thread_safe(tmp_path: Path) -> None
     # corrupt one another (each scans an independent file).
     files = []
     for i in range(8):
-        f = _write_multi_class_file(
-            _ext_file(tmp_path, "math", f"ops_{i}.py"), ["Addition", "Subtraction"]
-        )
+        f = _write_multi_class_file(_ext_file(tmp_path, "math", f"ops_{i}.py"), ["Addition", "Subtraction"])
         files.append(f)
 
     async def scan(path: Path) -> list[str]:
-        return sorted(
-            mid
-            for mid, _ in await asyncio.to_thread(
-                discover_multi_class, path, "extensions"
-            )
-        )
+        return sorted(mid for mid, _ in await asyncio.to_thread(discover_multi_class, path, "extensions"))
 
     results = await asyncio.gather(*(scan(f) for f in files))
     for i, ids in enumerate(results):
@@ -331,9 +307,7 @@ def test_discover_multi_class_side_effect_1_no_registration(tmp_path: Path) -> N
     """multi_module_discovery.discover_multi_class.side_effect.1.discovery_does_not_register"""
     # discover_multi_class returns candidate pairs but MUST NOT itself register
     # modules into the registry (registration is a separate caller step).
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "math", "math_ops.py"), ["Addition", "Subtraction"])
     registry = Registry()
     before = set(registry.list_module_ids()) if hasattr(registry, "list_module_ids") else set(registry._modules.keys())  # type: ignore[attr-defined]
     registry.discover_multi_class(f, extensions_root="extensions")
@@ -345,9 +319,7 @@ def test_discover_multi_class_side_effect_2_conflict_no_partial(tmp_path: Path) 
     """multi_module_discovery.discover_multi_class.side_effect.2.conflict_aborts_whole_file"""
     # On conflict the whole file is aborted: no pairs are returned (the
     # exception propagates before any results escape).
-    f = _write_multi_class_file(
-        _ext_file(tmp_path, "pkg", "dup.py"), ["Addition", "MyModule", "My_Module"]
-    )
+    f = _write_multi_class_file(_ext_file(tmp_path, "pkg", "dup.py"), ["Addition", "MyModule", "My_Module"])
     captured: list = []
     with pytest.raises(ModuleIdConflictError):
         captured.extend(discover_multi_class(f, extensions_root="extensions"))

@@ -202,9 +202,7 @@ async def test_property_thread_safe_concurrent_calls() -> None:
     async def run(idx: int) -> None:
         # Distinct, non-circular, within-limit chain per task.
         chain = [f"mod.{idx}.{j}" for j in range(3)]
-        return await asyncio.to_thread(
-            guard_call_chain, f"mod.{idx}.2", chain
-        )
+        return await asyncio.to_thread(guard_call_chain, f"mod.{idx}.2", chain)
 
     results = await asyncio.gather(*(run(i) for i in range(16)))
     assert len(results) == 16

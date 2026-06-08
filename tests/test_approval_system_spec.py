@@ -175,9 +175,7 @@ class TestProperties:
 
         handler = CallbackApprovalHandler(_cb)
         requests = [_make_request(module_id=f"mod.{i}", idx=i) for i in range(n)]
-        results = await asyncio.gather(
-            *(handler.request_approval(req) for req in requests)
-        )
+        results = await asyncio.gather(*(handler.request_approval(req) for req in requests))
 
         assert len(results) == n
         assert all(r.status == "approved" for r in results)

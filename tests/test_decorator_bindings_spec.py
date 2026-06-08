@@ -48,10 +48,7 @@ from apcore.registry import Registry
 # ---------------------------------------------------------------------------
 
 _BINDING = (
-    "bindings:\n"
-    "  - module_id: {mid}\n"
-    "    target: binding_helpers:typed_function\n"
-    "    auto_schema: true\n"
+    "bindings:\n" "  - module_id: {mid}\n" "    target: binding_helpers:typed_function\n" "    auto_schema: true\n"
 )
 
 
@@ -135,9 +132,7 @@ class TestModuleContract:
         assert len(modules) == 12
         assert all(isinstance(m, FunctionModule) for m in modules)
         # Final state consistent: distinct ids preserved, no cross-talk.
-        assert sorted(m.module_id for m in modules) == sorted(
-            f"spec.concurrent.{i}" for i in range(12)
-        )
+        assert sorted(m.module_id for m in modules) == sorted(f"spec.concurrent.{i}" for i in range(12))
 
     def test_property_pure_false_with_registry(self, registry):
         # decorator_bindings.module.property.pure.false_when_registry

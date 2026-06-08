@@ -59,9 +59,7 @@ class StreamingCounter:
     def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
         return {"value": inputs["count"]}
 
-    async def stream(
-        self, inputs: dict[str, Any], context: Context
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
         for i in range(1, inputs["count"] + 1):
             yield {"value": i}
 
@@ -87,9 +85,7 @@ class NestedMergeModule:
     def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
         return {}
 
-    async def stream(
-        self, inputs: dict[str, Any], context: Context
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
         yield {"content": "Hello", "metadata": {"tokens": 1}}
         yield {"content": " world", "metadata": {"tokens": 1, "model": "gpt-4"}}
 
@@ -105,9 +101,7 @@ class BadChunkModule:
     def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
         return {}
 
-    async def stream(
-        self, inputs: dict[str, Any], context: Context
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
         yield {"a": 1}
         yield self._bad_chunk  # type: ignore[misc]  # deliberately invalid
 
@@ -189,9 +183,7 @@ class TestStreamErrors:
             def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 return {}
 
-            async def stream(
-                self, inputs: dict[str, Any], context: Context
-            ) -> AsyncIterator[dict[str, Any]]:
+            async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
                 yield {"ok": 1}
                 raise RuntimeError("boom mid-stream")
 
@@ -264,9 +256,7 @@ class TestStreamReturn:
         "bad_chunk,expected_type",
         [(3, "number"), (True, "bool"), (None, "null")],
     )
-    async def test_stream_return_d58_rejects_scalar_chunks(
-        self, bad_chunk: Any, expected_type: str
-    ) -> None:
+    async def test_stream_return_d58_rejects_scalar_chunks(self, bad_chunk: Any, expected_type: str) -> None:
         """streaming.stream.return.d58_reject_non_object_scalars
 
         Contract.Returns D-58: number, bool, and null chunks are all
@@ -339,9 +329,7 @@ class TestStreamProperties:
             def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 return {}
 
-            async def stream(
-                self, inputs: dict[str, Any], context: Context
-            ) -> AsyncIterator[dict[str, Any]]:
+            async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
                 self._calls += 1
                 yield {"call": self._calls}
 
@@ -370,9 +358,7 @@ class TestStreamProperties:
             def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 return {}
 
-            async def stream(
-                self, inputs: dict[str, Any], context: Context
-            ) -> AsyncIterator[dict[str, Any]]:
+            async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
                 for i in range(3):
                     side_effects.append(i)  # external mutation
                     yield {"i": i}
@@ -457,9 +443,7 @@ class TestStreamSideEffects:
         captured: dict[str, Any] = {}
 
         class OrderMiddleware(Middleware):
-            def before(
-                self, module_id: str, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any] | None:
+            def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any] | None:
                 order.append("before")
                 return None
 
@@ -517,9 +501,7 @@ class TestStreamSideEffects:
             def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 return {}
 
-            async def stream(
-                self, inputs: dict[str, Any], context: Context
-            ) -> AsyncIterator[dict[str, Any]]:
+            async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
                 yield nested(40, "a")
                 yield nested(40, "b")
 
@@ -537,9 +519,7 @@ class TestStreamSideEffects:
                 captured = output
                 return None
 
-        ex = _make_executor(
-            module=DeepModule(), module_id="deep", middlewares=[CaptureAfter()]
-        )
+        ex = _make_executor(module=DeepModule(), module_id="deep", middlewares=[CaptureAfter()])
         # Must complete without RecursionError despite 40 > 32 levels.
         chunks = await _collect(ex.stream("deep", {}))
         assert len(chunks) == 2

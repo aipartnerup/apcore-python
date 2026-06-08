@@ -27,7 +27,6 @@ Onion-model facts confirmed against the source under test
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import Any
 
 import pytest
@@ -77,15 +76,11 @@ class _Recording(Middleware):
         self.sink.append(f"before:{self.label}")
         return None
 
-    def after(
-        self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Context
-    ) -> None:
+    def after(self, module_id: str, inputs: dict[str, Any], output: dict[str, Any], context: Context) -> None:
         self.sink.append(f"after:{self.label}")
         return None
 
-    def on_error(
-        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context
-    ) -> None:
+    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Context) -> None:
         self.sink.append(f"on_error:{self.label}")
         return None
 
@@ -221,9 +216,7 @@ class TestBeforeProperties:
         """
 
         class AsyncBefore(Middleware):
-            async def before(
-                self, module_id: str, inputs: dict[str, Any], context: Context
-            ) -> dict[str, Any]:
+            async def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
                 await asyncio.sleep(0)
                 return {"awaited": True}
 
@@ -546,9 +539,7 @@ class TestOnErrorProperties:
 
         mw = AsyncRecover()
         mgr = _manager(mw)
-        result = await mgr.execute_on_error_async(
-            "mod.id", {}, RuntimeError("x"), _ctx(), [mw]
-        )
+        result = await mgr.execute_on_error_async("mod.id", {}, RuntimeError("x"), _ctx(), [mw])
         assert result == {"recovered_async": True}
 
     async def test_on_error_thread_safe_concurrent(self) -> None:
@@ -570,9 +561,7 @@ class TestOnErrorProperties:
         mgr = _manager(mw)
 
         async def one(idx: int) -> dict[str, Any] | None:
-            return await mgr.execute_on_error_async(
-                "mod.id", {"idx": idx}, RuntimeError(str(idx)), _ctx(), [mw]
-            )
+            return await mgr.execute_on_error_async("mod.id", {"idx": idx}, RuntimeError(str(idx)), _ctx(), [mw])
 
         results = await asyncio.gather(*(one(i) for i in range(n)))
         assert [r["echo"] for r in results if r] == list(range(n))

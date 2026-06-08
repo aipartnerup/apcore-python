@@ -191,10 +191,7 @@ class TestExecutorCallContract:
 
         async def _driver() -> list[dict[str, Any]]:
             loop = asyncio.get_running_loop()
-            tasks = [
-                loop.run_in_executor(None, ex.call, "test.echo", {"name": f"u{i}"})
-                for i in range(8)
-            ]
+            tasks = [loop.run_in_executor(None, ex.call, "test.echo", {"name": f"u{i}"}) for i in range(8)]
             return await asyncio.gather(*tasks)
 
         results = asyncio.run(_driver())

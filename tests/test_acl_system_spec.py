@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from apcore.acl import ACL, ACLRule
-from apcore.context import Context, Identity
 from apcore.errors import ACLRuleError, ConfigNotFoundError
 
 
@@ -193,7 +192,7 @@ class TestACLLoadContract:
     # acl_system.load.error.ACL_RULE_ERROR.rules_key_absent
     def test_acl_system_load_error_acl_rule_error_rules_absent(self, tmp_path: Path) -> None:
         """acl_system.load.error.ACL_RULE_ERROR.rules_key_absent — missing 'rules' => ACLRuleError."""
-        path = _write_yaml(tmp_path, "version: \"1.0\"\ndefault_effect: deny\n")
+        path = _write_yaml(tmp_path, 'version: "1.0"\ndefault_effect: deny\n')
         with pytest.raises(ACLRuleError) as exc_info:
             ACL.load(path)
         assert exc_info.value.code == "ACL_RULE_ERROR"
@@ -211,7 +210,7 @@ class TestACLLoadContract:
         """acl_system.load.error.ACL_RULE_ERROR.rule_missing_required_key — rule missing 'effect'."""
         path = _write_yaml(
             tmp_path,
-            "rules:\n  - callers: [\"a.*\"]\n    targets: [\"b.*\"]\n",
+            'rules:\n  - callers: ["a.*"]\n    targets: ["b.*"]\n',
         )
         with pytest.raises(ACLRuleError) as exc_info:
             ACL.load(path)
@@ -222,7 +221,7 @@ class TestACLLoadContract:
         """acl_system.load.error.ACL_RULE_ERROR.invalid_effect — effect not allow/deny => ACLRuleError."""
         path = _write_yaml(
             tmp_path,
-            "rules:\n  - callers: [\"a.*\"]\n    targets: [\"b.*\"]\n    effect: maybe\n",
+            'rules:\n  - callers: ["a.*"]\n    targets: ["b.*"]\n    effect: maybe\n',
         )
         with pytest.raises(ACLRuleError) as exc_info:
             ACL.load(path)
@@ -233,7 +232,7 @@ class TestACLLoadContract:
         """acl_system.load.error.ACL_RULE_ERROR.callers_not_list — callers non-list => ACLRuleError."""
         path = _write_yaml(
             tmp_path,
-            "rules:\n  - callers: \"a.*\"\n    targets: [\"b.*\"]\n    effect: allow\n",
+            'rules:\n  - callers: "a.*"\n    targets: ["b.*"]\n    effect: allow\n',
         )
         with pytest.raises(ACLRuleError) as exc_info:
             ACL.load(path)
@@ -253,7 +252,7 @@ class TestACLLoadContract:
         """acl_system.load.postcondition.default_effect_deny — absent default_effect => deny."""
         path = _write_yaml(
             tmp_path,
-            "rules:\n  - callers: [\"a.*\"]\n    targets: [\"b.*\"]\n    effect: allow\n",
+            'rules:\n  - callers: ["a.*"]\n    targets: ["b.*"]\n    effect: allow\n',
         )
         acl = ACL.load(path)
         # No rule matches "x" -> falls to default; must be deny.
@@ -516,14 +515,14 @@ class TestACLReloadContract:
         """acl_system.reload.postcondition.rules_reflect_file — reload re-reads YAML and updates rules."""
         path = _write_yaml(
             tmp_path,
-            "default_effect: deny\nrules:\n  - callers: [\"a.*\"]\n    targets: [\"b.*\"]\n    effect: allow\n",
+            'default_effect: deny\nrules:\n  - callers: ["a.*"]\n    targets: ["b.*"]\n    effect: allow\n',
         )
         acl = ACL.load(path)
         assert acl.check("a.x", "b.y") is True
         # Rewrite the file with a different ruleset.
         _write_yaml(
             tmp_path,
-            "default_effect: deny\nrules:\n  - callers: [\"c.*\"]\n    targets: [\"d.*\"]\n    effect: allow\n",
+            'default_effect: deny\nrules:\n  - callers: ["c.*"]\n    targets: ["d.*"]\n    effect: allow\n',
         )
         acl.reload()
         assert acl.check("a.x", "b.y") is False  # old rule gone

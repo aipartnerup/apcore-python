@@ -21,7 +21,6 @@ the cross-language gap without breaking import of this file.
 from __future__ import annotations
 
 import asyncio
-import threading
 from typing import Any, ClassVar
 
 import pytest
@@ -180,10 +179,7 @@ class TestModuleConformanceErrors:
 
     def test_module_interface_errors_invalid_schema_type(self) -> None:
         """module_interface.errors.InvalidSchemaType"""
-        pytest.skip(
-            "missing symbol: InvalidSchemaType (contract gap) — no such error type "
-            "in apcore.errors."
-        )
+        pytest.skip("missing symbol: InvalidSchemaType (contract gap) — no such error type " "in apcore.errors.")
 
     def test_module_interface_errors_description_too_long(self) -> None:
         """module_interface.errors.DescriptionTooLong"""
@@ -194,17 +190,11 @@ class TestModuleConformanceErrors:
 
     def test_module_interface_errors_documentation_too_long(self) -> None:
         """module_interface.errors.DocumentationTooLong"""
-        pytest.skip(
-            "missing symbol: DocumentationTooLong (contract gap) — no such error type "
-            "in apcore.errors."
-        )
+        pytest.skip("missing symbol: DocumentationTooLong (contract gap) — no such error type " "in apcore.errors.")
 
     def test_module_interface_errors_invalid_annotations(self) -> None:
         """module_interface.errors.InvalidAnnotations"""
-        pytest.skip(
-            "missing symbol: InvalidAnnotations (contract gap) — no such error type "
-            "in apcore.errors."
-        )
+        pytest.skip("missing symbol: InvalidAnnotations (contract gap) — no such error type " "in apcore.errors.")
 
     def test_module_interface_errors_invalid_example(self) -> None:
         """module_interface.errors.InvalidExample"""
@@ -306,9 +296,7 @@ class TestModuleConformanceProperties:
         marker_before = _ConcurrentModule._shared_marker
         n = 16
         inputs = [{"value": f"v{i}"} for i in range(n)]
-        results = await asyncio.gather(
-            *(module.execute(inp, _make_context()) for inp in inputs)
-        )
+        results = await asyncio.gather(*(module.execute(inp, _make_context()) for inp in inputs))
         # No exception raised; every call returned its own distinct value.
         assert [r["echoed"] for r in results] == [f"v{i}" for i in range(n)]
         # ClassVar must not have been mutated during concurrent execution.

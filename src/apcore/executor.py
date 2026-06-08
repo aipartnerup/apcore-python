@@ -177,6 +177,10 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any], *, _depth: int =
     streaming chunks.
     """
     if _depth >= _MAX_MERGE_DEPTH:
+        # At the depth cap, replace rather than recurse: the right value wins
+        # at this level without further merging (mirrors apcore-rust).
+        for key, value in override.items():
+            base[key] = value
         return
     for key, value in override.items():
         if key in base and isinstance(base[key], dict) and isinstance(value, dict):

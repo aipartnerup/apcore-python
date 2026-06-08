@@ -165,9 +165,7 @@ async def test_validate_property_thread_safe() -> None:
     calls (via asyncio.gather over to_thread) MUST all succeed without
     cross-talk.
     """
-    payloads = [
-        ({"count": i + 1, "label": "ok"}, True) for i in range(8)
-    ] + [
+    payloads = [({"count": i + 1, "label": "ok"}, True) for i in range(8)] + [
         ({"count": 0, "label": "ok"}, False) for _ in range(4)
     ]
 
@@ -537,9 +535,7 @@ def test_validate_recursive_error_nested_validation_error() -> None:
     Validation MUST reach nested levels: a child node missing `value` MUST be
     rejected.
     """
-    result = validate_schema_dict(
-        {"value": "root", "children": [{"children": []}]}, _TREE_NODE_SCHEMA
-    )
+    result = validate_schema_dict({"value": "root", "children": [{"children": []}]}, _TREE_NODE_SCHEMA)
     assert result.valid is False
     assert result.error_code == "SCHEMA_VALIDATION_ERROR"
 

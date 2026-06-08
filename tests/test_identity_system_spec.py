@@ -28,7 +28,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
 
 from apcore.context import Context, ContextFactory, Identity
 
@@ -132,9 +131,7 @@ def test_error_none_no_raise_on_any_optional_input() -> None:
     factory.create_context(_Request())
     factory.create_context(_Request(identity=None, caller_id=None, data=None))
     ident = Identity(id="u-1", type="user", roles=("admin",), attrs={"d": "eng"})
-    ctx = factory.create_context(
-        _Request(identity=ident, caller_id="orchestrator.run", data={"x": 1})
-    )
+    ctx = factory.create_context(_Request(identity=ident, caller_id="orchestrator.run", data={"x": 1}))
     # And it still produced a usable Context (proves we reached the return, not
     # an early raise).
     assert isinstance(ctx, Context)

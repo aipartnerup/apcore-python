@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from apcore.events.circuit_breaker import CircuitBreakerWrapper, CircuitState
-from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
+from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.events.subscribers import A2ASubscriber, WebhookSubscriber
 
 
@@ -396,9 +396,7 @@ def test_webhook_deliver_property_thread_safe() -> None:
 
     async def run_all() -> None:
         with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
-            await asyncio.gather(
-                *[sub.on_event(_make_event(data={"i": i})) for i in range(8)]
-            )
+            await asyncio.gather(*[sub.on_event(_make_event(data={"i": i})) for i in range(8)])
 
     asyncio.run(run_all())
     assert session.post.call_count == 8
@@ -520,9 +518,7 @@ def test_circuit_on_failure_property_thread_safe() -> None:
     wrapper = CircuitBreakerWrapper(failing, emitter, open_threshold=8)
 
     async def run_all() -> None:
-        await asyncio.gather(
-            *[wrapper.on_event(_make_event(data={"i": i})) for i in range(8)]
-        )
+        await asyncio.gather(*[wrapper.on_event(_make_event(data={"i": i})) for i in range(8)])
 
     try:
         asyncio.run(run_all())
@@ -874,9 +870,7 @@ def test_a2a_deliver_property_thread_safe() -> None:
 
     async def run_all() -> None:
         with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
-            await asyncio.gather(
-                *[sub.on_event(_make_event(data={"i": i})) for i in range(8)]
-            )
+            await asyncio.gather(*[sub.on_event(_make_event(data={"i": i})) for i in range(8)])
 
     asyncio.run(run_all())
     assert session.post.call_count == 8
@@ -911,9 +905,7 @@ def test_a2a_deliver_side_effect_1_auth_bearer_header() -> None:
     assert headers_str["Authorization"] == "Bearer tok123"
 
     # dict auth -> merged
-    sub_dict = A2ASubscriber(
-        platform_url="https://p.example.com", auth={"X-Api-Key": "k"}
-    )
+    sub_dict = A2ASubscriber(platform_url="https://p.example.com", auth={"X-Api-Key": "k"})
     mock_dict, session_dict = _mock_aiohttp(status=200)
     with patch("apcore.events.subscribers.aiohttp", mock_dict):
         asyncio.run(sub_dict.on_event(event))

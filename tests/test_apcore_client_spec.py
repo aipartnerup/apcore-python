@@ -188,9 +188,7 @@ async def test_call_property_thread_safe() -> None:
     """
     client = _client_with_module()
     pairs = [(i, i * 2) for i in range(10)]
-    results = await asyncio.gather(
-        *[client.call_async("math.add", {"a": a, "b": b}) for a, b in pairs]
-    )
+    results = await asyncio.gather(*[client.call_async("math.add", {"a": a, "b": b}) for a, b in pairs])
     assert [r["sum"] for r in results] == [a + b for a, b in pairs]
 
 
@@ -316,9 +314,7 @@ def test_on_property_thread_safe() -> None:
         return handler
 
     async def subscribe_all() -> None:
-        await asyncio.gather(
-            *[asyncio.to_thread(client.on, "evt.shared", make(i)) for i in range(10)]
-        )
+        await asyncio.gather(*[asyncio.to_thread(client.on, "evt.shared", make(i)) for i in range(10)])
 
     asyncio.run(subscribe_all())
     assert client.events is not None
@@ -423,6 +419,7 @@ def test_off_property_thread_safe() -> None:
     calls = [0] * 10
     subs = []
     for i in range(10):
+
         def make(idx: int):
             return lambda _e: calls.__setitem__(idx, calls[idx] + 1)
 
@@ -913,9 +910,7 @@ def test_register_property_thread_safe() -> None:
     ids = [f"svc.mod{i}" for i in range(10)]
 
     async def register_all() -> None:
-        await asyncio.gather(
-            *[asyncio.to_thread(client.register, mid, module_obj) for mid in ids]
-        )
+        await asyncio.gather(*[asyncio.to_thread(client.register, mid, module_obj) for mid in ids])
 
     asyncio.run(register_all())
     for mid in ids:
