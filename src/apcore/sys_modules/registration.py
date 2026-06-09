@@ -30,6 +30,7 @@ from apcore.sys_modules.control import (
     ToggleFeatureModule,
     ToggleState,
     UpdateConfigModule,
+    _default_toggle_state,
 )
 from apcore.sys_modules.health import HealthModule, HealthSummaryModule
 from apcore.sys_modules.overrides import FileOverridesStore, OverridesStore
@@ -547,13 +548,17 @@ def _register_control_modules(
 ) -> ToggleState:
     """Register control sys modules that require an EventEmitter.
 
-    A fresh ToggleState is created per call so multiple Registry instances
-    in the same process do not share toggle state.
+    Uses the process-global ``_default_toggle_state`` so that toggles written
+    by ``ToggleFeatureModule`` are observed by the execution pipeline's
+    ``BuiltinModuleLookup`` step (which reads the same singleton) and survive
+    registry reloads. Cross-language parity with apcore-typescript's
+    ``DEFAULT_TOGGLE_STATE`` and apcore-rust's process-global ``ToggleState``
+    (sync finding A-D-12). Per-instance isolation is tracked as future work.
 
     Returns the ``ToggleState`` instance owned by ``toggle_feature`` so the
     caller can apply persisted ``toggle.*`` overrides to it.
     """
-    toggle_state = ToggleState()
+    toggle_state = _default_toggle_state
 
     _register_sys_module(
         registry,
