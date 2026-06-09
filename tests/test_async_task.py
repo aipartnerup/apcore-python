@@ -865,3 +865,162 @@ class TestRetryConfigCanonicalFields:
         assert policy.base_delay_seconds == 2.0
         # Legacy delay_for(attempt) API unchanged.
         assert policy.delay_for(1) == 2.0
+
+
+# =============================================================================
+# Cross-language sync regressions (2026-06-08)
+# =============================================================================
+
+
+class _BlockingExecutor:
+    """Executor stub whose call_async blocks until released.
+
+    Keeps submitted tasks in RUNNING/PENDING (active) state so capacity-based
+    tests can hold the manager at a controlled active count.
+    """
+
+    def __init__(self) -> None:
+        self._release = asyncio.Event()
+
+    def release(self) -> None:
+        self._release.set()
+
+    async def call_async(
+        self,
+        module_id: str,
+        inputs: dict[str, Any] | None = None,
+        context: Context | None = None,
+        version_hint: str | None = None,
+    ) -> dict[str, Any]:
+        await self._release.wait()
+        return {"ok": True}
+
+
+class _SlowListStore:
+    """In-memory store whose list() yields control, widening the submit race.
+
+    The extra ``await asyncio.sleep(0)`` between reading and returning the
+    task list lets a second concurrent submit interleave between the capacity
+    check and the PENDING save in the manager — the exact TOCTOU window the
+    admission lock must close.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, TaskInfo] = {}
+
+    async def get(self, task_id: str) -> TaskInfo | None:
+        return self._data.get(task_id)
+
+    async def save(self, info: TaskInfo) -> None:
+        await asyncio.sleep(0)
+        self._data[info.task_id] = info
+
+    async def delete(self, task_id: str) -> None:
+        self._data.pop(task_id, None)
+
+    async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+        await asyncio.sleep(0)
+        items = list(self._data.values())
+        if status is None:
+            return items
+        return [t for t in items if t.status == status]
+
+    async def list_expired(self, before_timestamp: float) -> list[TaskInfo]:
+        return []
+
+
+class TestSubmitAdmissionLock:
+    """[async-submit-toctou] concurrent submits must not exceed max_tasks."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_submits_at_capacity_do_not_overshoot(self) -> None:
+        executor = _BlockingExecutor()
+        store = _SlowListStore()
+        max_tasks = 2
+        mgr = AsyncTaskManager(executor, max_concurrent=10, max_tasks=max_tasks, store=store)
+
+        # Seed one active task so capacity is max_tasks-1 (one free slot).
+        await mgr.submit("mod.a", {})
+        await asyncio.sleep(0)
+
+        from apcore.errors import TaskLimitExceededError
+
+        # Fire two submits concurrently into the single remaining slot.
+        results = await asyncio.gather(
+            mgr.submit("mod.b", {}),
+            mgr.submit("mod.c", {}),
+            return_exceptions=True,
+        )
+
+        successes = [r for r in results if isinstance(r, str)]
+        failures = [r for r in results if isinstance(r, TaskLimitExceededError)]
+
+        # Exactly one must succeed; the other must be rejected at the cap.
+        assert len(successes) == 1, results
+        assert len(failures) == 1, results
+
+        # Store must never hold more than max_tasks active records.
+        active = [t for t in await store.list() if t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)]
+        assert len(active) <= max_tasks
+
+        executor.release()
+        await mgr.shutdown()
+
+
+class TestShutdownCancelsStoreResidentTasks:
+    """[async-shutdown-source] shutdown cancels active store tasks with no handle."""
+
+    @pytest.mark.asyncio
+    async def test_store_resident_active_task_is_cancelled(self, executor: Executor) -> None:
+        store = InMemoryTaskStore()
+        mgr = AsyncTaskManager(executor, store=store)
+
+        # Pre-seed a RUNNING task directly in the store with NO local handle
+        # in mgr._async_tasks — simulating a task resident only in the store.
+        orphan = TaskInfo(
+            task_id="orphan-1",
+            module_id="mod.x",
+            status=TaskStatus.RUNNING,
+            submitted_at=time.time(),
+            started_at=time.time(),
+        )
+        await store.save(orphan)
+        assert "orphan-1" not in mgr._async_tasks
+
+        await mgr.shutdown()
+
+        info = await store.get("orphan-1")
+        assert info is not None
+        assert info.status == TaskStatus.CANCELLED
+        assert info.completed_at is not None
+
+
+class TestCompletionDoesNotClobberCancel:
+    """[async-completion-recheck] a cancel during execution survives completion."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_landing_during_execution_not_overwritten(self) -> None:
+        executor = _BlockingExecutor()
+        store = InMemoryTaskStore()
+        mgr = AsyncTaskManager(executor, store=store)
+
+        task_id = await mgr.submit("mod.x", {})
+        # Let the runner reach RUNNING and block inside call_async.
+        await asyncio.sleep(0.01)
+
+        # Simulate a cancel landing in the store during execution WITHOUT
+        # cancelling the asyncio handle (e.g. an external store mutation /
+        # store-direct shutdown path), then let execution complete.
+        info = await store.get(task_id)
+        assert info is not None and info.status == TaskStatus.RUNNING
+        info.status = TaskStatus.CANCELLED
+        info.completed_at = time.time()
+        await store.save(info)
+
+        executor.release()
+        await asyncio.sleep(0.05)
+
+        final = await store.get(task_id)
+        assert final is not None
+        # COMPLETED must NOT have clobbered the CANCELLED status.
+        assert final.status == TaskStatus.CANCELLED
