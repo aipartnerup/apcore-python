@@ -1,4 +1,4 @@
-"""Issue #43 §4 — error fingerprinting via code + stack-frame + sanitized message."""
+"""Error fingerprinting via canonical code:module_id:normalized_message digest."""
 
 from __future__ import annotations
 
@@ -42,11 +42,12 @@ def test_fingerprint_distinguishes_different_codes() -> None:
     assert compute_error_fingerprint(err_a, "m") != compute_error_fingerprint(err_b, "m")
 
 
-def test_fingerprint_uses_top_frame_when_available() -> None:
-    """Two errors with same code+message but different top frames => different fp.
+def test_fingerprint_ignores_top_frame() -> None:
+    """Same code+module+message from different call sites => SAME fingerprint.
 
-    Each ``_raise_with`` call constructs the error from the same line; we use
-    a different helper to differentiate the top frame.
+    The canonical fingerprint is ``code:module_id:normalized_message`` only.
+    The originating stack frame is not portable across languages, so it is
+    excluded from the digest (observability spec §"Error fingerprinting").
     """
 
     def _raise_b(message: str) -> ModuleError:
@@ -57,8 +58,8 @@ def test_fingerprint_uses_top_frame_when_available() -> None:
 
     err_a = _raise_with("same message")
     err_b = _raise_b("same message")
-    # Different originating line numbers — fingerprints diverge.
-    assert compute_error_fingerprint(err_a, "m") != compute_error_fingerprint(err_b, "m")
+    # Different originating line numbers, but the frame is not in the digest.
+    assert compute_error_fingerprint(err_a, "m") == compute_error_fingerprint(err_b, "m")
 
 
 def test_error_history_dedupes_uuid_bearing_messages() -> None:

@@ -131,9 +131,9 @@ _pattern_data = _load("pattern_matching")
 )
 def test_pattern_matching(case: dict[str, Any]) -> None:
     result = match_pattern(case["pattern"], case["value"])
-    assert (
-        result == case["expected"]
-    ), f"match_pattern({case['pattern']!r}, {case['value']!r}) returned {result}, expected {case['expected']}"
+    assert result == case["expected"], (
+        f"match_pattern({case['pattern']!r}, {case['value']!r}) returned {result}, expected {case['expected']}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -152,9 +152,9 @@ def test_error_recovery_user_fixable(case: dict[str, Any]) -> None:
     from apcore.errors import ModuleError
 
     err = ModuleError(code=case["code"], message="conformance check")
-    assert (
-        err.user_fixable == case["expected"]["user_fixable"]
-    ), f"{case['code']}: user_fixable={err.user_fixable}, expected {case['expected']['user_fixable']}"
+    assert err.user_fixable == case["expected"]["user_fixable"], (
+        f"{case['code']}: user_fixable={err.user_fixable}, expected {case['expected']['user_fixable']}"
+    )
 
 
 def test_error_recovery_fixture_matches_source() -> None:
@@ -183,9 +183,9 @@ _specificity_data = _load("specificity")
 )
 def test_specificity(case: dict[str, Any]) -> None:
     score = calculate_specificity(case["pattern"])
-    assert (
-        score == case["expected_score"]
-    ), f"calculate_specificity({case['pattern']!r}) returned {score}, expected {case['expected_score']}"
+    assert score == case["expected_score"], (
+        f"calculate_specificity({case['pattern']!r}) returned {score}, expected {case['expected_score']}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -609,9 +609,9 @@ def test_schema_validation(
         expected_valid = True
 
     result = validator.validate(input_data, model)
-    assert (
-        result.valid == expected_valid
-    ), f"schema_validate({case['id']}) valid={result.valid}, expected={expected_valid}, errors={result.errors}"
+    assert result.valid == expected_valid, (
+        f"schema_validate({case['id']}) valid={result.valid}, expected={expected_valid}, errors={result.errors}"
+    )
 
     # Verify error path when expected
     if not expected_valid and "expected_error_path" in case:
@@ -730,16 +730,16 @@ def test_sys_module_output_schemas_match_spec() -> None:
         # Verify required keys match
         spec_required = set(spec_schema.get("required", []))
         module_required = set(module_schema.get("required", []))
-        assert (
-            spec_required == module_required
-        ), f"{schema_name}: required mismatch — spec={spec_required}, module={module_required}"
+        assert spec_required == module_required, (
+            f"{schema_name}: required mismatch — spec={spec_required}, module={module_required}"
+        )
 
         # Verify property keys match
         spec_props = set(spec_schema.get("properties", {}).keys())
         module_props = set(module_schema.get("properties", {}).keys())
-        assert (
-            spec_props == module_props
-        ), f"{schema_name}: properties mismatch — spec={spec_props}, module={module_props}"
+        assert spec_props == module_props, (
+            f"{schema_name}: properties mismatch — spec={spec_props}, module={module_props}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -789,9 +789,9 @@ def test_context_create_trace_parent(case: dict[str, Any], caplog: pytest.LogCap
         assert ctx.trace_id == expected["trace_id"]
 
     warn_seen = any("Invalid trace_id format" in record.getMessage() for record in caplog.records)
-    assert (
-        warn_seen == expected["warn_logged"]
-    ), f"warn_logged mismatch: expected {expected['warn_logged']}, got {warn_seen}"
+    assert warn_seen == expected["warn_logged"], (
+        f"warn_logged mismatch: expected {expected['warn_logged']}, got {warn_seen}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -815,19 +815,19 @@ def test_identity_system(case: dict[str, Any]) -> None:
     )
 
     if "expected_type" in case:
-        assert (
-            identity.type == case["expected_type"]
-        ), f"Identity type: got {identity.type!r}, expected {case['expected_type']!r}"
+        assert identity.type == case["expected_type"], (
+            f"Identity type: got {identity.type!r}, expected {case['expected_type']!r}"
+        )
 
     if "expected_roles" in case:
-        assert (
-            list(identity.roles) == case["expected_roles"]
-        ), f"Identity roles: got {list(identity.roles)!r}, expected {case['expected_roles']!r}"
+        assert list(identity.roles) == case["expected_roles"], (
+            f"Identity roles: got {list(identity.roles)!r}, expected {case['expected_roles']!r}"
+        )
 
     if "expected_attrs" in case:
-        assert (
-            identity.attrs == case["expected_attrs"]
-        ), f"Identity attrs: got {identity.attrs!r}, expected {case['expected_attrs']!r}"
+        assert identity.attrs == case["expected_attrs"], (
+            f"Identity attrs: got {identity.attrs!r}, expected {case['expected_attrs']!r}"
+        )
 
     if case["id"] == "identity_propagates_to_child_context":
         ctx = Context.create(identity=identity)
@@ -886,8 +886,7 @@ def test_annotations_extra_round_trip(case: dict[str, Any]) -> None:
 
     if "expected_deserialized_extra" in case:
         assert ann.extra == case["expected_deserialized_extra"], (
-            f"[{case_id}] extra after from_dict: got {ann.extra!r}, "
-            f"expected {case['expected_deserialized_extra']!r}"
+            f"[{case_id}] extra after from_dict: got {ann.extra!r}, expected {case['expected_deserialized_extra']!r}"
         )
 
     if "expected_serialized" in case:
@@ -904,14 +903,14 @@ def test_annotations_extra_round_trip(case: dict[str, Any]) -> None:
         if "discoverable" not in expected:
             serialized.pop("discoverable", None)
         assert serialized == expected, (
-            f"[{case_id}] serialized annotations mismatch: " f"got {serialized!r}, expected {expected!r}"
+            f"[{case_id}] serialized annotations mismatch: got {serialized!r}, expected {expected!r}"
         )
 
     if "forbidden_root_keys" in case:
         serialized = _dataclasses_asdict(ann)
         for key in case["forbidden_root_keys"]:
             assert key not in serialized, (
-                f"[{case_id}] Producer MUST NOT emit top-level key {key!r}; " f"got keys: {list(serialized.keys())}"
+                f"[{case_id}] Producer MUST NOT emit top-level key {key!r}; got keys: {list(serialized.keys())}"
             )
 
 
@@ -1009,9 +1008,9 @@ def test_approval_gate(case: dict[str, Any]) -> None:
                     await gate.execute(pipe_ctx)
 
         gate_invoked = handler is not None and handler.called
-        assert (
-            gate_invoked == expected["gate_invoked"]
-        ), f"gate_invoked: expected {expected['gate_invoked']}, got {gate_invoked}"
+        assert gate_invoked == expected["gate_invoked"], (
+            f"gate_invoked: expected {expected['gate_invoked']}, got {gate_invoked}"
+        )
 
     asyncio.run(_run())
 
@@ -1046,9 +1045,9 @@ def test_binding_errors(case: dict[str, Any]) -> None:
             reason=inp["reason"],
         )
         if "expected_message" in case:
-            assert (
-                err.message == case["expected_message"]
-            ), f"[{case['id']}] message: got {err.message!r}, expected {case['expected_message']!r}"
+            assert err.message == case["expected_message"], (
+                f"[{case['id']}] message: got {err.message!r}, expected {case['expected_message']!r}"
+            )
 
     elif error_code == "BINDING_SCHEMA_MODE_CONFLICT":
         err = BindingSchemaModeConflictError(
@@ -1057,9 +1056,9 @@ def test_binding_errors(case: dict[str, Any]) -> None:
             file_path=inp["file_path"],
         )
         if "expected_message" in case:
-            assert (
-                err.message == case["expected_message"]
-            ), f"[{case['id']}] message: got {err.message!r}, expected {case['expected_message']!r}"
+            assert err.message == case["expected_message"], (
+                f"[{case['id']}] message: got {err.message!r}, expected {case['expected_message']!r}"
+            )
 
     elif error_code == "BINDING_SCHEMA_INFERENCE_FAILED":
         err = BindingSchemaInferenceFailedError(
@@ -1171,9 +1170,9 @@ def test_dependency_version_constraints(case: dict[str, Any]) -> None:
     if expected["outcome"] == "ok":
         load_order = resolve_dependencies(modules_input, module_versions=module_versions)
         if "load_order" in expected:
-            assert (
-                load_order == expected["load_order"]
-            ), f"load_order: got {load_order!r}, expected {expected['load_order']!r}"
+            assert load_order == expected["load_order"], (
+                f"load_order: got {load_order!r}, expected {expected['load_order']!r}"
+            )
         # For optional skip cases, just verify no error raised
     else:
         error_code = expected.get("error_code")
@@ -1181,12 +1180,12 @@ def test_dependency_version_constraints(case: dict[str, Any]) -> None:
             with pytest.raises(DependencyVersionMismatchError) as exc_info:
                 resolve_dependencies(modules_input, module_versions=module_versions)
             err = exc_info.value
-            assert (
-                err.details.get("module_id") == expected["module_id"]
-            ), f"error module_id: {err.details.get('module_id')!r} != {expected['module_id']!r}"
-            assert (
-                err.details.get("dependency_id") == expected["dependency_id"]
-            ), f"error dependency_id: {err.details.get('dependency_id')!r} != {expected['dependency_id']!r}"
+            assert err.details.get("module_id") == expected["module_id"], (
+                f"error module_id: {err.details.get('module_id')!r} != {expected['module_id']!r}"
+            )
+            assert err.details.get("dependency_id") == expected["dependency_id"], (
+                f"error dependency_id: {err.details.get('dependency_id')!r} != {expected['dependency_id']!r}"
+            )
         else:
             with pytest.raises(Exception):
                 resolve_dependencies(modules_input, module_versions=module_versions)
@@ -1283,7 +1282,7 @@ def test_middleware_on_error_recovery(case: dict[str, Any]) -> None:
     # and only check "at least one" was invoked when multiple are declared.
     invoked_ids = [mw_id for mw_id in expected["after_middleware_invoked"] if middleware_instances[mw_id].invoked]
     assert len(invoked_ids) > 0, (
-        f"Expected at least one middleware to be invoked, none were: " f"{expected['after_middleware_invoked']}"
+        f"Expected at least one middleware to be invoked, none were: {expected['after_middleware_invoked']}"
     )
 
     # Verify outcome
@@ -1299,9 +1298,9 @@ def test_middleware_on_error_recovery(case: dict[str, Any]) -> None:
             # matches forward rather than reverse priority. We verify a recovery
             # dict was produced; the exact value depends on execution order.
             expected_results = [mw.get("returns") for mw in case["after_middleware"] if mw.get("returns") is not None]
-            assert (
-                recovery in expected_results
-            ), f"Recovery dict {recovery!r} not among expected results {expected_results!r}"
+            assert recovery in expected_results, (
+                f"Recovery dict {recovery!r} not among expected results {expected_results!r}"
+            )
         else:
             # For success path (no error), the fixture asserts on_error() is NOT
             # invoked. We verify this by checking no on_error recovery was triggered
@@ -1392,17 +1391,14 @@ def test_sensitive_keys_default(case: dict[str, Any]) -> None:
             )
             if "length" in expected:
                 assert len(rc.sensitive_keys) == expected["length"], (
-                    f"[{case['id']}] sensitive_keys length: "
-                    f"got {len(rc.sensitive_keys)}, expected {expected['length']}"
+                    f"[{case['id']}] sensitive_keys length: got {len(rc.sensitive_keys)}, expected {expected['length']}"
                 )
             return
 
         # Sub-case 2: redact with default list and compare.
         result = redact_sensitive(case["input"], {})
         assert result == expected, (
-            f"[{case['id']}] redact_sensitive(default) mismatch\n"
-            f"  got:      {result!r}\n"
-            f"  expected: {expected!r}"
+            f"[{case['id']}] redact_sensitive(default) mismatch\n  got:      {result!r}\n  expected: {expected!r}"
         )
         return
 
@@ -1438,16 +1434,16 @@ def _push_error(
 ) -> None:
     """Push a synthetic ModuleError into ``history``.
 
-    The Python SDK derives the top-frame signature from the live
-    traceback when available.  Fixtures may pre-supply ``top_frame``
-    (a ``file:func:line`` hint) — we forge a minimal fake traceback so
-    two cases with different ``top_frame`` strings are kept distinct.
+    The canonical fingerprint is ``code:module_id:normalized_message`` and
+    does NOT include any call-site / top-frame component. A fixture's
+    ``top_frame`` hint therefore only affects the digest if it materially
+    differs the message; we stamp it onto the message so fixture cases that
+    intend distinct call sites remain distinct entries.
     """
     err = _ModuleError(code=error_code, message=message)
     if top_frame is not None:
-        # Stamp the message so it folds the call site into the
-        # normalized message — the SDK will hash it as part of the
-        # fingerprint when no live traceback is attached.
+        # Stamp the call-site hint into the message so that fixture cases
+        # marking distinct call sites stay distinct after normalization.
         err = _ModuleError(
             code=error_code,
             message=f"{message} [@{top_frame}]",
@@ -1488,8 +1484,7 @@ def test_error_fingerprinting(case: dict[str, Any]) -> None:
         f"expected {expected['entry_count']}; entries={[(e.code, e.message, e.count) for e in all_entries]!r}"
     )
     assert len(fingerprints) == expected["fingerprints_distinct"], (
-        f"[{case['id']}] fingerprints_distinct: got {len(fingerprints)}, "
-        f"expected {expected['fingerprints_distinct']}"
+        f"[{case['id']}] fingerprints_distinct: got {len(fingerprints)}, expected {expected['fingerprints_distinct']}"
     )
 
     if "first_entry_count" in expected:
@@ -1498,7 +1493,7 @@ def test_error_fingerprinting(case: dict[str, Any]) -> None:
         # with the highest count to match "first/dedup'd entry".
         top = max(all_entries, key=lambda e: e.count)
         assert top.count == expected["first_entry_count"], (
-            f"[{case['id']}] first_entry_count: got {top.count}, " f"expected {expected['first_entry_count']}"
+            f"[{case['id']}] first_entry_count: got {top.count}, expected {expected['first_entry_count']}"
         )
 
 
@@ -1875,9 +1870,9 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         assert carried is not None and len(carried) == len(tp_in["tracestate"])
         # And the signature does NOT expose a separate tracestate parameter.
         params = _inspect.signature(Context.create).parameters
-        assert (
-            "tracestate" not in params
-        ), "tracestate MUST live inside TraceParent — no separate Context.create parameter"
+        assert "tracestate" not in params, (
+            "tracestate MUST live inside TraceParent — no separate Context.create parameter"
+        )
 
     elif case_id == "distributed_cancel_token_post_deserialize_null":
         # Negative invariant: cancel_token MUST NOT serialize. A deserialized
