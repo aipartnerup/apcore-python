@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import os
 import re
 import threading
 import traceback
@@ -19,11 +20,13 @@ from apcore.observability.store import ObservabilityStore
 def normalize_message(msg: str) -> str:
     """Replace ephemeral values with placeholders before fingerprint hashing.
 
-    Steps (applied in order to avoid conflicts):
+    Canonical algorithm (apcore observability spec §1.4) — exactly five
+    steps, no others:
     1. UUID patterns (8-4-4-4-12 hex) → <UUID>
     2. ISO 8601 timestamps → <TIMESTAMP>  (must precede integer step: years are 4 digits)
-    3. Long hex runs (≥ 8 hex chars) → <HEX>
-    4. Integers ≥ 4 digits → <ID>
+    3. Integer runs ≥ 4 digits → <ID>
+    4. Strip leading/trailing whitespace
+    5. Lowercase entire string
     """
     # Step 1: UUID patterns (8-4-4-4-12 hex)
     msg = re.sub(
@@ -37,31 +40,36 @@ def normalize_message(msg: str) -> str:
         "<TIMESTAMP>",
         msg,
     )
-    # Step 3: hex IDs of 8+ chars (e.g. ``0xdeadbeef``, raw hashes).
-    msg = re.sub(r"\b(?:0x)?[0-9a-fA-F]{8,}\b", "<HEX>", msg)
-    # Step 4: integers > 3 digits (word-boundary on both sides)
+    # Step 3: integers > 3 digits (word-boundary on both sides)
     msg = re.sub(r"\b\d{4,}\b", "<ID>", msg)
+    # Steps 4 & 5: strip then lowercase.
     return msg.strip().lower()
 
 
 def compute_fingerprint(error_code: str, module_id: str, message: str) -> str:
     """Compute SHA-256(error_code:module_id:normalized_message) as 64-char hex.
 
-    Legacy 3-arg form preserved for callers that don't have a traceback.
-    Prefer :func:`compute_error_fingerprint` when an exception is available
-    so the top stack frame can be folded into the fingerprint (Issue #43 §4).
+    This is the canonical cross-language fingerprint (apcore observability
+    spec §1.4 / §"Error fingerprinting"). :func:`compute_error_fingerprint`
+    is a thin adapter that extracts ``code``/``message`` from an exception
+    and delegates here.
     """
     normalized = normalize_message(message)
     raw = f"{error_code}:{module_id}:{normalized}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _top_frame_signature(error: BaseException) -> str:
+def top_frame_signature(error: BaseException) -> str:
     """Return ``file:lineno:func`` for the deepest frame of ``error.__traceback__``.
 
     Returns the empty string when no traceback is attached (e.g. errors
     constructed without ``raise``).  Only the basename of the file is used
-    so that fingerprints are stable across machines / tmp paths.
+    so the value is stable across machines / tmp paths.
+
+    This is a **language-local diagnostic** only — it is exposed on
+    :class:`ErrorEntry.top_frame` but MUST NOT feed the cross-language
+    ``fingerprint`` (stack-frame identities differ per SDK; see
+    observability spec §"Error fingerprinting").
     """
     tb = getattr(error, "__traceback__", None)
     if tb is None:
@@ -70,8 +78,6 @@ def _top_frame_signature(error: BaseException) -> str:
     if not frames:
         return ""
     last = frames[-1]
-    import os
-
     return f"{os.path.basename(last.filename)}:{last.lineno}:{last.name}"
 
 
@@ -79,19 +85,16 @@ def compute_error_fingerprint(
     error: ModuleError | BaseException,
     module_id: str,
 ) -> str:
-    """Compute a fingerprint for an exception (Issue #43 §4).
+    """Compute the canonical fingerprint for an exception.
 
-    Inputs folded into the SHA-256 digest (in order):
+    Adapter over :func:`compute_fingerprint`: extracts the error code
+    (``ModuleError.code`` or the exception class name) and message, then
+    hashes ``code:module_id:normalized_message``.
 
-    1. **Error code** if the exception exposes one (``ModuleError.code``,
-       falling back to the exception class name).
-    2. **Module id** the error fired in.
-    3. **Top stack frame** signature ``file:lineno:func`` (basename only —
-       absolute paths would break cross-machine deduplication).  Empty
-       string when the exception has no traceback attached.
-    4. **Sanitized message template** — UUIDs, ISO timestamps, hex IDs
-       and digit runs ≥ 4 chars are replaced with placeholders so that
-       cosmetically-different messages collapse to the same fingerprint.
+    The top stack frame is deliberately **not** part of the digest — it is
+    not portable across languages, so including it would break the shared
+    cross-language deduplication contract (observability spec §"Error
+    fingerprinting"). Use :func:`top_frame_signature` for local diagnostics.
 
     Returns a 64-char hex digest.
     """
@@ -99,10 +102,7 @@ def compute_error_fingerprint(
     message = getattr(error, "message", None)
     if message is None:
         message = str(error)
-    normalized = normalize_message(message)
-    frame = _top_frame_signature(error)
-    raw = f"{code}:{module_id}:{frame}:{normalized}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return compute_fingerprint(code, module_id, message)
 
 
 @dataclass
@@ -118,6 +118,10 @@ class ErrorEntry:
     first_occurred: str
     last_occurred: str
     fingerprint: str = field(default="")
+    # Language-local diagnostic only (file:lineno:func of the originating
+    # frame). NOT part of ``fingerprint`` — see observability spec
+    # §"Error fingerprinting".
+    top_frame: str = field(default="")
 
 
 class ErrorHistory:
@@ -174,11 +178,10 @@ class ErrorHistory:
     def record(self, module_id: str, error: ModuleError) -> None:
         """Record an error, deduplicating by fingerprint.
 
-        Issue #43 §4: when the error carries a traceback, the fingerprint
-        also includes a top-frame signature so that two failures with the
-        same code+message but different originating frames are kept
-        separate.  Errors without a traceback fall through to the legacy
-        ``code:module_id:normalized_message`` digest.
+        Dedup is keyed on the canonical cross-language fingerprint
+        ``SHA-256(code:module_id:normalized_message)``. The originating
+        stack frame is captured into ``ErrorEntry.top_frame`` purely as a
+        local diagnostic and does NOT influence dedup.
         """
         now = datetime.now(timezone.utc).isoformat()
         fp = compute_error_fingerprint(error, module_id)
@@ -201,6 +204,7 @@ class ErrorHistory:
                     first_occurred=now,
                     last_occurred=now,
                     fingerprint=fp,
+                    top_frame=top_frame_signature(error),
                 )
                 self._fp_index[fp] = entry
                 self._module_index.setdefault(module_id, deque()).append(entry)
@@ -284,4 +288,5 @@ __all__ = [
     "normalize_message",
     "compute_fingerprint",
     "compute_error_fingerprint",
+    "top_frame_signature",
 ]

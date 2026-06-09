@@ -144,7 +144,15 @@ class SchemaLoader:
 
             field_definitions[prop_name] = (python_type, field_info)
 
-        return create_model(model_name, __config__=config, **field_definitions)  # type: ignore[call-overload]
+        model = create_model(model_name, __config__=config, **field_definitions)  # type: ignore[call-overload]
+        # A-D-08: retain the source JSON Schema on the generated model so
+        # SchemaValidator.validate() can detect a top-level oneOf/anyOf and route
+        # it through the jsonschema-backed exhaustive union check (parity with the
+        # TS/Rust validators, which emit SCHEMA_UNION_NO_MATCH / SCHEMA_UNION_AMBIGUOUS).
+        # A top-level union produces a property-less Pydantic model that would
+        # otherwise accept any value via the always-true empty-schema path.
+        model.__apcore_source_schema__ = json_schema  # type: ignore[attr-defined]
+        return model
 
     def _schema_to_field_info(self, prop_schema: dict[str, Any], prop_name: str, parent_name: str) -> tuple[Any, Any]:
         """Convert a JSON Schema property to (python_type, FieldInfo)."""

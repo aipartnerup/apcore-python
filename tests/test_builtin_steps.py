@@ -21,6 +21,7 @@ from apcore.builtin_steps import (
     BuiltinCallChainGuard,
     build_standard_strategy,
 )
+from apcore.errors import InvalidInputError
 from apcore.pipeline import (
     BaseStep,
     ExecutionStrategy,
@@ -336,6 +337,23 @@ class TestApprovalGateStep:
         step = BuiltinApprovalGate(handler=handler)
         result = await step.execute(ctx)
         assert result.action == "continue"
+
+    async def test_rejects_non_string_approval_token(self) -> None:
+        # A non-string _approval_token must be rejected with
+        # GENERAL_INVALID_INPUT before reaching the handler (security gate;
+        # mirrors Rust).
+        handler = AsyncMock()
+        module = FakeModule(annotations={"requires_approval": True})
+        ctx = _make_ctx(
+            inputs={"_approval_token": 12345},
+            context=FakeContext(),
+            module=module,
+        )
+        step = BuiltinApprovalGate(handler=handler)
+        with pytest.raises(InvalidInputError) as exc_info:
+            await step.execute(ctx)
+        assert exc_info.value.code == "GENERAL_INVALID_INPUT"
+        handler.check_approval.assert_not_awaited()
 
 
 class TestInputValidationStep:

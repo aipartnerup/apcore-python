@@ -385,6 +385,11 @@ class AsyncTaskManager:
         self._max_tasks = max_tasks
         self._store: TaskStore = store if store is not None else InMemoryTaskStore()
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        # Admission guard (mirrors Rust's admission_lock): serializes the
+        # max_tasks capacity check together with the PENDING save so that two
+        # concurrent submits cannot both pass the check at capacity-1 and then
+        # both persist, overshooting the cap (submit TOCTOU).
+        self._admission_lock = asyncio.Lock()
         self._async_tasks: dict[str, asyncio.Task[Any]] = {}
         self._reaper_task: asyncio.Task[Any] | None = None
         self._reaper_interval: float = 3600.0
@@ -450,20 +455,25 @@ class AsyncTaskManager:
         Returns:
             The generated task_id (UUID4 string).
         """
-        all_tasks = await self._store_list()
-        active = sum(1 for info in all_tasks if info.status in _ACTIVE_STATUSES)
-        if active >= self._max_tasks:
-            raise TaskLimitExceededError(max_tasks=self._max_tasks)
-
         task_id = str(uuid.uuid4())
-        info = TaskInfo(
-            task_id=task_id,
-            module_id=module_id,
-            status=TaskStatus.PENDING,
-            submitted_at=time.time(),
-            max_retries=retry_policy.max_retries if retry_policy is not None else 0,
-        )
-        await self._save(info)
+        # Atomically check capacity and persist the PENDING record. Without
+        # the lock, the await inside _store_list / _save lets a second submit
+        # interleave between the check and the save, so both can pass at
+        # capacity-1 and exceed max_tasks (mirrors Rust's admission_lock).
+        async with self._admission_lock:
+            all_tasks = await self._store_list()
+            active = sum(1 for info in all_tasks if info.status in _ACTIVE_STATUSES)
+            if active >= self._max_tasks:
+                raise TaskLimitExceededError(max_tasks=self._max_tasks)
+
+            info = TaskInfo(
+                task_id=task_id,
+                module_id=module_id,
+                status=TaskStatus.PENDING,
+                submitted_at=time.time(),
+                max_retries=retry_policy.max_retries if retry_policy is not None else 0,
+            )
+            await self._save(info)
 
         async_task = asyncio.create_task(self._run(task_id, module_id, inputs, context, retry_policy))
         async_task.add_done_callback(lambda _: self._async_tasks.pop(task_id, None))
@@ -559,10 +569,29 @@ class AsyncTaskManager:
         return True
 
     async def shutdown(self) -> None:
-        """Cancel all pending/running/retrying tasks and stop the reaper."""
+        """Cancel all active tasks and stop the reaper.
+
+        Iterates the **store** (not the local live-handle dict) so that a
+        store-resident active task with no local asyncio handle is still
+        cancelled — required by the spec shutdown postcondition (no active
+        task survives) and matching the TypeScript/Rust SDKs. Tasks that have
+        a local handle are cancelled through :meth:`cancel`; store-only active
+        tasks are transitioned to CANCELLED directly.
+        """
         await self.stop_reaper()
-        for task_id in list(self._async_tasks):
-            await self.cancel(task_id)
+        for info in await self._store_list():
+            if info.status not in _ACTIVE_STATUSES:
+                continue
+            if self._async_tasks.get(info.task_id) is not None:
+                await self.cancel(info.task_id)
+                continue
+            # Store-resident active task without a local handle: there is no
+            # coroutine to cancel, so terminate it directly in the store.
+            current = await self._store_get(info.task_id)
+            if current is not None and current.status in _ACTIVE_STATUSES:
+                current.status = TaskStatus.CANCELLED
+                current.completed_at = time.time()
+                await self._save(current)
 
     def list_tasks(self, status: TaskStatus | None = None) -> list[TaskInfo]:
         """Return snapshots of all tasks, optionally filtered by status.
@@ -651,8 +680,7 @@ class AsyncTaskManager:
         if interval_seconds is not _UNSET:
             if sweep_interval_ms != 300_000:
                 raise TypeError(
-                    "start_reaper() received both 'sweep_interval_ms' and "
-                    "deprecated 'interval_seconds'; pass only one."
+                    "start_reaper() received both 'sweep_interval_ms' and deprecated 'interval_seconds'; pass only one."
                 )
             warnings.warn(
                 "AsyncTaskManager.start_reaper(interval_seconds=...) is deprecated; "
@@ -665,7 +693,7 @@ class AsyncTaskManager:
         if max_age_seconds is not _UNSET:
             if ttl_seconds != 3600.0:
                 raise TypeError(
-                    "start_reaper() received both 'ttl_seconds' and " "deprecated 'max_age_seconds'; pass only one."
+                    "start_reaper() received both 'ttl_seconds' and deprecated 'max_age_seconds'; pass only one."
                 )
             warnings.warn(
                 "AsyncTaskManager.start_reaper(max_age_seconds=...) is deprecated; "
@@ -736,6 +764,14 @@ class AsyncTaskManager:
                     await self._save(info)
 
                     result = await self._executor.call_async(module_id, inputs, context)
+
+                    # Re-read before the terminal COMPLETED save so a cancel
+                    # that landed during execution is not clobbered (mirrors
+                    # Rust's save_terminal_if_not_cancelled). If the store now
+                    # holds a terminal status (e.g. CANCELLED), leave it alone.
+                    latest = await self._store_get(task_id)
+                    if latest is not None and latest.status in _TERMINAL_STATUSES:
+                        return
 
                     info.status = TaskStatus.COMPLETED
                     info.completed_at = time.time()

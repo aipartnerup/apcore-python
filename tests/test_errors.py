@@ -355,3 +355,35 @@ class TestCircuitBreakerOpenError:
         # Legacy alias still exported
         assert hasattr(apcore, "CircuitOpenError")
         assert issubclass(apcore.CircuitOpenError, apcore.CircuitBreakerOpenError)
+
+
+class TestBindingSchemaErrorCodesRegistered:
+    """The binding auto-schema error codes must be ErrorCodes constants and
+    therefore present in the framework-codes collision set (TS/Rust parity)."""
+
+    def test_codes_exist_and_match_subclass_emitted_codes(self) -> None:
+        from apcore.errors import (
+            BindingSchemaInferenceFailedError,
+            BindingSchemaModeConflictError,
+            BindingStrictSchemaIncompatibleError,
+            ErrorCodes,
+        )
+
+        inference = BindingSchemaInferenceFailedError(target="mod.fn")
+        assert ErrorCodes.BINDING_SCHEMA_INFERENCE_FAILED == "BINDING_SCHEMA_INFERENCE_FAILED"
+        assert ErrorCodes.BINDING_SCHEMA_INFERENCE_FAILED == inference.code
+
+        mode_conflict = BindingSchemaModeConflictError(module_id="m", modes_listed=["a", "b"])
+        assert ErrorCodes.BINDING_SCHEMA_MODE_CONFLICT == "BINDING_SCHEMA_MODE_CONFLICT"
+        assert ErrorCodes.BINDING_SCHEMA_MODE_CONFLICT == mode_conflict.code
+
+        strict = BindingStrictSchemaIncompatibleError(module_id="m", features_listed=["x"])
+        assert ErrorCodes.BINDING_STRICT_SCHEMA_INCOMPATIBLE == "BINDING_STRICT_SCHEMA_INCOMPATIBLE"
+        assert ErrorCodes.BINDING_STRICT_SCHEMA_INCOMPATIBLE == strict.code
+
+    def test_codes_in_framework_collision_set(self) -> None:
+        from apcore.errors import _FRAMEWORK_CODES
+
+        assert "BINDING_SCHEMA_INFERENCE_FAILED" in _FRAMEWORK_CODES
+        assert "BINDING_SCHEMA_MODE_CONFLICT" in _FRAMEWORK_CODES
+        assert "BINDING_STRICT_SCHEMA_INCOMPATIBLE" in _FRAMEWORK_CODES

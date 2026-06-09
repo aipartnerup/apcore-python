@@ -356,6 +356,15 @@ class BuiltinApprovalGate(BaseStep):
         # Phase B token resume vs fresh request
         if "_approval_token" in ctx.inputs:
             token = ctx.inputs.pop("_approval_token")
+            # Security gate: reject a non-string token before it reaches the
+            # handler. A malformed token must never be passed raw to
+            # check_approval (mirrors Rust rejecting it with
+            # GENERAL_INVALID_INPUT — the safest cross-language behavior).
+            if not isinstance(token, str):
+                raise InvalidInputError(
+                    message="_approval_token must be a string",
+                    code="GENERAL_INVALID_INPUT",
+                )
             result = await self._handler.check_approval(token)
         else:
             request = ApprovalRequest(

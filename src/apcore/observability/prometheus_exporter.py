@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from apcore.observability.metrics import MetricsCollector
+    from apcore.observability.usage import UsageCollector
 
 _logger = logging.getLogger(__name__)
 
@@ -23,18 +24,32 @@ class PrometheusExporter:
 
     Args:
         collector: The MetricsCollector to read metrics from.
+        usage_collector: Optional UsageCollector. When provided, its
+            ``apcore_usage_*`` metric families are appended to the /metrics
+            output (parity with the TS and Rust exporters). Defaults to None,
+            which preserves the previous MetricsCollector-only behavior.
     """
 
-    def __init__(self, collector: MetricsCollector) -> None:
+    def __init__(self, collector: MetricsCollector, usage_collector: UsageCollector | None = None) -> None:
         self._collector = collector
+        self._usage_collector = usage_collector
         self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._ready = False
         self._ready_lock = threading.Lock()
 
     def export(self) -> str:
-        """Return current metrics in Prometheus text format."""
-        return self._collector.export_prometheus()
+        """Return current metrics in Prometheus text format.
+
+        Appends the usage collector's ``apcore_usage_*`` families when a usage
+        collector was supplied at construction.
+        """
+        output = self._collector.export_prometheus()
+        if self._usage_collector is not None:
+            usage_output = self._usage_collector.export_prometheus()
+            if usage_output:
+                output = f"{output}\n{usage_output}" if output else usage_output
+        return output
 
     def mark_ready(self) -> None:
         """Signal that the application is ready to serve traffic."""
