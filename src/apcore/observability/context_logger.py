@@ -36,7 +36,7 @@ _MAX_REDACTION_DEPTH = 32
 # RedactionConfig field patterns.  Removing or scrambling these would break
 # log/trace correlation.  Mirrors the TS PROTECTED_LOG_FIELDS and Rust
 # NEVER_REDACT_FIELDS sets.
-PROTECTED_LOG_FIELDS: frozenset[str] = frozenset({"trace_id", "caller_id", "module_id"})
+PROTECTED_LOG_FIELDS: frozenset[str] = frozenset({"trace_id", "span_id", "caller_id", "module_id", "target_id"})
 
 
 @dataclass

@@ -27,8 +27,35 @@ class TestProtectedLogFields:
 
     def test_protected_log_fields_constant_present(self) -> None:
         assert "trace_id" in PROTECTED_LOG_FIELDS
+        assert "span_id" in PROTECTED_LOG_FIELDS
         assert "caller_id" in PROTECTED_LOG_FIELDS
         assert "module_id" in PROTECTED_LOG_FIELDS
+        assert "target_id" in PROTECTED_LOG_FIELDS
+
+    def test_user_pattern_does_not_redact_span_or_target_id(self) -> None:
+        """A field_pattern of ``*id*`` leaves span_id/target_id intact."""
+        config = RedactionConfig(
+            field_patterns=["*id*"],
+            value_patterns=[],
+            replacement="***REDACTED***",
+        )
+        buf = io.StringIO()
+        logger = ContextLogger(name="t", output=buf)
+        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
+        ctx = Context.create()
+        ctx.call_chain.append("executor.x")
+        mw.before(
+            "executor.x",
+            {"span_id": "s1", "target_id": "t1", "user_id": "xyz"},
+            ctx,
+        )
+        entry = json.loads(buf.getvalue().strip())
+        inputs = entry["extra"]["inputs"]
+        # non-protected id field IS redacted
+        assert inputs["user_id"] == "***REDACTED***"
+        # span_id / target_id are protected and stay intact
+        assert inputs["span_id"] == "s1"
+        assert inputs["target_id"] == "t1"
 
     def test_user_pattern_does_not_redact_trace_id(self) -> None:
         """A field_pattern of ``*_id`` redacts user_id but NOT trace_id."""
