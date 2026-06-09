@@ -1292,7 +1292,7 @@ class IdTooLongError(ModuleError):
     ) -> None:
         super().__init__(
             code="ID_TOO_LONG",
-            message=(f"Derived module ID in '{file_path}' exceeds 192 characters " f"(length: {len(module_id)})"),
+            message=(f"Derived module ID in '{file_path}' exceeds 192 characters (length: {len(module_id)})"),
             details={
                 "file_path": file_path,
                 "module_id": module_id,
@@ -1355,6 +1355,9 @@ class ErrorCodes:
     BINDING_CALLABLE_NOT_FOUND = "BINDING_CALLABLE_NOT_FOUND"
     BINDING_NOT_CALLABLE = "BINDING_NOT_CALLABLE"
     BINDING_SCHEMA_MISSING = "BINDING_SCHEMA_MISSING"
+    BINDING_SCHEMA_INFERENCE_FAILED = "BINDING_SCHEMA_INFERENCE_FAILED"
+    BINDING_SCHEMA_MODE_CONFLICT = "BINDING_SCHEMA_MODE_CONFLICT"
+    BINDING_STRICT_SCHEMA_INCOMPATIBLE = "BINDING_STRICT_SCHEMA_INCOMPATIBLE"
     BINDING_FILE_INVALID = "BINDING_FILE_INVALID"
     CIRCULAR_DEPENDENCY = "CIRCULAR_DEPENDENCY"
     MIDDLEWARE_CHAIN_ERROR = "MIDDLEWARE_CHAIN_ERROR"
