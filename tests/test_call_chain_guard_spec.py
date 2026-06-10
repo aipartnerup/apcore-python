@@ -79,16 +79,6 @@ def test_input_module_id_required() -> None:
         guard_call_chain()  # type: ignore[call-arg]
 
 
-def test_input_context_contract_gap() -> None:
-    """call_chain_guard.guard_call_chain.input.context.required"""
-    pytest.skip(
-        "missing symbol: context parameter (contract gap) — the Python "
-        "guard_call_chain takes call_chain directly rather than a Context "
-        "object; contract ### Inputs lists 'context' which has no Python "
-        "binding"
-    )
-
-
 # ---------------------------------------------------------------------------
 # ERROR CLAUSES
 # ---------------------------------------------------------------------------

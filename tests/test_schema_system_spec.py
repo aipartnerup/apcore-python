@@ -292,36 +292,15 @@ def test_refresolver_error_circular_ref(tmp_path) -> None:
 def test_refresolver_error_ref_not_found_actual_code(tmp_path) -> None:
     """schema_system.resolve.error.ref_not_found
 
-    A referenced schema that cannot be resolved MUST raise.
-
-    SPEC DIVERGENCE (flagged): the contract declares
-    ``SchemaRefNotFoundError(code=SCHEMA_REF_NOT_FOUND)``. Neither that class
-    nor that error code exists in apcore-python. The SDK raises
-    ``SchemaNotFoundError(code=SCHEMA_NOT_FOUND)`` instead. This test asserts
-    the ACTUAL behavior so the suite stays green while the divergence is
-    reported in GENUINE_BUGS; the spec-named symbol is covered by a skip below.
+    A referenced schema that cannot be resolved MUST raise
+    ``SchemaNotFoundError(code=SCHEMA_NOT_FOUND)`` — the symbol named by the
+    schema-system Contract ### Errors block, implemented identically across
+    all three SDKs.
     """
     resolver = RefResolver(schemas_dir=str(tmp_path))
     with pytest.raises(SchemaNotFoundError) as exc_info:
         resolver.resolve_ref("#/definitions/DoesNotExist", None)
     assert exc_info.value.code == "SCHEMA_NOT_FOUND"
-
-
-def test_refresolver_error_ref_not_found_spec_symbol() -> None:
-    """schema_system.resolve.error.ref_not_found_spec_symbol
-
-    The contract names ``SchemaRefNotFoundError(code=SCHEMA_REF_NOT_FOUND)``.
-    That symbol is absent from apcore-python -> MISSING-SYMBOL skip.
-    """
-    import apcore.errors as errors_mod
-
-    if not hasattr(errors_mod, "SchemaRefNotFoundError"):
-        pytest.skip(
-            "schema_system.resolve.error.ref_not_found_spec_symbol: "
-            "spec names SchemaRefNotFoundError/SCHEMA_REF_NOT_FOUND but the SDK "
-            "exposes SchemaNotFoundError/SCHEMA_NOT_FOUND (see actual-code test)"
-        )
-    raise AssertionError("unreachable: symbol now exists; revisit divergence")
 
 
 def test_resolve_ref_property_async_false() -> None:
