@@ -210,6 +210,7 @@ class Executor:
         config: Config | None = None,
         approval_handler: ApprovalHandler | None = None,
         event_emitter: Any = None,
+        toggle_state: Any = None,
     ) -> None:
         """Initialize the Executor.
 
@@ -227,6 +228,11 @@ class Executor:
                 emits apcore.stream.post_validation_failed events so
                 post-stream failures (which cannot un-send already-yielded
                 chunks) are still visible to subscribers.
+            toggle_state: Optional per-instance ToggleState (#71). Injected into
+                the module-lookup read path so each owning APCore instance sees
+                only its own toggles. When None, the built-in strategy falls
+                back to the process-global ``_default_toggle_state`` for
+                back-compat with callers that construct an Executor directly.
         """
         self._registry = registry
         self._middleware_manager = MiddlewareManager()
@@ -234,6 +240,7 @@ class Executor:
         self._config = config
         self._approval_handler = approval_handler
         self._event_emitter = event_emitter
+        self._toggle_state = toggle_state
 
         if middlewares:
             for mw in middlewares:
@@ -248,6 +255,7 @@ class Executor:
             "middlewares": middlewares,
             "middleware_manager": self._middleware_manager,
             "executor": self,
+            "toggle_state": toggle_state,
         }
         if strategy is None:
             from apcore.builtin_steps import build_standard_strategy
@@ -1307,6 +1315,7 @@ class Executor:
                 acl=self._acl,
                 approval_handler=self._approval_handler,
                 middlewares=self._middleware_manager.snapshot(),
+                toggle_state=self._toggle_state,
             )
         return strategy
 

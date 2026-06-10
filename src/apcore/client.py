@@ -28,6 +28,7 @@ from apcore.executor import Executor
 from apcore.module import PreflightResult
 from apcore.observability.metrics import MetricsCollector
 from apcore.registry import Registry
+from apcore.sys_modules.control import ToggleState
 
 
 class APCore:
@@ -55,7 +56,26 @@ class APCore:
         """
         self.registry = registry or Registry()
         self.config = config
-        self.executor = executor or Executor(registry=self.registry, config=config)
+
+        # Per-instance ToggleState (#71). Each APCore instance owns one
+        # ToggleState that is injected into BOTH the write path
+        # (ToggleFeatureModule, via register_sys_modules) and the read path
+        # (BuiltinModuleLookup, via the Executor's strategy). This isolates
+        # toggles between instances in the same process; disabling a module on
+        # one APCore does not disable it on another. The module-global
+        # ``_default_toggle_state`` remains the fallback only for the free
+        # ``is_module_disabled`` function and Executors built without a
+        # toggle_state.
+        self.toggle_state = ToggleState()
+
+        # When the caller supplies their own Executor we respect it as-is (its
+        # read path uses whatever toggle_state it was built with). The
+        # auto-created Executor is wired to this instance's ToggleState.
+        self.executor = executor or Executor(
+            registry=self.registry,
+            config=config,
+            toggle_state=self.toggle_state,
+        )
 
         # Auto-register sys.* modules and middleware from config
         self._sys_modules_context: dict[str, Any] = {}
@@ -73,6 +93,7 @@ class APCore:
                     executor=self.executor,
                     config=self.config,
                     metrics_collector=self.metrics_collector,
+                    toggle_state=self.toggle_state,
                 )
             except Exception:
                 import logging

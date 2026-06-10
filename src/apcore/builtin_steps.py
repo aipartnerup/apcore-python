@@ -810,6 +810,7 @@ def build_standard_strategy(
     middlewares: list[Any] | None = None,
     middleware_manager: Any | None = None,
     executor: Any | None = None,
+    toggle_state: Any | None = None,
 ) -> ExecutionStrategy:
     """Build the standard 11-step execution strategy.
 
@@ -821,6 +822,9 @@ def build_standard_strategy(
         middlewares: Optional list of middleware instances.
         middleware_manager: Optional MiddlewareManager for production parity.
         executor: Optional executor reference for context creation and approval.
+        toggle_state: Optional per-instance ToggleState for the module-lookup
+            read path (#71). When None, BuiltinModuleLookup falls back to the
+            process-global ``_default_toggle_state`` for back-compat.
 
     Returns:
         An ExecutionStrategy containing the 11 built-in steps.
@@ -830,7 +834,7 @@ def build_standard_strategy(
         [
             BuiltinContextCreation(config=config, executor=executor),
             BuiltinCallChainGuard(config=config),
-            BuiltinModuleLookup(registry=registry),
+            BuiltinModuleLookup(registry=registry, toggle_state=toggle_state),
             BuiltinACLCheck(acl=acl),
             BuiltinApprovalGate(handler=approval_handler),
             BuiltinMiddlewareBefore(

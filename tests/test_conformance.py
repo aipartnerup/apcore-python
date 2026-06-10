@@ -1904,3 +1904,155 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
 
     else:
         pytest.fail(f"Unknown context_create fixture case id: {case_id!r}")
+
+
+# ---------------------------------------------------------------------------
+# 25. ACL Agent Scoping (issue #72)
+# ---------------------------------------------------------------------------
+#
+# Mirrors ``test_acl_evaluation`` machinery but drives off a SHARED
+# ``default_effect`` + ``rules`` ruleset that applies to every case (the
+# canonical AI-agent tool-governance scenario). Each case is a
+# (caller_id, caller_identity, call_depth, target_id) -> bool decision.
+# Locks first-match-wins (§6) with {roles, max_call_depth} conditions and the
+# @external special caller across all SDKs.
+
+_acl_agent_data = _load("acl_agent_scoping")
+
+
+@pytest.mark.parametrize(
+    "case",
+    _acl_agent_data["test_cases"],
+    ids=[c["id"] for c in _acl_agent_data["test_cases"]],
+)
+def test_acl_agent_scoping(case: dict[str, Any]) -> None:
+    # Build ONE ACL from the fixture-level default_effect + rules and reuse it
+    # for every case (the governance ruleset is shared, not per-case).
+    rules = [
+        ACLRule(
+            callers=r["callers"],
+            targets=r["targets"],
+            effect=r["effect"],
+            conditions=r.get("conditions"),
+        )
+        for r in _acl_agent_data["rules"]
+    ]
+    acl = ACL(rules=rules, default_effect=_acl_agent_data["default_effect"])
+
+    # Reuse the exact context-construction shape from test_acl_evaluation:
+    # identity (type + roles) and a call_chain of length call_depth. A context
+    # is always supplied here because the governance rules carry conditions.
+    ctx = _build_acl_context(case)
+
+    result = acl.check(
+        caller_id=case["caller_id"],
+        target_id=case["target_id"],
+        context=ctx,
+    )
+    assert result == case["expected"], (
+        f"[{case['id']}] ACL agent-scoping check("
+        f"caller_id={case['caller_id']!r}, target_id={case['target_id']!r}, "
+        f"identity={case.get('caller_identity')!r}, call_depth={case.get('call_depth', 0)}) "
+        f"returned {result}, expected {case['expected']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 26. Per-instance ToggleState Isolation (issue #71)
+# ---------------------------------------------------------------------------
+#
+# Constructs one real APCore per instance name in the SAME process, drives the
+# per-instance toggle WRITE path (APCore.disable/enable, which calls
+# system.control.toggle_feature through that instance), and asserts the
+# disabled-set as observed through that instance's READ path (its own
+# ToggleState — the same object the pipeline's BuiltinModuleLookup reads).
+# Key contract: disabling a module on instance A MUST NOT disable it on B.
+
+from apcore.client import APCore  # noqa: E402
+
+_toggle_isolation_data = _load("toggle_state_isolation")
+
+
+def _make_toggle_instance(module_ids: list[str]) -> APCore:
+    """Build a sys-modules-enabled APCore with the given module_ids registered.
+
+    Each referenced module is registered as a trivial no-op so the toggle
+    write path (which requires the target module to exist) succeeds.
+    """
+    # Fresh Config per instance so each APCore owns an independent ToggleState.
+    config = Config(data={"sys_modules": {"enabled": True, "events": {"enabled": True}}})
+    client = APCore(config=config)
+    _register_noop_modules(client, module_ids)
+    return client
+
+
+def _register_noop_modules(client: APCore, module_ids: list[str]) -> None:
+    """(Re-)register each module_id as a trivial no-op module on the client.
+
+    Idempotent: a module that is already present is unregistered first, so the
+    ``reload`` action (which calls this again) genuinely re-creates the module
+    instance in the registry. The per-instance ToggleState lives on the APCore
+    (outside the registry), so it survives this re-registration.
+    """
+
+    class _NoopModule:
+        description = "conformance no-op module"
+        input_schema = None
+        output_schema = None
+
+        def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+            return {}
+
+    for mid in module_ids:
+        if client.registry.has(mid):
+            client.registry.unregister(mid)
+        client.register(mid, _NoopModule())
+
+
+@pytest.mark.parametrize(
+    "case",
+    _toggle_isolation_data["test_cases"],
+    ids=[c["id"] for c in _toggle_isolation_data["test_cases"]],
+)
+def test_toggle_state_isolation(case: dict[str, Any]) -> None:
+    # All module_ids referenced anywhere in this case (operations + expected).
+    referenced: set[str] = set()
+    for op in case["operations"]:
+        if op.get("module_id"):
+            referenced.add(op["module_id"])
+    for ids in case["expected_disabled"].values():
+        referenced.update(ids)
+    module_ids = sorted(referenced)
+
+    # One real APCore per named instance, in the same process.
+    instances: dict[str, APCore] = {name: _make_toggle_instance(module_ids) for name in case["instances"]}
+
+    try:
+        for op in case["operations"]:
+            client = instances[op["instance"]]
+            action = op["action"]
+            if action == "disable":
+                client.disable(op["module_id"], reason="conformance disable")
+            elif action == "enable":
+                client.enable(op["module_id"], reason="conformance enable")
+            elif action == "reload":
+                # Re-register modules on this instance WITHOUT recreating it, so
+                # the per-instance ToggleState (owned by the APCore, outside the
+                # registry) is preserved across the reload.
+                _register_noop_modules(client, module_ids)
+            else:
+                pytest.fail(f"[{case['id']}] unknown toggle action {action!r}")
+
+        # Assert each instance's disabled-set via its OWN read path (the
+        # per-instance ToggleState the pipeline lookup uses), NOT the global.
+        for name, expected_ids in case["expected_disabled"].items():
+            client = instances[name]
+            observed = {mid for mid in module_ids if client.toggle_state.is_disabled(mid)}
+            expected_set = set(expected_ids)
+            assert observed == expected_set, (
+                f"[{case['id']}] instance {name!r} disabled-set mismatch: "
+                f"observed {sorted(observed)}, expected {sorted(expected_set)}"
+            )
+    finally:
+        for client in instances.values():
+            client.close()

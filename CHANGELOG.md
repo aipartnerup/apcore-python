@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.0] - 2026-06-10
+
+### Changed
+
+- **`ToggleState` is now per-`APCore`-instance instead of process-global (#71).** Each `APCore` instance owns one `ToggleState` (`APCore.toggle_state`), injected into BOTH the write path (`ToggleFeatureModule`, via `register_sys_modules(..., toggle_state=...)` → `_register_control_modules`) and the read path (`BuiltinModuleLookup`, via the Executor's strategy). `Executor.__init__` gains a keyword-only `toggle_state` parameter that is threaded into `build_standard_strategy(..., toggle_state=...)` (and the internal/testing/performance/minimal factories that build a `BuiltinModuleLookup`). Disabling a module on one `APCore` no longer disables it on another instance in the same process, and an instance's toggles survive a registry reload of that instance (re-scopes A-D-12 from process-global to instance-scoped). The module-global `_default_toggle_state` is retained as the fallback only for the free `is_module_disabled(module_id)` function (signature unchanged) and for Executors constructed directly without a `toggle_state` (back-compat).
+
+### Added
+
+- **Conformance coverage for per-instance ToggleState isolation and AI-agent ACL governance (#71, #72).** Wired two new cross-language fixtures into `tests/test_conformance.py`: `toggle_state_isolation.json` (4 cases) constructs real `APCore` instances in one process and asserts that toggles written through one instance's `disable`/`enable`/`reload` write path are observed only through that instance's read path; `acl_agent_scoping.json` (19 cases) locks the canonical default-deny agent-tool-governance ruleset, exercising first-match-wins with `{roles, max_call_depth}` conditions and the `@external` special caller (`max_call_depth` is inclusive: `depth == max` is allowed). All 23 cases pass against the existing ACL engine with no engine changes required.
+
+
 ## [0.23.0] - 2026-06-10
 
 ### Added

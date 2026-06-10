@@ -303,6 +303,7 @@ def register_sys_modules(
     fail_on_error: bool = False,
     audit_store: AuditStore | None = None,
     overrides_store: OverridesStore | None = None,
+    toggle_state: ToggleState | None = None,
 ) -> dict[str, Any]:
     """Auto-register all sys.* modules and middleware based on config.
 
@@ -315,6 +316,11 @@ def register_sys_modules(
             SysModuleRegistrationError immediately. When False (default),
             failures are logged at ERROR level and execution continues.
         audit_store: Optional audit store for control module audit trails.
+        toggle_state: Optional per-instance :class:`ToggleState` (#71). When
+            provided, ``ToggleFeatureModule`` writes to this instance (the
+            same one the owning ``APCore``'s Executor read path observes),
+            isolating toggles between instances. When ``None``, the
+            process-global ``_default_toggle_state`` is used for back-compat.
         overrides_store: Optional :class:`OverridesStore` for runtime
             config + toggle override persistence. When provided, overrides
             are loaded at startup and persisted after every successful
@@ -391,6 +397,7 @@ def register_sys_modules(
             overrides_store=effective_store,
             audit_store=audit_store,
             fail_on_error=fail_on_error,
+            toggle_state=toggle_state,
         )
 
     return result
@@ -501,6 +508,7 @@ def _setup_events(
     overrides_store: OverridesStore | None = None,
     audit_store: AuditStore | None = None,
     fail_on_error: bool = False,
+    toggle_state: ToggleState | None = None,
 ) -> None:
     """Set up event emitter, subscribers, PlatformNotifyMiddleware, control modules, and registry bridge."""
     event_emitter = EventEmitter()
@@ -517,7 +525,7 @@ def _setup_events(
     executor.use(pn_middleware)
     result["platform_notify_middleware"] = pn_middleware
 
-    toggle_state = _register_control_modules(
+    effective_toggle_state = _register_control_modules(
         registry,
         config,
         event_emitter,
@@ -525,13 +533,14 @@ def _setup_events(
         overrides_store=overrides_store,
         audit_store=audit_store,
         fail_on_error=fail_on_error,
+        toggle_state=toggle_state,
     )
-    result["toggle_state"] = toggle_state
+    result["toggle_state"] = effective_toggle_state
 
     # Apply persisted overrides AFTER control modules are registered so the
     # toggle_feature module's ToggleState is available for ``toggle.*`` keys.
     if overrides_store is not None:
-        _load_overrides_from_store(config, overrides_store, toggle_state=toggle_state)
+        _load_overrides_from_store(config, overrides_store, toggle_state=effective_toggle_state)
 
     _instantiate_subscribers(config, sys_cfg, event_emitter)
     _bridge_registry_events(registry, event_emitter)
@@ -545,20 +554,23 @@ def _register_control_modules(
     overrides_store: OverridesStore | None = None,
     audit_store: AuditStore | None = None,
     fail_on_error: bool = False,
+    toggle_state: ToggleState | None = None,
 ) -> ToggleState:
     """Register control sys modules that require an EventEmitter.
 
-    Uses the process-global ``_default_toggle_state`` so that toggles written
-    by ``ToggleFeatureModule`` are observed by the execution pipeline's
-    ``BuiltinModuleLookup`` step (which reads the same singleton) and survive
-    registry reloads. Cross-language parity with apcore-typescript's
-    ``DEFAULT_TOGGLE_STATE`` and apcore-rust's process-global ``ToggleState``
-    (sync finding A-D-12). Per-instance isolation is tracked as future work.
+    When *toggle_state* is provided (the per-instance path, #71), toggles
+    written by ``ToggleFeatureModule`` go to that instance, which the owning
+    ``APCore``'s pipeline ``BuiltinModuleLookup`` step also reads from — so
+    toggles are isolated per instance and survive registry reloads of that
+    instance. When *toggle_state* is ``None``, the process-global
+    ``_default_toggle_state`` is used for back-compat (cross-language parity
+    with apcore-typescript's ``DEFAULT_TOGGLE_STATE`` and apcore-rust's
+    process-global ``ToggleState``, sync finding A-D-12).
 
     Returns the ``ToggleState`` instance owned by ``toggle_feature`` so the
     caller can apply persisted ``toggle.*`` overrides to it.
     """
-    toggle_state = _default_toggle_state
+    effective_toggle_state = toggle_state if toggle_state is not None else _default_toggle_state
 
     _register_sys_module(
         registry,
@@ -590,7 +602,7 @@ def _register_control_modules(
         ToggleFeatureModule(
             registry=registry,
             event_emitter=event_emitter,
-            toggle_state=toggle_state,
+            toggle_state=effective_toggle_state,
             overrides_path=overrides_path,
             audit_store=audit_store,
             overrides_store=overrides_store,
@@ -598,7 +610,7 @@ def _register_control_modules(
         fail_on_error=fail_on_error,
     )
 
-    return toggle_state
+    return effective_toggle_state
 
 
 def _instantiate_subscribers(config: Config, sys_cfg: dict[str, Any] | None, event_emitter: EventEmitter) -> None:
