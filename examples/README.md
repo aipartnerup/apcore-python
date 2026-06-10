@@ -17,6 +17,11 @@ python examples/simple_client.py
 | [`global_client.py`](global_client.py) | Module-level `apcore.module` / `apcore.call` — no explicit client. | `python examples/global_client.py` |
 | [`cancel_token.py`](cancel_token.py) | Cooperative cancellation: cancel a long-running module via `CancelToken` mid-flight. | `python examples/cancel_token.py` |
 | [`pipeline_demo.py`](pipeline_demo.py) | The 11-step `ExecutionStrategy` pipeline — introspection, step-middleware tracing, and orchestration via `insert_after` / `replace`. See note below. | `python examples/pipeline_demo.py` |
+| [`acl_agent_governance.py`](acl_agent_governance.py) | End-to-end AI-agent tool governance (issue #72): registers real tools, wires a default-deny ACL into `APCore`, has agents of different roles actually call the tools (allowed → real result, denied → `ACLDeniedError`), and prints the audit trail. Self-checks every decision against the cross-language contract. | `python examples/acl_agent_governance.py` |
+| [`approval.py`](approval.py) | Human-in-the-loop approval gate: a `requires_approval` tool, an `ApprovalHandler` that approves/rejects per request, calls that execute or raise `ApprovalDeniedError`. Companion to the ACL demo (ACL = who may call; approval = sensitive-op gate). | `python examples/approval.py` |
+| [`feature_toggle.py`](feature_toggle.py) | Runtime feature toggle: `disable()` / `enable()` a tool (blocked calls raise `ModuleDisabledError`), plus per-instance `ToggleState` isolation across two `APCore` instances (issue #71). | `python examples/feature_toggle.py` |
+| [`middleware.py`](middleware.py) | User-facing `use_before` / `use_after` middleware: a before hook augments inputs, an after hook transforms output, with an ordered trace proving hook order. | `python examples/middleware.py` |
+| [`events.py`](events.py) | Lifecycle event bus: enable `sys_modules.events`, subscribe via `on(...)`, and observe `apcore.registry.module_registered` / `apcore.module.toggled` events as the tool is registered, called, and toggled. | `python examples/events.py` |
 | [`bindings/format_date/run.py`](bindings/format_date/run.py) | Loading a YAML binding (`format_date.binding.yaml` → `format_date.py`) via `BindingLoader` and calling it through `Executor`. | `python examples/bindings/format_date/run.py` |
 
 ### Module reference files
