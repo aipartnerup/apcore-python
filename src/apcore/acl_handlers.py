@@ -80,7 +80,19 @@ class _MaxCallDepthHandler:
         # Reject bool explicitly: Python ``bool`` is a subclass of ``int``, so a
         # YAML ``max_call_depth: true`` would coerce to threshold=1 and could
         # ALLOW a shallow call where TS/Rust fail closed. Fail closed here too.
-        if isinstance(threshold, bool) or not isinstance(threshold, int):
+        if isinstance(threshold, bool):
+            return False
+        # A-D-004: accept an integral numeric threshold consistently across SDKs.
+        # YAML/JSON may surface an integer depth as a float (``5.0``); TS has no
+        # int/float distinction and treats ``5.0`` as 5, so Python must too —
+        # otherwise the rule silently fails to match and falls through to deny.
+        # A non-integral float (``5.5``) is a meaningless depth and fails closed,
+        # mirroring TypeScript's ``Number.isInteger`` guard.
+        if isinstance(threshold, float):
+            if not threshold.is_integer():
+                return False
+            threshold = int(threshold)
+        elif not isinstance(threshold, int):
             return False
         return len(context.call_chain) <= threshold
 

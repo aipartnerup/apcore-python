@@ -200,6 +200,49 @@ class TestMaxCallDepthHandler:
         ctx = _make_context(call_chain=["a"])
         assert handler.evaluate({"lte": True}, ctx) is False
 
+    def test_integral_float_threshold_matches(self) -> None:
+        """A-D-004: an integral float threshold (e.g. ``5.0`` from YAML/JSON)
+        must be accepted as depth 5, matching apcore-typescript.
+
+        Cross-language consistency: TS has no int/float distinction so
+        ``max_call_depth: 5.0`` evaluates identically to ``5``. Python must
+        not silently reject the float and fall through to default-deny.
+        """
+        handler = _MaxCallDepthHandler()
+        ctx = _make_context(call_chain=["a", "b", "c", "d", "e"])
+        assert handler.evaluate(5.0, ctx) is True
+
+    def test_integral_float_threshold_exceeded(self) -> None:
+        """A-D-004: an integral float threshold still enforces the limit."""
+        handler = _MaxCallDepthHandler()
+        ctx = _make_context(call_chain=["a", "b", "c", "d", "e", "f"])
+        assert handler.evaluate(5.0, ctx) is False
+
+    def test_integral_float_in_lte_matches(self) -> None:
+        """A-D-004: integral float inside the ``lte`` form is also accepted."""
+        handler = _MaxCallDepthHandler()
+        ctx = _make_context(call_chain=["a", "b", "c"])
+        assert handler.evaluate({"lte": 3.0}, ctx) is True
+
+    def test_non_integral_float_does_not_match_fail_closed(self) -> None:
+        """A-D-004: a fractional float threshold (e.g. ``5.5``) is meaningless
+        as a depth and must fail closed, matching apcore-typescript's
+        ``Number.isInteger`` guard."""
+        handler = _MaxCallDepthHandler()
+        ctx = _make_context(call_chain=["a", "b"])
+        assert handler.evaluate(5.5, ctx) is False
+
+    def test_allow_rule_with_integral_float_threshold(self) -> None:
+        """A-D-004: an allow-rule conditioned on ``max_call_depth: 5.0`` with a
+        caller at depth 5 must ALLOW (rule matches), matching apcore-typescript.
+
+        A float threshold loaded from YAML/JSON must not cause the allow-rule to
+        silently fail to match and fall through to default-deny.
+        """
+        ctx = _make_context(call_chain=["a", "b", "c", "d", "e"])
+        acl = _make_acl_with_condition("max_call_depth", 5.0)
+        assert acl.check("caller", "target", context=ctx) is True
+
 
 # ---------------------------------------------------------------------------
 # Compound Handlers

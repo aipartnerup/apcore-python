@@ -1247,6 +1247,41 @@ class TestCustomDiscoverer:
         ]
         assert len(ephemeral_warnings) == 1
 
+    def test_non_iterable_discover_result_returns_zero(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A-D-014: a custom discoverer returning a non-list (e.g. ``None``)
+        must yield ``discover() == 0`` and a warning, not an uncaught
+        ``TypeError``, matching apcore-typescript's ``!Array.isArray`` guard.
+        """
+
+        class _NoneDiscoverer:
+            def discover(self, roots: list[str]) -> Any:  # noqa: ARG002
+                return None
+
+        reg = Registry()
+        reg.set_discoverer(_NoneDiscoverer())
+        with caplog.at_level(logging.WARNING):
+            count = reg.discover()
+
+        assert count == 0
+        non_array_warnings = [r for r in caplog.records if "non-list" in r.message or "non-array" in r.message]
+        assert len(non_array_warnings) == 1
+
+    def test_scalar_discover_result_returns_zero(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A-D-014: a custom discoverer returning a scalar must also fail
+        gracefully (warn + return 0) rather than iterating a non-iterable.
+        """
+
+        class _ScalarDiscoverer:
+            def discover(self, roots: list[str]) -> Any:  # noqa: ARG002
+                return 42
+
+        reg = Registry()
+        reg.set_discoverer(_ScalarDiscoverer())
+        with caplog.at_level(logging.WARNING):
+            count = reg.discover()
+
+        assert count == 0
+
 
 # ===== Custom Validator =====
 

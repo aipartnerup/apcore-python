@@ -165,12 +165,13 @@ names = Config.registered_namespaces()
 
 ### Built-in Namespaces
 
-apcore pre-registers two namespaces that promote its existing flat config keys:
+apcore pre-registers three namespaces that promote its existing flat config keys:
 
 | Namespace | Env prefix | Keys |
 |-----------|-----------|------|
 | `observability` | `APCORE_OBSERVABILITY` | tracing, metrics, logging, error_history, platform_notify |
-| `sys_modules` | `APCORE_SYS` | thresholds.error_rate, thresholds.latency_p99_ms |
+| `obs` | `APCORE_OBS` | redaction.regex_patterns, redaction.sensitive_keys, redaction.replacement |
+| `sys_modules` | `APCORE_SYS` | events.thresholds.error_rate, events.thresholds.latency_p99_ms |
 
 ### Environment Variable Conventions
 

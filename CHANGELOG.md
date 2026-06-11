@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [0.24.0] - 2026-06-10
+## [0.24.0] - 2026-06-12
 
 ### Changed
 
@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Conformance coverage for per-instance ToggleState isolation and AI-agent ACL governance (#71, #72).** Wired two new cross-language fixtures into `tests/test_conformance.py`: `toggle_state_isolation.json` (4 cases) constructs real `APCore` instances in one process and asserts that toggles written through one instance's `disable`/`enable`/`reload` write path are observed only through that instance's read path; `acl_agent_scoping.json` (19 cases) locks the canonical default-deny agent-tool-governance ruleset, exercising first-match-wins with `{roles, max_call_depth}` conditions and the `@external` special caller (`max_call_depth` is inclusive: `depth == max` is allowed). All 23 cases pass against the existing ACL engine with no engine changes required.
+
+### Fixed
+
+- **ACL `max_call_depth` now accepts an integral float threshold [A-D-004].** A threshold loaded from YAML/JSON as `5.0` (instead of `5`) previously failed the `isinstance(..., int)` check in `_MaxCallDepthHandler`, so the allow-rule silently did not match and the call fell through to default-deny. The handler now accepts a `float` threshold when it is integral (`5.0` → depth 5) — same limit, no security change — matching apcore-typescript. `bool` thresholds and non-integral floats (e.g. `5.5`) are still rejected (fail closed).
+
+- **Registry custom discovery guards against a non-list discoverer result [A-D-014].** `Registry._discover_custom` previously iterated the value returned by a custom discoverer directly; a non-list return (e.g. `None` or a scalar) raised an uncaught `TypeError`. It now checks the result is a `list`, logs a warning, and returns `0`, matching apcore-typescript's `!Array.isArray` guard.
+
+- **README built-in namespaces table corrected [B-011, B-012].** Added the missing pre-registered `obs` / `APCORE_OBS` namespace (redaction.*) and fixed the `sys_modules` key paths to the actual nesting under `events.thresholds.*` (`events.thresholds.error_rate`, `events.thresholds.latency_p99_ms`).
 
 
 ## [0.23.0] - 2026-06-10

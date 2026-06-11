@@ -532,6 +532,18 @@ class Registry:
         root_paths = [str(r["root"]) for r in self._extension_roots]
         custom_modules = self._custom_discoverer.discover(root_paths)
 
+        # A-D-014: guard that the discoverer returned a list. A non-list result
+        # (e.g. ``None`` or a scalar) would otherwise raise an uncaught
+        # ``TypeError`` from the loop below. Fail gracefully with a warning and
+        # return 0, matching apcore-typescript's ``!Array.isArray`` guard.
+        if not isinstance(custom_modules, list):
+            logger.warning(
+                "Custom discoverer returned non-list (%s); expected list of "
+                "{'module_id', 'module'} entries. Ignoring.",
+                type(custom_modules).__name__,
+            )
+            return 0
+
         registered_count = 0
         for entry in custom_modules:
             try:
