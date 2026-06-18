@@ -131,9 +131,9 @@ class BuiltinContextCreation(BaseStep):
             # Fallback path: a Context was not bound at the Executor entry
             # point (e.g. PipelineContext constructed directly in tests).
             # Per PROTOCOL_SPEC §"Contract: Context.create", executor is not
-            # a public constructor input; bind via the private helper.
+            # a public constructor input; bind via Context.bind_executor.
             base_ctx = Context.create()
-            base_ctx._bind_executor(self._executor)
+            base_ctx.bind_executor(self._executor)
         else:
             base_ctx = ctx.context
 

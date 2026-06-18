@@ -537,7 +537,7 @@ class Executor:
         if context is None:
             context = Context.create()
         try:
-            context._bind_executor(self)
+            context.bind_executor(self)
         except ContextBindingError as e:
             checks.append(
                 PreflightCheckResult(
@@ -817,7 +817,7 @@ class Executor:
         # the caller did not supply one.
         if context is None:
             context = Context.create()
-        context._bind_executor(self)
+        context.bind_executor(self)
 
         pipe_ctx = PipelineContext(
             module_id=module_id,
@@ -975,7 +975,7 @@ class Executor:
         # to the Context before pipeline step 1.
         if context is None:
             context = Context.create()
-        context._bind_executor(self)
+        context.bind_executor(self)
 
         pipe_ctx = PipelineContext(
             module_id=module_id,
@@ -1262,7 +1262,7 @@ class Executor:
         # to the Context before pipeline step 1.
         if context is None:
             context = Context.create()
-        context._bind_executor(self)
+        context.bind_executor(self)
 
         pipe_ctx = PipelineContext(
             module_id=module_id,

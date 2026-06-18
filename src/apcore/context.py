@@ -78,7 +78,7 @@ class Context(Generic[T]):
         ``identity``, ``trace_parent``, ``cancel_token``, ``data``,
         ``services``, ``global_deadline``. ``executor`` and ``caller_id`` are
         intentionally NOT inputs — the executor is bound by the Executor at
-        pipeline entry (see ``Context._bind_executor``), and ``caller_id`` is
+        pipeline entry (see ``Context.bind_executor``), and ``caller_id`` is
         managed exclusively by ``Context.child()``.
 
         When *trace_parent* is provided, its ``trace_id`` is accepted only if
@@ -129,8 +129,8 @@ class Context(Generic[T]):
             global_deadline=global_deadline,
         )
 
-    def _bind_executor(self, executor: Any) -> None:
-        """SDK-internal. Bind the Executor to this Context.
+    def bind_executor(self, executor: Any) -> None:
+        """SDK-internal contract member. Bind the Executor to this Context.
 
         Implements PROTOCOL_SPEC §"Contract: Executor binding to Context":
         - If ``self.executor`` is None, bind it.
@@ -139,7 +139,7 @@ class Context(Generic[T]):
         - If ``self.executor`` is a *different* Executor instance, raise
           :class:`apcore.errors.ContextBindingError`.
 
-        Not intended for public callers; the Executor invokes this before
+        Not intended for application code; the Executor invokes this before
         pipeline step 1 on every entry point that accepts a caller-supplied
         Context.
         """
@@ -151,6 +151,17 @@ class Context(Generic[T]):
 
             raise ContextBindingError("Context already bound to a different Executor instance")
         # else: same executor instance, noop.
+
+    def _bind_executor(self, executor: Any) -> None:
+        """Deprecated alias for :meth:`bind_executor`. Will be removed in a future major release."""
+        import warnings
+
+        warnings.warn(
+            "Context._bind_executor is deprecated; use Context.bind_executor.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.bind_executor(executor)
 
     def serialize(self) -> dict[str, Any]:
         """Serialize Context to a JSON-encodable dict.

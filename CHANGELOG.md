@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.1] - 2026-06-18
+
+### Changed
+- rename private _bind_executor to public bind_executor on Context
+- add deprecated alias _bind_executor with deprecation warning
+- replace all internal calls to _bind_executor with bind_executor
+- update docstrings to reflect the new method name
+
 ## [0.24.0] - 2026-06-12
 
 ### Changed
