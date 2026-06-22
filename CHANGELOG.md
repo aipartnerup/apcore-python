@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.25.0] - 2026-06-22
+
+### Added
+
+- **Config-driven ACL discovery (#74, D-64).** New `ACL.discover(config)` classmethod resolves `acl.root` (default `./acl`) relative to the config file's directory, loads an ACL only when the path exists, and returns `None` otherwise. An `acl.root` pointing at a directory loads `<root>/global_acl.yaml`; pointing at a file loads that file directly. **Critical invariant:** a missing path attaches **no** ACL — it never synthesizes a default-deny ACL. Discovery is auto-wired in `APCore.__init__`, and is skipped when the caller supplies their own `Executor` so an explicitly configured ACL is never clobbered. New tests and `examples/acl_config_driven.py` cover the behavior; the cross-language contract is locked by the apcore conformance fixture `acl_root_discovery.json`.
+
+- **Registry module-id constants are now part of the public surface (#30).** `MAX_MODULE_ID_LENGTH`, `RESERVED_WORDS`, `REGISTRY_EVENTS`, `EPHEMERAL_NAMESPACE_PREFIX`, `DEFAULT_MODULE_VERSION`, and `MODULE_ID_PATTERN` are re-exported from both the `apcore.registry` package and the `apcore` root (previously reachable only via the internal `apcore.registry.registry` module). Canonical `MAX_MODULE_ID_LENGTH` is now public; the `MAX_MODULE_ID_LEN` alias is retained. Export surface only — no behavior change.
+
 ## [0.24.1] - 2026-06-18
 
 ### Changed
