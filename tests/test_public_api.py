@@ -397,6 +397,55 @@ class TestPublicAPIImports:
         assert "detect_id_conflicts" in apcore.__all__, "detect_id_conflicts missing from apcore.__all__"
         assert "ConflictResult" in apcore.__all__, "ConflictResult missing from apcore.__all__"
 
+    # -- Registry module-id constants (issue #30) --
+    # Regression: MAX_MODULE_ID_LENGTH, RESERVED_WORDS, REGISTRY_EVENTS,
+    # EPHEMERAL_NAMESPACE_PREFIX, DEFAULT_MODULE_VERSION and MODULE_ID_PATTERN
+    # are root-public in apcore-typescript / apcore-rust but were reachable in
+    # Python only via the internal module apcore.registry.registry. They must be
+    # importable from both the apcore.registry package and the top-level apcore.
+
+    _REGISTRY_CONSTANTS = (
+        "MAX_MODULE_ID_LENGTH",
+        "RESERVED_WORDS",
+        "REGISTRY_EVENTS",
+        "EPHEMERAL_NAMESPACE_PREFIX",
+        "DEFAULT_MODULE_VERSION",
+        "MODULE_ID_PATTERN",
+    )
+
+    def test_registry_constants_importable_from_package_root(self):
+        import apcore as apcore_mod
+
+        for name in self._REGISTRY_CONSTANTS:
+            assert hasattr(apcore_mod, name), f"{name} not importable from apcore"
+            assert name in apcore_mod.__all__, f"{name} missing from apcore.__all__"
+
+    def test_registry_constants_importable_from_registry_package(self):
+        import apcore.registry as reg
+
+        for name in self._REGISTRY_CONSTANTS:
+            assert hasattr(reg, name), f"{name} not importable from apcore.registry"
+            assert name in reg.__all__, f"{name} missing from apcore.registry.__all__"
+
+    def test_registry_constant_values_are_consistent(self):
+        """The root, the registry package, and the internal module must all
+        resolve to the same object (no shadowing / divergent copies)."""
+        import apcore as apcore_mod
+        import apcore.registry as reg
+        from apcore.registry import registry as deep
+
+        for name in self._REGISTRY_CONSTANTS:
+            assert getattr(apcore_mod, name) is getattr(deep, name)
+            assert getattr(reg, name) is getattr(deep, name)
+
+    def test_canonical_length_name_matches_multi_class_alias(self):
+        """Tier 2: MAX_MODULE_ID_LEN is a back-compat alias; the canonical
+        cross-SDK name MAX_MODULE_ID_LENGTH must now be public and equal."""
+        import apcore as apcore_mod
+        from apcore.registry import MAX_MODULE_ID_LEN
+
+        assert apcore_mod.MAX_MODULE_ID_LENGTH == MAX_MODULE_ID_LEN
+
 
 class TestPublicAPIAll:
     """Verify __all__ is comprehensive and matches actual exports."""
@@ -457,6 +506,13 @@ class TestPublicAPIAll:
         # Multi-class discovery
         "class_name_to_segment",
         "discover_multi_class",
+        # Registry module-id constants (issue #30 — parity with TS / Rust root)
+        "DEFAULT_MODULE_VERSION",
+        "EPHEMERAL_NAMESPACE_PREFIX",
+        "MAX_MODULE_ID_LENGTH",
+        "MODULE_ID_PATTERN",
+        "REGISTRY_EVENTS",
+        "RESERVED_WORDS",
         # Config
         "Config",
         "RESERVED_NAMESPACES",

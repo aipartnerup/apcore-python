@@ -22,17 +22,30 @@ from apcore.registry.multi_class import (
     discover_multi_class,
     multi_class,
 )
-from apcore.registry.registry import MODULE_ID_PATTERN, Registry
+from apcore.registry.registry import (
+    DEFAULT_MODULE_VERSION,
+    EPHEMERAL_NAMESPACE_PREFIX,
+    MAX_MODULE_ID_LENGTH,
+    MODULE_ID_PATTERN,
+    REGISTRY_EVENTS,
+    RESERVED_WORDS,
+    Registry,
+)
 from apcore.registry.scanner import scan_extensions, scan_multi_root
 from apcore.registry.types import DependencyInfo, DiscoveredModule, ModuleDescriptor
 from apcore.registry.validation import validate_module
 
 __all__ = [
     "ConflictResult",
+    "DEFAULT_MODULE_VERSION",
     "DependencyInfo",
     "DiscoveredModule",
+    "EPHEMERAL_NAMESPACE_PREFIX",
+    "MAX_MODULE_ID_LENGTH",
     "MODULE_ID_PATTERN",
     "ModuleDescriptor",
+    "REGISTRY_EVENTS",
+    "RESERVED_WORDS",
     "Registry",
     "MAX_MODULE_ID_LEN",
     "class_name_to_segment",

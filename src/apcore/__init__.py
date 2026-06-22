@@ -28,6 +28,12 @@ from apcore.context_keys import (
     TRACING_SPANS,
 )
 from apcore.registry import (
+    DEFAULT_MODULE_VERSION,
+    EPHEMERAL_NAMESPACE_PREFIX,
+    MAX_MODULE_ID_LENGTH,
+    MODULE_ID_PATTERN,
+    REGISTRY_EVENTS,
+    RESERVED_WORDS,
     Registry,
     class_name_to_segment,
     discover_multi_class,
@@ -632,6 +638,14 @@ __all__ = [
     # Multi-class discovery
     "class_name_to_segment",
     "discover_multi_class",
+    # Registry module-id constants (parity with apcore-typescript / apcore-rust
+    # root exports; previously reachable only via apcore.registry.registry)
+    "DEFAULT_MODULE_VERSION",
+    "EPHEMERAL_NAMESPACE_PREFIX",
+    "MAX_MODULE_ID_LENGTH",
+    "MODULE_ID_PATTERN",
+    "REGISTRY_EVENTS",
+    "RESERVED_WORDS",
     # Errors
     "ErrorCodes",
     "ModuleError",
