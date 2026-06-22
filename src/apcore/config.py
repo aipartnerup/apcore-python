@@ -947,6 +947,19 @@ class Config:
         with self._lock:
             return copy.deepcopy(self._data)
 
+    @property
+    def source_path(self) -> str | None:
+        """Return the filesystem path the config was loaded from, if any.
+
+        Returns the YAML path passed to (or discovered by) :meth:`load`, or
+        ``None`` for in-memory configs (``Config(data=...)``) and configs
+        produced by :meth:`from_defaults`. Consumers that resolve relative
+        paths (e.g. ``acl.root``) use this to anchor resolution at the config
+        file's directory rather than the current working directory.
+        """
+        with self._lock:
+            return self._yaml_path
+
     # ------------------------------------------------------------------
     # Namespace-mode instance methods
     # ------------------------------------------------------------------

@@ -71,11 +71,27 @@ class APCore:
         # When the caller supplies their own Executor we respect it as-is (its
         # read path uses whatever toggle_state it was built with). The
         # auto-created Executor is wired to this instance's ToggleState.
+        executor_supplied = executor is not None
         self.executor = executor or Executor(
             registry=self.registry,
             config=config,
             toggle_state=self.toggle_state,
         )
+
+        # Config-driven ACL discovery (D-64, Recommendation A). Resolve
+        # acl.root and attach an ACL only when the path exists; a missing path
+        # is a no-op that preserves today's no-enforcement default (it must NOT
+        # synthesize an empty default-deny ACL). Done before sys_modules
+        # registration so system modules execute under the discovered policy.
+        # Skipped when the caller supplied their own Executor — discovery must
+        # not clobber an ACL the caller wired explicitly (parity with the TS and
+        # Rust SDKs).
+        if self.config is not None and not executor_supplied:
+            from apcore.acl import ACL
+
+            discovered_acl = ACL.discover(self.config)
+            if discovered_acl is not None:
+                self.executor.set_acl(discovered_acl)
 
         # Auto-register sys.* modules and middleware from config
         self._sys_modules_context: dict[str, Any] = {}

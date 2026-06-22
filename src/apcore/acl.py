@@ -13,6 +13,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, ClassVar
 
 import yaml
@@ -27,6 +28,7 @@ from apcore.acl_handlers import (
     _OrHandlerAsync,
     _RolesHandler,
 )
+from apcore.config import Config
 from apcore.context import Context
 from apcore.errors import ACLRuleError, ConfigNotFoundError
 from apcore.utils.pattern import match_pattern
@@ -296,6 +298,70 @@ class ACL:
         acl = cls(rules=rules, default_effect=default_effect)
         acl._yaml_path = yaml_path
         return acl
+
+    @classmethod
+    def discover(cls, config: Config) -> ACL | None:
+        """Activate ``acl.root`` config-driven ACL discovery (D-64, Recommendation A).
+
+        Resolves the ``acl.root`` config key (default ``"./acl"``) and loads an
+        ACL from it when the path exists. The path is resolved relative to the
+        directory of the config's source file when known (``config.source_path``),
+        otherwise relative to the current working directory.
+
+        ``acl.root`` is a directory by spec convention (``acl/{scope}_acl.yaml``,
+        PROTOCOL_SPEC §3.1). When the resolved path is a directory, the
+        conventional ``global_acl.yaml`` within it is loaded; if that file is
+        absent the result is ``None`` (the missing-path no-op still holds). When
+        the resolved path is itself a file, it is loaded directly. Either way the
+        actual load goes through :meth:`load`.
+
+        Critical invariant: a missing path returns ``None`` and attaches NOTHING.
+        It MUST NOT synthesize an empty default-deny ACL — doing so would silently
+        deny every inter-module call in every project that lacks an ``acl`` dir.
+        Missing path means "no enforcement", identical to pre-D-64 behavior. The
+        ``acl.default_effect`` config key only takes effect once a real ACL file
+        is loaded (it is read by :meth:`load` from the ACL file itself); it never
+        feeds a synthesized ACL here.
+
+        Args:
+            config: The loaded configuration to read ``acl.root`` from.
+
+        Returns:
+            A loaded :class:`ACL` when the resolved path exists, otherwise
+            ``None``.
+
+        Raises:
+            ConfigNotFoundError: Never raised for a missing root (that path
+                returns ``None``); only propagated from :meth:`load` if the
+                path disappears between the existence check and the load.
+            ACLRuleError: If the ACL file exists but is structurally invalid.
+        """
+        root = config.get("acl.root", Config.get_default("acl.root"))
+        if root is None:
+            return None
+
+        root_path = Path(str(root))
+        if not root_path.is_absolute():
+            source_path = config.source_path
+            if source_path is not None:
+                base = Path(source_path).resolve().parent
+            else:
+                base = Path.cwd()
+            root_path = base / root_path
+
+        if not root_path.exists():
+            # Missing path -> no enforcement. Do NOT synthesize an ACL.
+            return None
+
+        if root_path.is_dir():
+            # Directory convention: acl/{scope}_acl.yaml (PROTOCOL_SPEC §3.1).
+            acl_file = root_path / "global_acl.yaml"
+            if not acl_file.is_file():
+                # Directory present but no conventional ACL file -> no-op.
+                return None
+            return cls.load(str(acl_file))
+
+        return cls.load(str(root_path))
 
     def check(
         self,
