@@ -40,6 +40,7 @@ from apcore.pipeline import (
     PipelineContext,
     StepResult,
 )
+from apcore.policy import ExecutionPolicy, PolicyDecision
 from apcore.config import Config
 from apcore.utils.call_chain import guard_call_chain
 
@@ -284,7 +285,7 @@ class BuiltinModuleLookup(BaseStep):
 class BuiltinACLCheck(BaseStep):
     """Access control list enforcement."""
 
-    def __init__(self, *, acl: Any | None = None) -> None:
+    def __init__(self, *, acl: Any | None = None, event_emitter: Any | None = None) -> None:
         super().__init__(
             name="acl_check",
             description="Enforce access control policies",
@@ -294,6 +295,7 @@ class BuiltinACLCheck(BaseStep):
             requires=("context", "module"),
         )
         self._acl = acl
+        self._event_emitter = event_emitter
 
     def set_acl(self, acl: Any | None) -> None:
         """Replace the ACL provider used by this step at runtime."""
@@ -312,8 +314,36 @@ class BuiltinACLCheck(BaseStep):
             allowed = self._acl.check(caller_id, ctx.module_id, ctx.context)
 
         if not allowed:
+            # Publish a governance event on denial (canonical name proposed in
+            # apcore#77). Guarded by dry_run so a validate() preflight probe
+            # never emits a spurious denial event. Fires only on deny — allows
+            # are high-volume and already covered by the apcore.acl.check span.
+            self._emit_denied(caller_id, ctx.module_id, ctx.context, ctx.dry_run)
             raise ACLDeniedError(caller_id=caller_id, target_id=ctx.module_id)
         return StepResult(action="continue")
+
+    def _emit_denied(self, caller_id: str, module_id: str, ctx: Context, dry_run: bool) -> None:
+        """Emit ``apcore.acl.denied`` on the event bus (apcore#77) when live."""
+        if self._event_emitter is None or dry_run:
+            return
+        from datetime import datetime, timezone
+
+        from apcore.events.emitter import ApCoreEvent
+
+        self._event_emitter.emit(
+            ApCoreEvent(
+                event_type="apcore.acl.denied",
+                module_id=module_id,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                severity="warn",
+                data={
+                    "module_id": module_id,
+                    "caller_id": caller_id,
+                    "reason": "ACL denied",
+                    "trace_id": getattr(ctx, "trace_id", None),
+                },
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -324,13 +354,27 @@ class BuiltinACLCheck(BaseStep):
 class BuiltinApprovalGate(BaseStep):
     """Approval handler flow for modules requiring approval.
 
-    For modules whose annotations declare ``requires_approval=True``, calls
-    the configured ApprovalHandler, emits an audit event (logging + tracing
-    span event), and translates the result into either continued execution
-    or the appropriate ``ApprovalError`` subclass.
+    For modules whose annotations declare ``requires_approval=True`` (or that
+    an :class:`~apcore.policy.ExecutionPolicy` gates), calls the configured
+    ApprovalHandler, emits an audit event (logging + tracing span event), and
+    translates the result into either continued execution or the appropriate
+    ``ApprovalError`` subclass.
+
+    Fail-loud governance (apcore#76): when a module needs approval but no
+    handler is configured, the gate keeps the PROTOCOL_SPEC §7.4 skip
+    behavior but logs a warning (once per module). With
+    ``ExecutionPolicy(strict=True)`` it fails closed instead. A module whose
+    effective ``destructive`` annotation is true but that no approval gate
+    covers is also warned about once per module.
     """
 
-    def __init__(self, *, handler: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        handler: Any | None = None,
+        policy: ExecutionPolicy | None = None,
+        event_emitter: Any | None = None,
+    ) -> None:
         super().__init__(
             name="approval_gate",
             description="Request and verify module approval",
@@ -340,17 +384,61 @@ class BuiltinApprovalGate(BaseStep):
             requires=("context", "module"),
         )
         self._handler = handler
+        self._policy = policy
+        self._event_emitter = event_emitter
+        self._warned: set[str] = set()
 
     def set_handler(self, handler: Any | None) -> None:
         """Replace the approval handler used by this step at runtime."""
         self._handler = handler
 
+    def set_policy(self, policy: ExecutionPolicy | None) -> None:
+        """Replace the execution policy used by this step at runtime."""
+        self._policy = policy
+
     async def execute(self, ctx: PipelineContext) -> StepResult:
-        if self._handler is None:
+        module = ctx.module
+        decision: PolicyDecision | None = None
+        if self._policy is not None:
+            decision = self._policy.resolve(ctx.module_id, getattr(module, "annotations", None))
+            needs_approval = decision.needs_approval
+            effective_destructive = decision.destructive
+            if decision.overridden:
+                self._emit_policy_audit(decision, ctx.context)
+        else:
+            needs_approval = _module_requires_approval(module)
+            effective_destructive = _module_is_destructive(module)
+
+        if not needs_approval:
+            if effective_destructive:
+                self._warn_once(
+                    f"destructive_ungated:{ctx.module_id}",
+                    "Module '%s' is annotated destructive=True but is not covered by the "
+                    "approval gate (requires_approval is false and no policy gates destructive "
+                    "modules). Consider requires_approval=True or ExecutionPolicy("
+                    "gate_destructive=True). (apcore#76)",
+                    ctx.module_id,
+                )
             return StepResult(action="continue")
 
-        module = ctx.module
-        if not _module_requires_approval(module):
+        if self._handler is None:
+            if self._policy is not None and self._policy.strict:
+                result = ApprovalResult(
+                    status="rejected",
+                    reason=(
+                        "Approval required but no ApprovalHandler is configured; "
+                        "ExecutionPolicy(strict=True) fails closed"
+                    ),
+                )
+                self._emit_audit(result, ctx.module_id, ctx.context)
+                raise ApprovalDeniedError(result=result, module_id=ctx.module_id)
+            self._warn_once(
+                f"no_handler:{ctx.module_id}",
+                "Module '%s' requires approval but no ApprovalHandler is configured; "
+                "the approval gate is skipped per PROTOCOL_SPEC §7.4. Configure an "
+                "approval handler, or ExecutionPolicy(strict=True) to fail closed. (apcore#76)",
+                ctx.module_id,
+            )
             return StepResult(action="continue")
 
         # Phase B token resume vs fresh request
@@ -367,11 +455,24 @@ class BuiltinApprovalGate(BaseStep):
                 )
             result = await self._handler.check_approval(token)
         else:
+            annotations = _coerce_annotations(getattr(module, "annotations", None))
+            if decision is not None:
+                # Preserve the ApprovalRequest contract ("requires_approval is
+                # guaranteed true", PROTOCOL_SPEC §7) under policy overrides:
+                # the handler sees the effective governance values, not the
+                # module's raw declaration. Reaching this point means the call
+                # needs approval, so requires_approval is true by definition
+                # (covers both rule overrides and gate_destructive).
+                annotations = dataclasses.replace(
+                    annotations,
+                    requires_approval=True,
+                    destructive=decision.destructive,
+                )
             request = ApprovalRequest(
                 module_id=ctx.module_id,
                 arguments=ctx.inputs,
                 context=ctx.context,
-                annotations=_coerce_annotations(getattr(module, "annotations", None)),
+                annotations=annotations,
                 description=getattr(module, "description", None),
                 tags=list(getattr(module, "tags", None) or []),
             )
@@ -394,9 +495,74 @@ class BuiltinApprovalGate(BaseStep):
         )
         raise ApprovalDeniedError(result=result, module_id=ctx.module_id)
 
-    @staticmethod
-    def _emit_audit(result: ApprovalResult, module_id: str, ctx: Context) -> None:
-        """Log the decision and append a span event when tracing is active."""
+    def _warn_once(self, key: str, message: str, *args: Any) -> None:
+        """Log a governance warning once per dedup key (module/kind pair)."""
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        _logger.warning(message, *args)
+
+    def _emit_policy_audit(self, decision: PolicyDecision, ctx: Context) -> None:
+        """Audit a policy-driven override: log, span event, and bus event.
+
+        Publishes ``apcore.policy.override`` (canonical name proposed in
+        apcore#77, pending PROTOCOL_SPEC §9.16.2 amendment) when an event
+        emitter is configured.
+        """
+        rule = decision.rule
+        _logger.info(
+            "Policy override: module=%s pattern=%s requires_approval=%s destructive=%s needs_approval=%s reason=%s",
+            decision.module_id,
+            rule.pattern if rule else "",
+            decision.requires_approval,
+            decision.destructive,
+            decision.needs_approval,
+            rule.reason if rule else "",
+        )
+        spans_stack: list[Any] = ctx.data.get("_apcore.mw.tracing.spans", [])
+        if spans_stack:
+            spans_stack[-1].events.append(
+                {
+                    "name": "policy_override",
+                    "module_id": decision.module_id,
+                    "pattern": rule.pattern if rule else "",
+                    "requires_approval": decision.requires_approval,
+                    "destructive": decision.destructive,
+                    "needs_approval": decision.needs_approval,
+                    "reason": (rule.reason if rule else None) or "",
+                }
+            )
+        if self._event_emitter is not None:
+            from datetime import datetime, timezone
+
+            from apcore.events.emitter import ApCoreEvent
+
+            self._event_emitter.emit(
+                ApCoreEvent(
+                    event_type="apcore.policy.override",
+                    module_id=decision.module_id,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    severity="info",
+                    data={
+                        "module_id": decision.module_id,
+                        "pattern": rule.pattern if rule else "",
+                        "requires_approval": decision.requires_approval,
+                        "destructive": decision.destructive,
+                        "needs_approval": decision.needs_approval,
+                        "reason": (rule.reason if rule else None) or "",
+                        "trace_id": getattr(ctx, "trace_id", None),
+                    },
+                )
+            )
+
+    def _emit_audit(self, result: ApprovalResult, module_id: str, ctx: Context) -> None:
+        """Audit an approval decision: log, span event, and bus event.
+
+        Publishes ``apcore.approval.decision`` (canonical name proposed in
+        apcore#77, pending PROTOCOL_SPEC §9.16.2 amendment) when an event
+        emitter is configured. Severity mirrors the outcome: approved/pending
+        are ``info``; rejected/timeout (governance interventions) are ``warn``.
+        """
         _logger.info(
             "Approval decision: module=%s status=%s approved_by=%s reason=%s",
             module_id,
@@ -416,6 +582,27 @@ class BuiltinApprovalGate(BaseStep):
                     "approval_id": result.approval_id or "",
                 }
             )
+        if self._event_emitter is not None:
+            from datetime import datetime, timezone
+
+            from apcore.events.emitter import ApCoreEvent
+
+            self._event_emitter.emit(
+                ApCoreEvent(
+                    event_type="apcore.approval.decision",
+                    module_id=module_id,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    severity="info" if result.status in ("approved", "pending") else "warn",
+                    data={
+                        "module_id": module_id,
+                        "status": result.status,
+                        "approved_by": result.approved_by,
+                        "reason": result.reason,
+                        "approval_id": result.approval_id,
+                        "trace_id": getattr(ctx, "trace_id", None),
+                    },
+                )
+            )
 
 
 def _module_requires_approval(module: Any) -> bool:
@@ -427,6 +614,18 @@ def _module_requires_approval(module: Any) -> bool:
         return annotations.requires_approval
     if isinstance(annotations, dict):
         return bool(annotations.get("requires_approval", False))
+    return False
+
+
+def _module_is_destructive(module: Any) -> bool:
+    """Read ``destructive`` from a module's annotations (dataclass or dict)."""
+    annotations = getattr(module, "annotations", None)
+    if annotations is None:
+        return False
+    if isinstance(annotations, ModuleAnnotations):
+        return annotations.destructive
+    if isinstance(annotations, dict):
+        return bool(annotations.get("destructive", False))
     return False
 
 
@@ -807,6 +1006,8 @@ def build_standard_strategy(
     config: Any | None = None,
     acl: Any | None = None,
     approval_handler: Any | None = None,
+    policy: ExecutionPolicy | None = None,
+    event_emitter: Any | None = None,
     middlewares: list[Any] | None = None,
     middleware_manager: Any | None = None,
     executor: Any | None = None,
@@ -819,6 +1020,11 @@ def build_standard_strategy(
         config: Optional configuration for timeout/depth settings.
         acl: Optional ACL for access control enforcement.
         approval_handler: Optional approval handler for the approval gate.
+        policy: Optional ExecutionPolicy with governance overrides for the
+            approval gate (apcore#76 RFC pilot).
+        event_emitter: Optional EventEmitter. When provided, the approval gate
+            publishes apcore.approval.decision / apcore.policy.override
+            governance events (apcore#77).
         middlewares: Optional list of middleware instances.
         middleware_manager: Optional MiddlewareManager for production parity.
         executor: Optional executor reference for context creation and approval.
@@ -835,8 +1041,8 @@ def build_standard_strategy(
             BuiltinContextCreation(config=config, executor=executor),
             BuiltinCallChainGuard(config=config),
             BuiltinModuleLookup(registry=registry, toggle_state=toggle_state),
-            BuiltinACLCheck(acl=acl),
-            BuiltinApprovalGate(handler=approval_handler),
+            BuiltinACLCheck(acl=acl, event_emitter=event_emitter),
+            BuiltinApprovalGate(handler=approval_handler, policy=policy, event_emitter=event_emitter),
             BuiltinMiddlewareBefore(
                 middlewares=middlewares or [],
                 middleware_manager=middleware_manager,

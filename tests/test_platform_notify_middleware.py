@@ -53,9 +53,8 @@ class TestPlatformNotifyMiddleware:
             error_rate_threshold=0.1,
         )
         mw.on_error("mod.a", {}, RuntimeError("boom"), MagicMock())
-        # Dual emission: canonical apcore.health.error_threshold_exceeded plus
-        # legacy alias error_threshold_exceeded (Issue #36 deprecation window).
-        assert emitter.emit.call_count == 2
+        # Canonical-only emission per the v0.22.0 spec MUST (apcore#78).
+        assert emitter.emit.call_count == 1
         canonical = [
             c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.health.error_threshold_exceeded"
         ]
@@ -88,9 +87,8 @@ class TestPlatformNotifyMiddleware:
         )
         mw.on_error("mod.a", {}, RuntimeError("boom"), MagicMock())
         mw.on_error("mod.a", {}, RuntimeError("boom2"), MagicMock())
-        # Hysteresis: only one threshold *event* despite two on_error calls,
-        # but each event causes a dual emission (canonical + legacy alias) — so 2 emits total.
-        assert emitter.emit.call_count == 2
+        # Hysteresis: only one threshold event despite two on_error calls (apcore#78).
+        assert emitter.emit.call_count == 1
 
     def test_on_error_returns_none(self) -> None:
         emitter = MagicMock(spec=EventEmitter)
@@ -115,8 +113,10 @@ class TestPlatformNotifyMiddleware:
             latency_p99_threshold_ms=5000.0,
         )
         mw.after("mod.b", {}, {}, MagicMock())
-        # Should emit latency_threshold_exceeded
-        calls = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "latency_threshold_exceeded"]
+        # Should emit the canonical apcore.health.latency_threshold_exceeded (apcore#78)
+        calls = [
+            c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.health.latency_threshold_exceeded"
+        ]
         assert len(calls) == 1
         event: ApCoreEvent = calls[0][0][0]
         assert event.module_id == "mod.b"
@@ -146,9 +146,9 @@ class TestPlatformNotifyMiddleware:
             metrics_collector=mc,
             error_rate_threshold=0.1,
         )
-        # Trigger the error alert (dual emission: canonical + legacy alias)
+        # Trigger the error alert (canonical-only, apcore#78)
         mw.on_error("mod.a", {}, RuntimeError("boom"), MagicMock())
-        assert emitter.emit.call_count == 2
+        assert emitter.emit.call_count == 1
 
         # Now replace metrics with low error rate (< threshold * 0.5 = 0.05)
         mc2 = _make_metrics_with_error_rate("mod.a", total_calls=100, error_calls=3)
@@ -173,9 +173,9 @@ class TestPlatformNotifyMiddleware:
             metrics_collector=mc,
             error_rate_threshold=0.1,
         )
-        # Trigger alert (dual emission: canonical + legacy alias)
+        # Trigger alert (canonical-only, apcore#78)
         mw.on_error("mod.a", {}, RuntimeError("boom"), MagicMock())
-        assert emitter.emit.call_count == 2
+        assert emitter.emit.call_count == 1
 
         # Recover
         mc2 = _make_metrics_with_error_rate("mod.a", total_calls=100, error_calls=3)
@@ -187,8 +187,8 @@ class TestPlatformNotifyMiddleware:
         mw._metrics_collector = mc3
         emitter.reset_mock()
         mw.on_error("mod.a", {}, RuntimeError("boom3"), MagicMock())
-        # Dual emission again
-        assert emitter.emit.call_count == 2
+        # Canonical-only emission (apcore#78)
+        assert emitter.emit.call_count == 1
         canonical = [
             c for c in emitter.emit.call_args_list if c[0][0].event_type == "apcore.health.error_threshold_exceeded"
         ]

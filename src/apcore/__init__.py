@@ -143,6 +143,9 @@ from apcore.errors import (
 # ACL
 from apcore.acl import ACL, ACLRule, AuditEntry
 
+# Execution-time governance policy (apcore#76 RFC pilot)
+from apcore.policy import ExecutionPolicy, PolicyDecision, PolicyRule
+
 # Middleware
 from apcore.middleware import (
     AfterMiddleware,
@@ -713,6 +716,10 @@ __all__ = [
     "ACL",
     "ACLRule",
     "AuditEntry",
+    # Execution-time governance policy (apcore#76 RFC pilot)
+    "ExecutionPolicy",
+    "PolicyDecision",
+    "PolicyRule",
     # Middleware
     "Middleware",
     "RetrySignal",

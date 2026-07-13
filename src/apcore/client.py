@@ -26,6 +26,7 @@ from apcore.decorator import module as decorator_module
 from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
 from apcore.executor import Executor
 from apcore.module import PreflightResult
+from apcore.policy import ExecutionPolicy
 from apcore.observability.metrics import MetricsCollector
 from apcore.registry import Registry
 from apcore.sys_modules.control import ToggleState
@@ -44,6 +45,7 @@ class APCore:
         executor: Executor | None = None,
         config: Config | None = None,
         metrics_collector: MetricsCollector | None = None,
+        policy: ExecutionPolicy | None = None,
     ) -> None:
         """Initialize the APCore client.
 
@@ -53,6 +55,11 @@ class APCore:
             config: Optional Config instance. Use Config.load() to load from a file.
             metrics_collector: Optional MetricsCollector for observability.
                                Auto-created when sys_modules are enabled and none is provided.
+            policy: Optional ExecutionPolicy with execution-time governance
+                overrides (apcore#76). Applied to the auto-created Executor's
+                approval gate. Ignored when the caller supplies their own
+                ``executor`` — wire the policy on that Executor directly
+                (parity with config-driven ACL discovery).
         """
         self.registry = registry or Registry()
         self.config = config
@@ -75,6 +82,7 @@ class APCore:
         self.executor = executor or Executor(
             registry=self.registry,
             config=config,
+            policy=policy,
             toggle_state=self.toggle_state,
         )
 
@@ -334,7 +342,7 @@ class APCore:
         unsubscription via ``off()``.
 
         Args:
-            event_type: Event type to listen for (e.g. "module_registered").
+            event_type: Event type to listen for (e.g. "apcore.registry.module_registered").
             handler: Sync or async callable receiving an ApCoreEvent.
 
         Returns:

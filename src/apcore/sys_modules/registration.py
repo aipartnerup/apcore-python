@@ -682,16 +682,6 @@ def _bridge_registry_events(registry: Registry, emitter: EventEmitter) -> None:
                 data={},
             )
         )
-        # Legacy alias — deprecated, kept for back-compat subscribers
-        emitter.emit(
-            ApCoreEvent(
-                event_type="module_registered",
-                module_id=module_id,
-                timestamp=ts,
-                severity="info",
-                data={"deprecated": True},
-            )
-        )
 
     def on_unregister(module_id: str, module: Any) -> None:
         # Mirror the single-emit rule for unregistrations. See apcore RFC
@@ -706,15 +696,6 @@ def _bridge_registry_events(registry: Registry, emitter: EventEmitter) -> None:
                 timestamp=ts,
                 severity="info",
                 data={},
-            )
-        )
-        emitter.emit(
-            ApCoreEvent(
-                event_type="module_unregistered",
-                module_id=module_id,
-                timestamp=ts,
-                severity="info",
-                data={"deprecated": True},
             )
         )
 

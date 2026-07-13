@@ -49,6 +49,7 @@ from apcore.module import (
     PreflightResult,
     PreviewResult,
 )
+from apcore.policy import ExecutionPolicy
 from apcore.pipeline import (
     AbortReason,
     ExecutionStrategy,
@@ -209,6 +210,7 @@ class Executor:
         acl: ACL | None = None,
         config: Config | None = None,
         approval_handler: ApprovalHandler | None = None,
+        policy: ExecutionPolicy | None = None,
         event_emitter: Any = None,
         toggle_state: Any = None,
     ) -> None:
@@ -224,6 +226,8 @@ class Executor:
             acl: Optional ACL for access control enforcement.
             config: Optional configuration for timeout/depth settings.
             approval_handler: Optional approval handler for Step 5 gate.
+            policy: Optional ExecutionPolicy with execution-time governance
+                overrides for the Step 5 gate (apcore#76 RFC pilot).
             event_emitter: Optional EventEmitter. When provided, the executor
                 emits apcore.stream.post_validation_failed events so
                 post-stream failures (which cannot un-send already-yielded
@@ -239,6 +243,7 @@ class Executor:
         self._acl = acl
         self._config = config
         self._approval_handler = approval_handler
+        self._policy = policy
         self._event_emitter = event_emitter
         self._toggle_state = toggle_state
 
@@ -252,6 +257,8 @@ class Executor:
             "config": config,
             "acl": acl,
             "approval_handler": approval_handler,
+            "policy": policy,
+            "event_emitter": event_emitter,
             "middlewares": middlewares,
             "middleware_manager": self._middleware_manager,
             "executor": self,
@@ -309,6 +316,7 @@ class Executor:
         acl: ACL | None = None,
         config: Config | None = None,
         approval_handler: ApprovalHandler | None = None,
+        policy: ExecutionPolicy | None = None,
     ) -> Executor:
         """Convenience factory for creating an Executor from a Registry.
 
@@ -319,6 +327,7 @@ class Executor:
             acl: Optional access control list.
             config: Optional configuration.
             approval_handler: Optional approval handler.
+            policy: Optional execution-time governance policy (apcore#76).
 
         Returns:
             A configured Executor instance.
@@ -330,6 +339,7 @@ class Executor:
             acl=acl,
             config=config,
             approval_handler=approval_handler,
+            policy=policy,
         )
 
     @property
@@ -382,6 +392,27 @@ class Executor:
             setter = getattr(step, "set_handler", None)
             if callable(setter):
                 setter(handler)
+            break
+
+    def set_policy(self, policy: ExecutionPolicy | None) -> None:
+        """Set the execution-time governance policy for the Step 5 gate.
+
+        Updates both the executor field and the strategy's ``approval_gate``
+        step via its public :meth:`BuiltinApprovalGate.set_policy` setter
+        when present. Custom user-supplied approval steps without that
+        setter are silently skipped — callers should re-register the
+        strategy if they need to replace a custom step's policy.
+
+        Args:
+            policy: The ExecutionPolicy to apply, or None to remove it.
+        """
+        self._policy = policy
+        for step in self._strategy.steps:
+            if step.name != "approval_gate":
+                continue
+            setter = getattr(step, "set_policy", None)
+            if callable(setter):
+                setter(policy)
             break
 
     def use(self, middleware: Middleware) -> Executor:
@@ -612,6 +643,10 @@ class Executor:
                 requires_approval = annotations.requires_approval
             elif isinstance(annotations, dict):
                 requires_approval = bool(annotations.get("requires_approval", False))
+            if self._policy is not None:
+                # Policy overrides win over declared annotations (apcore#76),
+                # so preflight reports the same verdict the gate will enforce.
+                requires_approval = self._policy.resolve(module_id, annotations).needs_approval
 
         # Module-level preflight (optional)
         if (

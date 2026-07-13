@@ -568,6 +568,10 @@ class TestPublicAPIAll:
         "ACL",
         "ACLRule",
         "AuditEntry",
+        # Execution-time governance policy (apcore#76 RFC pilot)
+        "ExecutionPolicy",
+        "PolicyDecision",
+        "PolicyRule",
         # Middleware
         "Middleware",
         "RetrySignal",

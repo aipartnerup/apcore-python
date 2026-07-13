@@ -25,7 +25,7 @@ A schema-enforced module standard for the AI-Perceivable era.
 - **Observability** -- Tracing (spans), metrics collection, and structured context logging
 - **Async support** -- Seamless sync and async module execution
 - **Safety guards** -- Call depth limits, circular call detection, frequency throttling
-- **Approval system** -- Pluggable approval gate (Step 5) with sync/async handlers, Phase B resume, and audit events
+- **Approval system** -- Pluggable approval gate (Step 5) with sync/async handlers, Phase B resume, and audit events; execution-time `ExecutionPolicy` overrides (#76) can force/exempt approval on already-registered modules, gate `destructive` ops, and fail closed under `strict`
 - **Extension points** -- Unified extension management for discoverers, middleware, ACL, approval handlers, span exporters, and module validators
 - **Async task management** -- Background module execution with status tracking, cancellation, and concurrency limiting
 - **Behavioral annotations** -- Declare module traits (readonly, destructive, idempotent, cacheable, paginated, streaming) for AI-aware orchestration
@@ -56,6 +56,7 @@ A schema-enforced module standard for the AI-Perceivable era.
 | `ACL` | Access control -- rule-based caller/target authorization |
 | `ApprovalHandler` | Pluggable approval gate protocol |
 | `AlwaysDenyHandler` / `AutoApproveHandler` / `CallbackApprovalHandler` | Built-in approval handlers |
+| `ExecutionPolicy` / `PolicyRule` | Execution-time governance overrides (#76) -- force/exempt approval, `gate_destructive`, `strict` fail-closed |
 
 **Middleware**
 

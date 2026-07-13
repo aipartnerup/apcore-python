@@ -69,7 +69,8 @@ def _add_latency(mc: MetricsCollector, module_id: str, values: list[float]) -> N
 
 
 class TestRegistryEventCanonicalization:
-    def test_module_registered_emits_canonical_and_legacy(self) -> None:
+    def test_module_registered_emits_canonical_only(self) -> None:
+        # v0.22.0 spec MUST: canonical-only, no legacy dual-emission (apcore#78).
         from apcore.registry.registry import Registry
         from apcore.sys_modules.registration import _bridge_registry_events
 
@@ -81,14 +82,10 @@ class TestRegistryEventCanonicalization:
 
         emitted_types = [c[0][0].event_type for c in emitter.emit.call_args_list]
         assert "apcore.registry.module_registered" in emitted_types
-        assert "module_registered" in emitted_types
+        assert "module_registered" not in emitted_types
 
-        legacy_calls = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "module_registered"]
-        assert len(legacy_calls) == 1
-        legacy_event: ApCoreEvent = legacy_calls[0][0][0]
-        assert legacy_event.data.get("deprecated") is True
-
-    def test_module_unregistered_emits_canonical_and_legacy(self) -> None:
+    def test_module_unregistered_emits_canonical_only(self) -> None:
+        # v0.22.0 spec MUST: canonical-only, no legacy dual-emission (apcore#78).
         from apcore.registry.registry import Registry
         from apcore.sys_modules.registration import _bridge_registry_events
 
@@ -102,11 +99,7 @@ class TestRegistryEventCanonicalization:
 
         emitted_types = [c[0][0].event_type for c in emitter.emit.call_args_list]
         assert "apcore.registry.module_unregistered" in emitted_types
-        assert "module_unregistered" in emitted_types
-
-        legacy_calls = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "module_unregistered"]
-        assert len(legacy_calls) == 1
-        assert legacy_calls[0][0][0].data.get("deprecated") is True
+        assert "module_unregistered" not in emitted_types
 
     def test_glob_apcore_registry_matches_register_and_unregister(self) -> None:
         """A FilterSubscriber subscribed to apcore.registry.* receives BOTH events."""
@@ -160,7 +153,8 @@ class TestRegistryEventCanonicalization:
 
 
 class TestHealthEventCanonicalization:
-    def test_error_threshold_emits_canonical_and_legacy(self) -> None:
+    def test_error_threshold_emits_canonical_only(self) -> None:
+        # v0.22.0 spec MUST: canonical-only, no legacy dual-emission (apcore#78).
         emitter = MagicMock(spec=EventEmitter)
         mc = _metrics_with_error_rate("mod.a", total_calls=100, error_calls=15)
         mw = PlatformNotifyMiddleware(
@@ -173,13 +167,10 @@ class TestHealthEventCanonicalization:
 
         emitted_types = [c[0][0].event_type for c in emitter.emit.call_args_list]
         assert "apcore.health.error_threshold_exceeded" in emitted_types
-        assert "error_threshold_exceeded" in emitted_types
+        assert "error_threshold_exceeded" not in emitted_types
 
-        legacy = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "error_threshold_exceeded"]
-        assert len(legacy) == 1
-        assert legacy[0][0][0].data.get("deprecated") is True
-
-    def test_latency_threshold_emits_canonical_and_legacy(self) -> None:
+    def test_latency_threshold_emits_canonical_only(self) -> None:
+        # v0.22.0 spec MUST: canonical-only, no legacy dual-emission (apcore#78).
         emitter = MagicMock(spec=EventEmitter)
         mc = MetricsCollector()
         _add_latency(mc, "mod.b", [0.1] * 95 + [6.0] * 5)
@@ -193,11 +184,7 @@ class TestHealthEventCanonicalization:
 
         emitted_types = [c[0][0].event_type for c in emitter.emit.call_args_list]
         assert "apcore.health.latency_threshold_exceeded" in emitted_types
-        assert "latency_threshold_exceeded" in emitted_types
-
-        legacy = [c for c in emitter.emit.call_args_list if c[0][0].event_type == "latency_threshold_exceeded"]
-        assert len(legacy) == 1
-        assert legacy[0][0][0].data.get("deprecated") is True
+        assert "latency_threshold_exceeded" not in emitted_types
 
 
 # ---------------------------------------------------------------------------
