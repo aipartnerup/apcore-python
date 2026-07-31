@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -440,3 +442,61 @@ class TestReturnResultStep:
         step = BuiltinReturnResult()
         result = await step.execute(ctx)
         assert result.action == "continue"
+
+
+class TestFormatWarningAtTheValidationBoundary:
+    """The SHOULD-level `format` warning must fire where module invocation runs.
+
+    Validation at the boundary goes through Pydantic, which has no
+    format-annotation concept, so without an explicit call the warning only ever
+    fired on the `validate_schema_dict` path the executor never reaches.
+    """
+
+    def _model(self, tmp_path: Path, name: str) -> Any:
+        from apcore.config import Config
+        from apcore.schema.loader import SchemaLoader
+
+        loader = SchemaLoader(Config({}), schemas_dir=tmp_path)
+        return loader.generate_model(
+            {
+                "type": "object",
+                "properties": {"contact": {"type": "string", "format": "email"}},
+                "required": ["contact"],
+            },
+            name,
+        )
+
+    async def test_input_validation_warns_without_failing(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        module = FakeModule(input_schema=self._model(tmp_path, "StepIn"))
+        ctx = _make_ctx(inputs={"contact": "not-an-email"}, module=module)
+        step = BuiltinInputValidation()
+        with caplog.at_level(logging.WARNING, logger="apcore.schema.hardening"):
+            result = await step.execute(ctx)
+        assert result.action == "continue"
+        assert ctx.validated_inputs == {"contact": "not-an-email"}
+        assert len(caplog.records) == 1
+        assert "email" in caplog.records[0].getMessage()
+
+    async def test_input_validation_silent_for_a_conformant_value(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        module = FakeModule(input_schema=self._model(tmp_path, "StepInOk"))
+        ctx = _make_ctx(inputs={"contact": "user@example.com"}, module=module)
+        step = BuiltinInputValidation()
+        with caplog.at_level(logging.WARNING, logger="apcore.schema.hardening"):
+            await step.execute(ctx)
+        assert caplog.records == []
+
+    async def test_output_validation_warns_without_failing(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        module = FakeModule(output_schema=self._model(tmp_path, "StepOut"))
+        ctx = _make_ctx(module=module)
+        ctx.output = {"contact": "not-an-email"}
+        step = BuiltinOutputValidation()
+        with caplog.at_level(logging.WARNING, logger="apcore.schema.hardening"):
+            result = await step.execute(ctx)
+        assert result.action == "continue"
+        assert len(caplog.records) == 1

@@ -41,6 +41,7 @@ from apcore.pipeline import (
     StepResult,
 )
 from apcore.policy import ExecutionPolicy, PolicyDecision
+from apcore.schema.hardening import warn_format_violations
 from apcore.config import Config
 from apcore.utils.call_chain import guard_call_chain
 
@@ -757,6 +758,8 @@ class BuiltinInputValidation(BaseStep):
                 errors=errors,
             ) from exc
 
+        warn_format_violations(ctx.inputs, input_schema)
+
         ctx.validated_inputs = ctx.inputs
 
         # Redact sensitive fields after successful validation
@@ -906,6 +909,8 @@ class BuiltinOutputValidation(BaseStep):
                 message=f"Output validation failed: {errors}",
                 errors=errors,
             ) from exc
+
+        warn_format_violations(ctx.output, output_schema)
 
         ctx.validated_output = ctx.output
 

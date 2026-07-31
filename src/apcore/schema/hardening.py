@@ -25,7 +25,7 @@ from jsonschema.exceptions import ValidationError as JsonschemaError
 
 from apcore.schema.types import SchemaValidationErrorDetail, SchemaValidationResult
 
-__all__ = ["content_hash", "validate_schema_dict"]
+__all__ = ["content_hash", "validate_schema_dict", "warn_format_violations"]
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,46 @@ def validate_schema_dict(data: Any, schema: dict[str, Any]) -> SchemaValidationR
     return SchemaValidationResult(valid=True, errors=[])
 
 
+def warn_format_violations(data: Any, model: Any) -> None:
+    """Emit the SHOULD-level format warnings for *data* against *model*'s source schema.
+
+    Module invocation validates through Pydantic, which has no format-annotation
+    concept, so without this call the warnings would only ever fire on the
+    `validate_schema_dict` path — which the executor does not reach. Models carry
+    their source JSON Schema as `__apcore_source_schema__` (set by `SchemaLoader`);
+    a model without one (a natively declared Pydantic model) is skipped.
+
+    Whether the schema declares any `format` at all is computed once and cached on
+    the model, so the common no-format schema costs a single attribute lookup.
+    """
+    source_schema = getattr(model, "__apcore_source_schema__", None)
+    if not isinstance(source_schema, dict):
+        return
+
+    declares_format = getattr(model, "__apcore_declares_format__", None)
+    if declares_format is None:
+        declares_format = _declares_format(source_schema)
+        try:
+            model.__apcore_declares_format__ = declares_format
+        except (AttributeError, TypeError):  # pragma: no cover - defensive
+            pass
+    if not declares_format:
+        return
+
+    _check_formats_and_warn(data, source_schema)
+
+
+def _declares_format(node: Any) -> bool:
+    """Return True when *node* carries a `format` keyword anywhere in its tree."""
+    if isinstance(node, dict):
+        if "format" in node:
+            return True
+        return any(_declares_format(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_declares_format(item) for item in node)
+    return False
+
+
 def _map_error_code(errors: list[JsonschemaError]) -> str:
     """Map jsonschema validation errors to apcore error codes."""
     for error in errors:
@@ -156,7 +196,7 @@ def _error_to_detail(error: JsonschemaError) -> SchemaValidationErrorDetail:
     )
 
 
-def _check_formats_and_warn(data: Any, schema: Any, _path: str = "") -> None:
+def _check_formats_and_warn(data: Any, schema: Any, _path: str = "", _seen: set[Any] | None = None) -> None:
     """Walk the data/schema tree and log warnings for format violations.
 
     Sync finding A-D-032: previously this function only iterated
@@ -165,11 +205,21 @@ def _check_formats_and_warn(data: Any, schema: Any, _path: str = "") -> None:
     in Python while apcore-typescript and apcore-rust did warn. The
     walker now recurses into nested ``properties`` AND ``items`` so
     cross-language conformance fixtures see the same warning set.
+
+    Each node is checked against its own ``format`` before the walk descends,
+    which also covers combinator nodes: ``anyOf`` / ``oneOf`` branches (only the
+    ones the data actually satisfies, so a sibling branch cannot report a format
+    the value never carried) and every ``allOf`` member. An annotation reached
+    through more than one branch is reported once.
     """
     if not isinstance(schema, dict):
         return
+    if _seen is None:
+        _seen = set()
 
-    # Object: walk each property + recurse on its sub-schema
+    _warn_if_format_violated(data, schema, _path, _seen)
+
+    # Object: recurse on each declared property's sub-schema.
     if isinstance(data, dict):
         properties = schema.get("properties", {})
         if isinstance(properties, dict):
@@ -180,34 +230,59 @@ def _check_formats_and_warn(data: Any, schema: Any, _path: str = "") -> None:
                 if value is None:
                     continue
                 child_path = f"{_path}/{prop_name}" if _path else f"/{prop_name}"
-                fmt = prop_schema.get("format")
-                if fmt and isinstance(value, str):
-                    checker = _FORMAT_CHECKERS.get(fmt)
-                    if checker is not None and not checker(value):
-                        logger.warning(
-                            "Format violation (non-fatal): field %r declared format=%r but value %r is not conformant",
-                            child_path,
-                            fmt,
-                            value,
-                        )
-                # Recurse into nested objects and arrays.
-                _check_formats_and_warn(value, prop_schema, child_path)
+                _check_formats_and_warn(value, prop_schema, child_path, _seen)
+
+        additional = schema.get("additionalProperties")
+        if isinstance(additional, dict):
+            declared = properties if isinstance(properties, dict) else {}
+            for key, value in data.items():
+                if key in declared or value is None:
+                    continue
+                child_path = f"{_path}/{key}" if _path else f"/{key}"
+                _check_formats_and_warn(value, additional, child_path, _seen)
 
     # Array: walk each element against the schema's `items` declaration.
     if isinstance(data, list):
         items_schema = schema.get("items")
         if isinstance(items_schema, dict):
             for idx, value in enumerate(data):
-                child_path = f"{_path}[{idx}]"
-                if isinstance(value, str):
-                    fmt = items_schema.get("format")
-                    if fmt:
-                        checker = _FORMAT_CHECKERS.get(fmt)
-                        if checker is not None and not checker(value):
-                            logger.warning(
-                                "Format violation (non-fatal): field %r declared format=%r but value %r is not conformant",
-                                child_path,
-                                fmt,
-                                value,
-                            )
-                _check_formats_and_warn(value, items_schema, child_path)
+                _check_formats_and_warn(value, items_schema, f"{_path}[{idx}]", _seen)
+
+    # Combinators: a union branch annotates the data only when the data satisfies it.
+    for keyword in ("anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if isinstance(branches, list):
+            for branch in branches:
+                if isinstance(branch, dict) and Draft202012Validator(branch).is_valid(data):
+                    _check_formats_and_warn(data, branch, _path, _seen)
+
+    members = schema.get("allOf")
+    if isinstance(members, list):
+        for member in members:
+            if isinstance(member, dict):
+                _check_formats_and_warn(data, member, _path, _seen)
+
+
+def _warn_if_format_violated(data: Any, schema: dict[str, Any], path: str, seen: set[Any]) -> None:
+    """Log the SHOULD-level warning when *data* does not satisfy this node's ``format``.
+
+    An unrecognised format is skipped: JSON Schema 2020-12 §7.2.1 puts ``format`` in
+    the format-annotation vocabulary, where a format the implementation does not
+    recognise is collected as an annotation, never treated as a failure.
+    """
+    fmt = schema.get("format")
+    if not fmt or not isinstance(data, str):
+        return
+    checker = _FORMAT_CHECKERS.get(fmt)
+    if checker is None or checker(data):
+        return
+    key = (path, fmt, data)
+    if key in seen:
+        return
+    seen.add(key)
+    logger.warning(
+        "Format violation (non-fatal): field %r declared format=%r but value %r is not conformant",
+        path,
+        fmt,
+        data,
+    )

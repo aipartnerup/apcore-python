@@ -565,17 +565,19 @@ class TestGenerateModel:
                 "TestConflict",
             )
 
-    def test_not_raises(self, tmp_path: Path) -> None:
+    def test_not_is_enforced(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
-        with pytest.raises(SchemaParseError, match="not"):
-            loader.generate_model(
-                {
-                    "type": "object",
-                    "properties": {"x": {"not": {"type": "string"}}},
-                    "required": ["x"],
-                },
-                "TestNot",
-            )
+        Model = loader.generate_model(
+            {
+                "type": "object",
+                "properties": {"x": {"not": {"type": "string"}}},
+                "required": ["x"],
+            },
+            "TestNot",
+        )
+        assert Model(x=42).x == 42
+        with pytest.raises(Exception):
+            Model(x="a string is excluded by not")
 
     def test_if_then_else_raises(self, tmp_path: Path) -> None:
         loader = self._make_loader(tmp_path)
@@ -803,3 +805,165 @@ class TestClearCache:
         sd2 = loader.load("simple")
         assert sd2.description == "Updated"
         assert sd1 is not sd2
+
+
+class TestTypeAndCombinatorIntersection:
+    """`type` and its combinator siblings are independent assertions (JSON Schema 2020-12 §10.2).
+
+    Both must hold: neither the type nor the sibling may be discarded in favour of
+    the other. Matches apcore-typescript and apcore-rust.
+    """
+
+    def _model(self, tmp_path: Path, prop_schema: dict[str, Any], name: str) -> type[BaseModel]:
+        return make_loader(tmp_path).generate_model(
+            {"type": "object", "properties": {"v": prop_schema}, "required": ["v"]},
+            name,
+        )
+
+    def test_type_array_converts_to_a_union(self, tmp_path: Path) -> None:
+        Model = self._model(tmp_path, {"type": ["string", "boolean"]}, "UnionMembers")
+        assert Model(v="s").v == "s"
+        assert Model(v=True).v is True
+        for rejected in (42, None):
+            with pytest.raises(Exception):
+                Model(v=rejected)
+
+    def test_type_array_honours_a_non_leading_member(self, tmp_path: Path) -> None:
+        """Only the first non-null member used to survive, so the rest were unenforced."""
+        Model = self._model(tmp_path, {"type": ["boolean", "string"]}, "UnionTrailing")
+        assert Model(v="auto").v == "auto"
+        assert Model(v=True).v is True
+
+    def test_type_array_with_object_member_does_not_widen_to_any(self, tmp_path: Path) -> None:
+        """An object/array member used to fall through to Any, accepting every value."""
+        Model = self._model(
+            tmp_path,
+            {"type": ["object", "null"], "properties": {"a": {"type": "string"}}},
+            "UnionObject",
+        )
+        assert Model(v=None).v is None
+        for rejected in (42, "str"):
+            with pytest.raises(Exception):
+                Model(v=rejected)
+
+    def test_type_array_keeps_option_keywords_per_branch(self, tmp_path: Path) -> None:
+        """A numeric bound must not be applied to the string branch, nor vice versa."""
+        Model = self._model(
+            tmp_path,
+            {"type": ["string", "integer"], "minLength": 3, "minimum": 10},
+            "UnionConstraints",
+        )
+        assert Model(v="abc").v == "abc"
+        assert Model(v=42).v == 42
+        for rejected in ("ab", 5):
+            with pytest.raises(Exception):
+                Model(v=rejected)
+
+    def test_enum_alongside_a_type_array_is_enforced(self, tmp_path: Path) -> None:
+        """What apexe emits for `ls --color[=WHEN]`; the enum used to be discarded."""
+        Model = self._model(
+            tmp_path,
+            {"type": ["string", "boolean"], "enum": ["always", "auto", "never"]},
+            "UnionEnum",
+        )
+        assert Model(v="auto").v == "auto"
+        for rejected in ("bogus-not-in-enum", True):
+            with pytest.raises(Exception):
+                Model(v=rejected)
+
+    def test_enum_alongside_a_scalar_type_is_enforced(self, tmp_path: Path) -> None:
+        Model = self._model(tmp_path, {"type": "string", "enum": ["a", "b"]}, "ScalarEnum")
+        assert Model(v="a").v == "a"
+        for rejected in ("zzz", 5):
+            with pytest.raises(Exception):
+                Model(v=rejected)
+
+    def test_type_is_not_discarded_by_a_combinator_sibling(self, tmp_path: Path) -> None:
+        """The mirror defect: the combinator used to win and `type` was dropped."""
+        Model = self._model(tmp_path, {"type": "string", "anyOf": [{"minLength": 3}]}, "TypeWithAnyOf")
+        assert Model(v="abcd").v == "abcd"
+        for rejected in ("ab", 12345, {"a": 1}):
+            with pytest.raises(Exception):
+                Model(v=rejected)
+
+    def test_const_alongside_a_type_is_enforced(self, tmp_path: Path) -> None:
+        Model = self._model(tmp_path, {"type": "string", "const": "fixed"}, "TypeWithConst")
+        assert Model(v="fixed").v == "fixed"
+        with pytest.raises(Exception):
+            Model(v="other")
+
+    def test_constraints_survive_on_a_required_field(self, tmp_path: Path) -> None:
+        """`minLength` was kept for optional fields but dropped for required ones."""
+        schema = {"type": "string", "minLength": 5, "enum": ["ab", "abcdef"]}
+        Model = self._model(tmp_path, schema, "RequiredConstraints")
+        assert Model(v="abcdef").v == "abcdef"
+        with pytest.raises(Exception):
+            Model(v="ab")
+
+    def test_constraints_agree_between_required_and_optional(self, tmp_path: Path) -> None:
+        schema = {"type": "string", "minLength": 5, "enum": ["ab", "abcdef"]}
+        Optional = make_loader(tmp_path).generate_model(
+            {"type": "object", "properties": {"v": schema}}, "OptionalConstraints"
+        )
+        with pytest.raises(Exception):
+            Optional(v="ab")
+
+
+class TestAdditionalPropertiesObjectForm:
+    """`additionalProperties` as a sub-schema constrains undeclared keys."""
+
+    def test_object_form_constrains_undeclared_keys(self, tmp_path: Path) -> None:
+        Model = make_loader(tmp_path).generate_model(
+            {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "additionalProperties": {"type": "integer"},
+                "required": ["a"],
+            },
+            "AdditionalObjectForm",
+        )
+        assert Model(a="x", zzz=7).zzz == 7
+        with pytest.raises(Exception):
+            Model(a="x", zzz="not-an-integer")
+
+    def test_false_still_forbids_undeclared_keys(self, tmp_path: Path) -> None:
+        Model = make_loader(tmp_path).generate_model(
+            {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "additionalProperties": False,
+                "required": ["a"],
+            },
+            "AdditionalFalse",
+        )
+        assert Model(a="x").a == "x"
+        with pytest.raises(Exception):
+            Model(a="x", zzz=1)
+
+
+class TestAnnotationsArePreserved:
+    """`description` / `title` reach the generated field instead of being dropped."""
+
+    def test_description_and_title_on_a_scalar_type(self, tmp_path: Path) -> None:
+        Model = make_loader(tmp_path).generate_model(
+            {
+                "type": "object",
+                "properties": {"v": {"type": "string", "description": "DESC", "title": "TITLE"}},
+                "required": ["v"],
+            },
+            "ScalarAnnotations",
+        )
+        assert Model.model_fields["v"].description == "DESC"
+        assert Model.model_fields["v"].title == "TITLE"
+
+    def test_description_and_title_on_a_type_array(self, tmp_path: Path) -> None:
+        Model = make_loader(tmp_path).generate_model(
+            {
+                "type": "object",
+                "properties": {"v": {"type": ["string", "boolean"], "description": "DESC", "title": "TITLE"}},
+                "required": ["v"],
+            },
+            "UnionAnnotations",
+        )
+        assert Model.model_fields["v"].description == "DESC"
+        assert Model.model_fields["v"].title == "TITLE"
