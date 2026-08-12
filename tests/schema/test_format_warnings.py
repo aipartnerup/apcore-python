@@ -119,3 +119,74 @@ class TestWarnFormatViolationsOnAModel:
         with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
             warn_format_violations({"contact": "not-an-email"}, Native)
         assert caplog.records == []
+
+
+class TestFormatDeclarationScan:
+    """The `format` short-circuit only counts declarations in schema positions."""
+
+    def _model(self, tmp_path: Path, schema: dict[str, Any], name: str) -> Any:
+        return SchemaLoader(Config({}), schemas_dir=tmp_path).generate_model(schema, name)
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": "object", "properties": {"format": {"type": "string"}}},
+            {"type": "object", "properties": {"a": {"type": "string", "default": {"format": "x"}}}},
+            {"type": "object", "properties": {"a": {"type": "string", "examples": [{"format": "x"}]}}},
+        ],
+        ids=["property-named-format", "format-inside-default", "format-inside-examples"],
+    )
+    def test_a_format_key_in_a_data_position_is_not_a_declaration(self, tmp_path: Path, schema: Any) -> None:
+        model = self._model(tmp_path, schema, f"DataFormat{abs(hash(str(schema)))}")
+        warn_format_violations({}, model)
+        assert model.__apcore_declares_format__ is False
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": "object", "properties": {"a": {"type": "string", "format": "email"}}},
+            {"type": "object", "properties": {"a": {"anyOf": [{"format": "email"}]}}},
+            {"type": "object", "additionalProperties": {"format": "email"}},
+            {"type": "object", "properties": {"a": {"type": "array", "items": {"format": "email"}}}},
+        ],
+        ids=["property", "anyOf-branch", "additionalProperties", "items"],
+    )
+    def test_a_real_declaration_is_still_found(self, tmp_path: Path, schema: Any) -> None:
+        model = self._model(tmp_path, schema, f"RealFormat{abs(hash(str(schema)))}")
+        warn_format_violations({}, model)
+        assert model.__apcore_declares_format__ is True
+
+    def test_a_self_referencing_schema_does_not_recurse_forever(self, tmp_path: Path) -> None:
+        """`generate_model` keeps the caller's dict by reference, cycles and all."""
+        cyclic: dict[str, Any] = {"type": "object", "properties": {}}
+        cyclic["properties"]["self"] = cyclic
+        model = self._model(tmp_path, {"type": "object", "properties": {"a": {"type": "string"}}}, "Cyclic")
+        model.__apcore_source_schema__ = cyclic
+        warn_format_violations({"a": "x"}, model)  # must return, not raise RecursionError
+
+    def test_a_subclass_does_not_inherit_a_stale_cache(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        parent = self._model(tmp_path, {"type": "object", "properties": {"c": {"type": "string"}}}, "CacheParent")
+        warn_format_violations({"c": "x"}, parent)
+        assert parent.__apcore_declares_format__ is False
+
+        child = type("CacheChild", (parent,), {})
+        child.__apcore_source_schema__ = {
+            "type": "object",
+            "properties": {"c": {"type": "string", "format": "email"}},
+        }
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            warn_format_violations({"c": "not-an-email"}, child)
+        assert len(caplog.records) == 1
+
+
+class TestFormatWarningOnModelOutput:
+    """A module may return a Pydantic model instance rather than a dict."""
+
+    def test_a_model_instance_is_walked(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        loader = SchemaLoader(Config({}), schemas_dir=tmp_path)
+        schema = {"type": "object", "properties": {"contact": {"type": "string", "format": "email"}}}
+        model = loader.generate_model({**schema, "required": ["contact"]}, "ModelOut")
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            warn_format_violations(model(contact="not-an-email"), model)
+        assert len(caplog.records) == 1
+        assert "email" in caplog.records[0].getMessage()

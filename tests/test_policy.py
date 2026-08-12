@@ -578,3 +578,58 @@ class TestValidateWithPolicy:
         executor = Executor(registry=registry)
         assert executor.validate("admin.reset", {}).requires_approval is True
         assert executor.validate("orders.list_orders", {}).requires_approval is False
+
+
+class TestGovernanceFlagsAreNotCoerced:
+    """`gate_destructive` / `strict` must be real booleans in a governance file.
+
+    ``from_dict`` used to run the raw value through ``bool()``, so
+    ``gate_destructive: "false"`` became **True** (a non-empty string is truthy)
+    and ``gate_destructive: []`` became False — while apcore-rust's serde-typed
+    ``bool`` field and apcore-typescript's ``_requireBoolean`` both reject either
+    outright. The same governance document therefore produced a different
+    effective policy per runtime.
+
+    ``gate_destructive`` is the switch that turns a ``destructive`` annotation
+    into an approval gate (PROTOCOL_SPEC §7.9.2), so a silent coercion is a
+    governance decision made by accident. §7.9.4 already requires ``from_dict``
+    to fail loud on unknown keys; this is the same discipline applied to values.
+    """
+
+    @pytest.mark.parametrize("key", ["gate_destructive", "strict"])
+    @pytest.mark.parametrize(
+        "value",
+        ["false", "true", "", [], {}, 0, 1, 1.0, None.__class__],
+        ids=["str_false", "str_true", "empty_str", "list", "dict", "int_0", "int_1", "float", "type"],
+    )
+    def test_non_boolean_flag_is_rejected(self, key: str, value: Any) -> None:
+        with pytest.raises(ValueError, match=key):
+            ExecutionPolicy.from_dict({key: value})
+
+    def test_the_truthy_string_trap_is_closed(self) -> None:
+        # The headline case: `"false"` silently enabled the gate.
+        with pytest.raises(ValueError, match="gate_destructive"):
+            ExecutionPolicy.from_dict({"gate_destructive": "false"})
+
+    def test_the_falsy_container_trap_is_closed(self) -> None:
+        with pytest.raises(ValueError, match="gate_destructive"):
+            ExecutionPolicy.from_dict({"gate_destructive": []})
+
+    def test_error_says_a_boolean_was_required(self) -> None:
+        with pytest.raises(ValueError) as exc_info:
+            ExecutionPolicy.from_dict({"strict": "yes"})
+        message = str(exc_info.value)
+        assert "boolean" in message
+        assert "str" in message
+
+    @pytest.mark.parametrize("key", ["gate_destructive", "strict"])
+    def test_real_booleans_still_pass(self, key: str) -> None:
+        assert getattr(ExecutionPolicy.from_dict({key: True}), key) is True
+        assert getattr(ExecutionPolicy.from_dict({key: False}), key) is False
+
+    @pytest.mark.parametrize("key", ["gate_destructive", "strict"])
+    def test_absent_and_null_mean_the_documented_default(self, key: str) -> None:
+        # Parity with apcore-typescript `_requireBoolean`: undefined/null are
+        # "unset" and take the documented default of False, not an error.
+        assert getattr(ExecutionPolicy.from_dict({}), key) is False
+        assert getattr(ExecutionPolicy.from_dict({key: None}), key) is False

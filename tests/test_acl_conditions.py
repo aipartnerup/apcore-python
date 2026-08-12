@@ -480,3 +480,70 @@ class TestAsyncCheck:
             acl.async_check("caller", "target", context=None),
         )
         assert result is False
+
+
+class TestHandlerErrorDiagnostic:
+    """Every fail-closed condition path must say *why* in the audit entry.
+
+    ``AuditEntry.handler_error`` was set only when a handler raised. An unknown
+    condition key and an awaitable that suspends in the sync path both denied
+    silently, so a typo'd key (``role:`` for ``roles:``) produced an identical
+    DENY in all three SDKs but a null diagnostic in Python alone —
+    apcore-typescript records a message on both paths (``acl.ts``
+    ``_evaluateConditions`` / ``_evaluateConditionsAsync``).
+    """
+
+    @staticmethod
+    def _acl_with(conditions: dict[str, Any]) -> tuple[ACL, list[Any]]:
+        captured: list[Any] = []
+        acl = ACL(
+            rules=[
+                ACLRule(
+                    callers=["*"],
+                    targets=["*"],
+                    effect="allow",
+                    description="conditional allow",
+                    conditions=conditions,
+                )
+            ],
+            default_effect="deny",
+            audit_logger=captured.append,
+        )
+        return acl, captured
+
+    def test_unknown_condition_key_records_a_diagnostic(self) -> None:
+        acl, captured = self._acl_with({"role": ["admin"]})  # typo for "roles"
+        assert acl.check("caller", "target", Context.create()) is False
+        assert len(captured) == 1
+        assert captured[0].handler_error is not None
+        assert "role" in captured[0].handler_error
+
+    def test_unknown_condition_key_records_a_diagnostic_on_the_async_path(self) -> None:
+        acl, captured = self._acl_with({"role": ["admin"]})
+        assert asyncio.run(acl.async_check("caller", "target", Context.create())) is False
+        assert len(captured) == 1
+        assert captured[0].handler_error is not None
+        assert "role" in captured[0].handler_error
+
+    def test_suspending_async_handler_in_sync_context_records_a_diagnostic(self) -> None:
+        class _SuspendingHandler:
+            async def evaluate(self, value: Any, context: Context) -> bool:
+                await asyncio.sleep(0)
+                return True
+
+        key = "_test_suspending_condition"
+        ACL.register_condition(key, _SuspendingHandler())  # type: ignore[arg-type]
+        try:
+            acl, captured = self._acl_with({key: True})
+            assert acl.check("caller", "target", Context.create()) is False
+            assert len(captured) == 1
+            assert captured[0].handler_error is not None
+            assert key in captured[0].handler_error
+        finally:
+            ACL._condition_handlers.pop(key, None)
+
+    def test_a_satisfied_condition_leaves_the_diagnostic_null(self) -> None:
+        acl, captured = self._acl_with({"max_call_depth": 10})
+        assert acl.check("caller", "target", Context.create()) is True
+        assert len(captured) == 1
+        assert captured[0].handler_error is None

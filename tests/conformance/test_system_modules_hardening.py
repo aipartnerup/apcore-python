@@ -1,7 +1,12 @@
 """Conformance tests for System Modules Hardening (Issue #45).
 
-Covers all 10 test cases defined in the canonical conformance fixture at:
-  apcore/conformance/fixtures/system_modules_hardening.json
+Drives the canonical ``apcore/conformance/fixtures/system_modules_hardening.json``.
+Each case needs its own registry / config / filesystem wiring, so the assertions
+are hand-written rather than generated from the fixture; ``TestFixtureCoverage``
+at the bottom holds the two in step, so a case added on the spec side fails here
+instead of going unnoticed.
+
+Covers all 10 test cases defined in the canonical conformance fixture:
 
   1.  overrides_persisted_on_update
   2.  overrides_loaded_on_startup
@@ -19,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -41,6 +47,7 @@ from apcore.sys_modules.control import (
 )
 from apcore.sys_modules.registration import register_sys_modules
 
+from conformance.canonical_fixtures import case_ids
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -753,3 +760,52 @@ class TestRustRegisterReturnsResult:
     def test_rust_returns_result_type(self) -> None:
         """Rust register_sys_modules returns Result<(), SysModuleError>."""
         pass
+
+
+# ---------------------------------------------------------------------------
+# Fixture coverage guard
+# ---------------------------------------------------------------------------
+
+
+class TestFixtureCoverage:
+    """Every case in the canonical fixture has a driver class in this file.
+
+    The assertions above are hand-written rather than generated from the fixture
+    (each case needs its own registry / config / filesystem wiring). That is
+    fine, but it used to mean the fixture was named only in the module docstring
+    while a vendored copy sat unread in ``tests/conformance/fixtures/`` — so a
+    case added on the spec side left no trace here at all. This guard closes
+    that gap: a new canonical case fails until someone writes the class for it.
+    """
+
+    FIXTURE = "system_modules_hardening.json"
+
+    #: canonical case id → the class in this module that asserts it.
+    COVERED: dict[str, str] = {
+        "overrides_persisted_on_update": "TestOverridesPersistOnUpdate",
+        "overrides_loaded_on_startup": "TestOverridesLoadedOnStartup",
+        "audit_entry_records_actor": "TestAuditEntryRecordsActor",
+        "audit_entry_records_change": "TestAuditEntryRecordsChange",
+        "prometheus_usage_exports_calls_total": "TestPrometheusUsageExportsCallsTotal",
+        "reload_with_path_filter": "TestReloadWithPathFilter",
+        "reload_module_id_and_filter_conflict": "TestReloadModuleIdAndFilterConflict",
+        "startup_fail_on_error_true_raises": "TestStartupFailOnErrorTrueRaises",
+        "startup_fail_on_error_false_continues": "TestStartupFailOnErrorFalseContinues",
+        # language=rust — asserted here only as a documented cross-language note.
+        "rust_register_returns_result": "TestRustRegisterReturnsResult",
+    }
+
+    def test_every_canonical_case_is_claimed(self) -> None:
+        canonical = set(case_ids(self.FIXTURE))
+        claimed = set(self.COVERED)
+        assert canonical - claimed == set(), (
+            f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
+        )
+        assert claimed - canonical == set(), (
+            f"this file claims case(s) {self.FIXTURE} no longer defines"
+        )
+
+    def test_every_claimed_class_exists(self) -> None:
+        module = sys.modules[__name__]
+        missing = [cls for cls in self.COVERED.values() if not hasattr(module, cls)]
+        assert missing == [], f"claimed driver class(es) not defined: {missing}"

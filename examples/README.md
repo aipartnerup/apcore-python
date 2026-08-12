@@ -28,7 +28,7 @@ python examples/simple_client.py
 
 ### Module reference files
 
-The files under [`modules/`](modules/) are reusable module definitions imported by the examples above. They are not meant to be run standalone.
+The files under [`modules/`](modules/) are reusable module definitions kept as reference patterns. No example script imports them; their only automated consumer is [`tests/examples/test_example_modules.py`](../tests/examples/test_example_modules.py), which loads each one and exercises its `execute()`. They are not meant to be run standalone.
 
 | File | Pattern shown |
 |---|---|

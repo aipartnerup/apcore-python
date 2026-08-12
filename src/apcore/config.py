@@ -37,88 +37,91 @@ _logger = logging.getLogger(__name__)
 _ENV_PREFIX = "APCORE_"
 
 #: Required configuration fields (dot-paths).
+#:
+#: PROTOCOL_SPEC §9.1: a key is required *only* when it has no canonical
+#: default — that is, only when omitting it leaves a value the framework cannot
+#: supply. Exactly two qualify: ``version`` and ``project.name``. Every other
+#: key in §9.1 carries a default in ``schemas/defaults.schema.json`` (mirrored
+#: by ``_DEFAULTS`` below), so requiring it would reject a document the
+#: framework resolves perfectly well. That is why ``extensions.root``,
+#: ``schema.root``, ``acl.root`` and ``acl.default_effect`` are no longer listed
+#: here, matching ``schemas/apcore-config.schema.json``'s
+#: ``required: ["version", "project"]``.
+#:
+#: These are checked against the DECLARED document (§9.3 step 1), never the
+#: merged one — see :meth:`Config.validate`.
 _REQUIRED_FIELDS: tuple[str, ...] = (
     "version",
-    "extensions.root",
-    "schema.root",
-    "acl.root",
-    "acl.default_effect",
     "project.name",
 )
 
 #: Field constraints: field → (validator_fn, error_message).
+#:
+#: Every numeric check carries ``not isinstance(v, bool)``. ``bool`` subclasses
+#: ``int`` in Python, so ``isinstance(True, int)`` is True and a plain
+#: ``isinstance(v, int) and v >= 1`` read ``max_call_depth: true`` as a depth
+#: limit of 1 rather than rejecting it. ``docs/features/config-bus.md`` states
+#: "Booleans are rejected for all numeric fields", and apcore-typescript and
+#: apcore-rust — whose native booleans are not integers — reject them for free.
 _CONSTRAINTS: dict[str, tuple[Any, str]] = {
     "acl.default_effect": (
         lambda v: v in ("allow", "deny"),
         "must be 'allow' or 'deny'",
     ),
     "observability.tracing.sampling_rate": (
-        lambda v: isinstance(v, (int, float)) and 0.0 <= v <= 1.0,
-        "must be a number in [0.0, 1.0]",
-    ),
-    "extensions.max_depth": (
-        lambda v: isinstance(v, int) and 1 <= v <= 16,
-        "must be an integer in [1, 16]",
-    ),
-    "executor.default_timeout": (
-        lambda v: isinstance(v, int) and v >= 0,
-        "must be a non-negative integer (milliseconds)",
-    ),
-    "executor.global_timeout": (
-        lambda v: isinstance(v, int) and v >= 0,
-        "must be a non-negative integer (milliseconds)",
-    ),
-    "executor.max_call_depth": (
-        lambda v: isinstance(v, int) and v >= 1,
-        "must be a positive integer",
-    ),
-    "executor.max_module_repeat": (
-        lambda v: isinstance(v, int) and v >= 1,
-        "must be a positive integer",
-    ),
-    "sys_modules.error_history.max_entries_per_module": (
-        lambda v: isinstance(v, int) and v >= 1,
-        "must be a positive integer",
-    ),
-    "sys_modules.error_history.max_total_entries": (
-        lambda v: isinstance(v, int) and v >= 1,
-        "must be a positive integer",
-    ),
-    "sys_modules.events.thresholds.error_rate": (
-        lambda v: isinstance(v, (int, float)) and 0.0 <= v <= 1.0,
-        "must be a number in [0.0, 1.0]",
-    ),
-    "sys_modules.events.thresholds.latency_p99_ms": (
-        lambda v: isinstance(v, (int, float)) and v > 0,
-        "must be a positive number",
-    ),
-    "middleware.circuit_breaker.open_threshold": (
         lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= v <= 1.0,
         "must be a number in [0.0, 1.0]",
     ),
-    "middleware.circuit_breaker.recovery_window_ms": (
+    "extensions.max_depth": (
+        lambda v: isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 16,
+        "must be an integer in [1, 16]",
+    ),
+    "executor.default_timeout": (
         lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
         "must be a non-negative integer (milliseconds)",
     ),
-    "middleware.circuit_breaker.window_size": (
+    "executor.global_timeout": (
+        lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
+        "must be a non-negative integer (milliseconds)",
+    ),
+    "executor.max_call_depth": (
         lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
         "must be a positive integer",
     ),
-    "middleware.circuit_breaker.min_samples": (
+    "executor.max_module_repeat": (
         lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
         "must be a positive integer",
+    ),
+    "sys_modules.error_history.max_entries_per_module": (
+        lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
+        "must be a positive integer",
+    ),
+    "sys_modules.error_history.max_total_entries": (
+        lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
+        "must be a positive integer",
+    ),
+    "sys_modules.events.thresholds.error_rate": (
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= v <= 1.0,
+        "must be a number in [0.0, 1.0]",
+    ),
+    "sys_modules.events.thresholds.latency_p99_ms": (
+        lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0,
+        "must be a positive number",
     ),
 }
 
 #: Default configuration values.
 #:
-#: NOTE: ``version`` is the frozen baseline for legacy-mode configs (those
-#: that omit an explicit ``version`` field). It identifies the spec version
-#: whose semantics legacy mode parses against, NOT the current SDK version.
-#: Do not bump this with each spec MINOR — only when legacy-mode parsing
-#: semantics actually change.
+#: This table mirrors ``schemas/defaults.schema.json``, the canonical source of
+#: truth shared by every SDK. It therefore declares no ``version`` and no
+#: ``project`` subtree: those two have no canonical default (PROTOCOL_SPEC
+#: §9.1), which is precisely what makes them the only required keys. Inventing
+#: defaults for them here — a frozen ``version: "0.16.0"`` and
+#: ``project.name: "apcore"`` — silently satisfied ``_REQUIRED_FIELDS`` for
+#: every document, turning the required-field check into dead code.
+#: Consumers that want a fallback for an undeclared ``project.*`` value pass it
+#: explicitly at the call site (``config.get("project.source_root", "")``).
 _DEFAULTS: dict[str, Any] = {
-    "version": "0.16.0",
     "extensions": {
         "root": "./extensions",
         "auto_discover": True,
@@ -149,11 +152,6 @@ _DEFAULTS: dict[str, Any] = {
             "enabled": False,
         },
     },
-    "project": {
-        "name": "apcore",
-        "source_repo": None,
-        "source_root": "",
-    },
     "sys_modules": {
         "enabled": False,
         "error_history": {
@@ -167,14 +165,6 @@ _DEFAULTS: dict[str, Any] = {
                 "latency_p99_ms": 5000.0,
             },
             "subscribers": [],
-        },
-    },
-    "middleware": {
-        "circuit_breaker": {
-            "open_threshold": 0.5,
-            "recovery_window_ms": 30000,
-            "window_size": 20,
-            "min_samples": 5,
         },
     },
     "stream": {
@@ -582,11 +572,20 @@ class Config:
             env_style: Default env var conversion strategy ('auto', 'nested', 'flat').
         """
         self._data: dict[str, Any] = data or {}
+        # The document as authored, before ``_DEFAULTS`` was merged in
+        # (PROTOCOL_SPEC §9.3 step 1). For an in-memory ``Config(data=...)``
+        # the caller-supplied dict *is* the declared document; the loaders
+        # overwrite this with the parsed file data.
+        self._declared: dict[str, Any] = copy.deepcopy(self._data)
         self._yaml_path: str | None = None
         self._lock = threading.Lock()
         self._mode: str = "legacy"
         self._mounts: dict[str, dict[str, Any]] = {}
         self._env_style: str = env_style
+        # Whether the originating ``load()`` validated; ``reload()`` carries the
+        # same choice forward (PROTOCOL_SPEC §9.11 step 5). An in-memory Config
+        # was never loaded, so reload() on it raises before this is consulted.
+        self._validate_on_load: bool = True
 
     # ------------------------------------------------------------------
     # Default value resolution (single source of truth)
@@ -792,14 +791,29 @@ class Config:
             config = cls._load_legacy_mode(file_data, validate=validate)
 
         config._yaml_path = str(path)
+        # PROTOCOL_SPEC §9.11 step 5: reload() re-validates only if the
+        # originating load() did. Silently re-imposing validation on a config
+        # the caller deliberately loaded with validate=False is a behaviour
+        # change disguised as a refresh.
+        config._validate_on_load = validate
         return config
 
     @classmethod
     def _load_legacy_mode(cls, file_data: dict[str, Any], *, validate: bool) -> Config:
         """Load in legacy (flat) mode: defaults < file < env."""
+        # Snapshot the declared document — everything supplied by *someone*
+        # (the file, then env overrides), excluding only the default table.
+        # PROTOCOL_SPEC §9.1 "What 'declared' means": an env override counts as
+        # declaration, so APCORE_PROJECT_NAME satisfies ``project.name`` for a
+        # file that omits it — configuring entirely through the environment is a
+        # first-class deployment shape. §9.3 step 1 evaluates requiredness
+        # against this, not against ``merged``, where every key is present by
+        # construction.
+        declared = _apply_env_overrides(copy.deepcopy(file_data))
         merged = _deep_merge_dicts(_DEFAULTS, file_data)
         merged = _apply_env_overrides(merged)
         config = cls(data=merged)
+        config._declared = declared
         config._mode = "legacy"
         if validate:
             config.validate()
@@ -823,6 +837,13 @@ class Config:
         merged = _apply_namespace_env_overrides(merged, registrations)
 
         config = cls(data=merged)
+        # Same rule as legacy mode (§9.1): file + env overrides, never defaults.
+        # The namespace-defaults merge is skipped for exactly that reason.
+        declared_ns = copy.deepcopy(file_data)
+        declared_apcore = _apply_env_overrides(declared_ns.get("apcore", {}))
+        if declared_apcore:
+            declared_ns["apcore"] = declared_apcore
+        config._declared = _apply_namespace_env_overrides(declared_ns, registrations)
         config._mode = "namespace"
         if validate:
             config._validate_namespace_mode()
@@ -832,7 +853,11 @@ class Config:
     def from_defaults(cls) -> Config:
         """Create a Config from default values with env overrides applied."""
         data = _apply_env_overrides(dict(_DEFAULTS))
-        return cls(data=data)
+        config = cls(data=data)
+        # Nothing was declared: every value here comes from the default table
+        # or the environment.
+        config._declared = {}
+        return config
 
     # ------------------------------------------------------------------
     # Access
@@ -946,6 +971,25 @@ class Config:
         """Return a deep copy of the raw config data."""
         with self._lock:
             return copy.deepcopy(self._data)
+
+    @property
+    def declared(self) -> dict[str, Any]:
+        """Return a deep copy of the document as authored, before defaults merged.
+
+        PROTOCOL_SPEC §9.3 step 1 evaluates required fields against the
+        *declared* document: a key that carries a canonical default is never
+        required, and checking any key after the default table has been merged
+        is a no-op. :meth:`validate` reads this, not :attr:`data`.
+
+        Empty for :meth:`from_defaults`; equal to the caller's dict for an
+        in-memory ``Config(data=...)``; the parsed YAML for :meth:`load`.
+        Environment overrides are *not* reflected here — they are applied on
+        top of the merged document, not on the authored one.
+
+        The apcore-rust SDK exposes the same view as ``Config::get_declared()``.
+        """
+        with self._lock:
+            return copy.deepcopy(self._declared)
 
     @property
     def source_path(self) -> str | None:
@@ -1079,13 +1123,17 @@ class Config:
         Collects all errors before raising.
 
         Raises:
-            ConfigError: With all validation errors in the message.
+            ConfigError: With all validation errors in the message
+                (``code="CONFIG_INVALID"``).
         """
         errors: list[str] = []
 
-        # 1. Required field check
+        # 1. Required field check — against the DECLARED document (§9.3 step 1).
+        #    Reading ``self._data`` here would be a no-op for anything with a
+        #    default, because ``_load_legacy_mode`` has already merged the
+        #    default table into it.
         for field in _REQUIRED_FIELDS:
-            value = _get_nested(self._data, field)
+            value = _get_nested(self._declared, field)
             if value is None:
                 errors.append(f"Missing required field: '{field}'")
 
@@ -1187,10 +1235,11 @@ class Config:
                 raise ConfigError(message="Cannot reload: Config was not loaded from a YAML file")
             stored_mounts = copy.deepcopy(self._mounts)
 
-        reloaded = Config.load(yaml_path)
+        reloaded = Config.load(yaml_path, validate=self._validate_on_load)
 
         with self._lock:
             self._data = reloaded._data
+            self._declared = reloaded._declared
             self._mode = reloaded._mode
             # Re-apply mounts
             for namespace, mount_data in stored_mounts.items():

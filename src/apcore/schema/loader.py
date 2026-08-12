@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Union, cast
 
 import yaml
 from jsonschema import Draft202012Validator
-from pydantic import BaseModel, ConfigDict, Field, create_model
-from pydantic.functional_validators import AfterValidator
-from pydantic_core import PydanticUndefined
+from jsonschema.exceptions import SchemaError as JsonSchemaError
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic.functional_validators import AfterValidator, BeforeValidator
+from pydantic_core import PydanticCustomError, PydanticUndefined
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 from apcore.config import Config
 from apcore.errors import SchemaNotFoundError, SchemaParseError
@@ -46,18 +50,289 @@ _NUMERIC_CONSTRAINTS = {
     "exclusiveMaximum": "lt",
     "multipleOf": "multiple_of",
 }
+_ARRAY_CONSTRAINTS = {"minItems": "min_length", "maxItems": "max_length"}
+
+# Applicator keywords with no Pydantic equivalent (JSON Schema 2020-12 §10.3,
+# §11). Dropping them silently let apcore-python accept contracts apcore-rust
+# rejected, so each one is delegated to the jsonschema library instead — the same
+# engine `_make_schema_assertion` already uses for combinator siblings.
+_APPLICATOR_KEYWORDS = (
+    "prefixItems",
+    "patternProperties",
+    "propertyNames",
+    "dependentRequired",
+    "dependentSchemas",
+    "if",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+)
+
+# Keywords an applicator changes the meaning of, and therefore has to take with
+# it. `items` applies only past the prefix once `prefixItems` is there (§10.3.1.2),
+# `additionalProperties` skips every pattern-matched key (§10.3.2.3), and
+# `then`/`else` assert nothing without `if` (§10.2.2.2/§10.2.2.3).
+_APPLICATOR_COMPANIONS: dict[str, tuple[str, ...]] = {
+    "prefixItems": ("items",),
+    "patternProperties": ("properties", "additionalProperties"),
+    "if": ("then", "else"),
+}
+
+# §11 defines these two against the annotations every *other* keyword in the same
+# schema produced, so a keyword slice would leave them nothing to subtract and
+# they would reject properties their siblings had already evaluated. The whole
+# schema travels with them instead.
+_WHOLE_SCHEMA_APPLICATORS = ("unevaluatedItems", "unevaluatedProperties")
+
+# Every remaining §6 assertion and §10.3 applicator — the ones a *typed*
+# position expresses natively (a Field constraint, `list[T]`, a generated model)
+# and a `type`-less one cannot. `_APPLICATOR_KEYWORDS` and the combinators are
+# deliberately absent: those are already delegated by their own paths.
+_BARE_ASSERTION_KEYWORDS = (
+    # §6.2 numeric
+    "multipleOf",
+    "maximum",
+    "exclusiveMaximum",
+    "minimum",
+    "exclusiveMinimum",
+    # §6.3 string
+    "maxLength",
+    "minLength",
+    "pattern",
+    # §6.4 / §10.3.1 array
+    "maxItems",
+    "minItems",
+    "uniqueItems",
+    "maxContains",
+    "minContains",
+    "items",
+    "contains",
+    # §6.5 / §10.3.2 object
+    "maxProperties",
+    "minProperties",
+    "required",
+    "properties",
+    "additionalProperties",
+)
+
+
+def _bare_assertion_schema(
+    schema: dict[str, Any], carried: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Build the §6/§10.3 sub-schema a `type`-less position has no annotation for.
+
+    At a position that declares a `type`, every keyword below is expressed
+    natively — a Pydantic `Field` constraint, a `list[T]`, a generated model. At
+    a position that declares none, `_base_annotation` widens to `Any` and there
+    is nothing left to carry them, so they were asserted by nothing at all
+    (TYPE_MAPPING §17.1 R1, "no silent drop"): `{"required": ["b"]}` is a
+    complete schema and the usual shape of an `if` / `then` / `dependentSchemas`
+    branch, and apcore-typescript and apcore-rust both enforce it.
+
+    Delegating to jsonschema rather than mapping to a `Field` argument is what
+    makes §17.1 R2 ("inertness") hold for free: `{"minimum": 3}` rejects `1` and
+    passes `"x"`, `[1]`, `true` and `null`, because that is what the keyword
+    means. Attaching `ge=3` to an `Any`-annotated field instead made the bound
+    apply to *every* instance type, and pydantic's fallback for a constraint it
+    cannot place on an `any` core schema raised a bare `TypeError` that
+    `BuiltinInputValidation` does not catch.
+
+    *carried* is whatever `_applicator_assertion_schema` already took for the
+    same position; those keywords must not be re-asserted in isolation. The
+    `patternProperties` case is the one that actually breaks: it owns
+    `additionalProperties`, and a second, lone `additionalProperties: false`
+    check would reject exactly the pattern-matched keys §10.3.2.3 exempts.
+
+    Returns None when the position is typed, is a bare `$ref`, or carries
+    nothing left to assert.
+    """
+    if "type" in schema or "$ref" in schema:
+        return None
+    already = set(carried) if carried else set()
+    sub = {key: schema[key] for key in _BARE_ASSERTION_KEYWORDS if key in schema and key not in already}
+    return sub or None
+
+
+def _applicator_assertion_schema(schema: dict[str, Any]) -> dict[str, Any] | None:
+    """Build the sub-schema to delegate to jsonschema, or None when none applies.
+
+    Only the applicator keywords travel, not the whole schema: `type` and the §6
+    keywords are already enforced by the generated annotation, and re-asserting
+    them on the raw instance would check them twice over a differently-shaped
+    value (TYPE_MAPPING §17.3, "Keyword slicing"). The `unevaluated*` pair is the
+    documented exception — see `_WHOLE_SCHEMA_APPLICATORS`.
+    """
+    present = [keyword for keyword in _APPLICATOR_KEYWORDS if keyword in schema]
+    if not present:
+        return None
+    if any(keyword in schema for keyword in _WHOLE_SCHEMA_APPLICATORS):
+        return dict(schema)
+
+    sub_schema: dict[str, Any] = {}
+    for keyword in present:
+        sub_schema[keyword] = schema[keyword]
+        for companion in _APPLICATOR_COMPANIONS.get(keyword, ()):
+            if companion in schema:
+                sub_schema[companion] = schema[companion]
+
+    if "properties" in sub_schema:
+        # Only the property *names* matter here — they tell `additionalProperties`
+        # which keys are already claimed. Keeping the real sub-schemas would
+        # re-assert them on raw, un-coerced data. `True` is the always-true schema.
+        sub_schema["properties"] = dict.fromkeys(sub_schema["properties"], True)
+    return sub_schema
+
+
+def _make_property_count_check(schema: dict[str, Any]) -> Callable[[Any], Any] | None:
+    """Build a check for `minProperties`/`maxProperties`, or None when neither applies.
+
+    These two (§6.5.1/§6.5.2) deliberately have no table of their own alongside
+    the three above: those map a keyword to a Pydantic `Field` argument, and no
+    Field argument counts an object's members. A generated model has a fixed set
+    of fields, while these keywords assert how many keys the *instance* carried —
+    undeclared ones included, since every `additionalProperties` form but `false`
+    keeps them.
+
+    Used as a `before` validator so the count is taken from the raw mapping: once
+    conversion has run, an omitted optional field is indistinguishable from one
+    explicitly set to null, and undeclared keys have moved into
+    `__pydantic_extra__`. Both would make the count disagree with jsonschema.
+
+    A non-mapping value passes straight through — an object keyword must not
+    touch the `null` branch of a `type` array (§6.5 applies to objects only).
+    """
+    minimum = schema.get("minProperties")
+    maximum = schema.get("maxProperties")
+    if minimum is None and maximum is None:
+        return None
+
+    def check_property_count(value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        count = len(value)
+        if minimum is not None and count < minimum:
+            raise ValueError(f"Object should have at least {minimum} properties, got {count}")
+        if maximum is not None and count > maximum:
+            raise ValueError(f"Object should have at most {maximum} properties, got {count}")
+        return value
+
+    return check_property_count
+
+
+def _as_model_before_validator(check: Callable[[Any], Any]) -> Any:
+    """Wrap *check* as a model-level `before` validator for `create_model`.
+
+    `before` so the check sees the raw mapping: after conversion an omitted
+    optional field is indistinguishable from an explicit null and undeclared keys
+    have moved into `__pydantic_extra__`, which no keyword counting or naming
+    properties can tolerate.
+    """
+
+    def validate_before(cls: type[Any], data: Any) -> Any:
+        return check(data)
+
+    return model_validator(mode="before")(validate_before)
+
+
+def _with_property_count(annotation: Any, schema: dict[str, Any]) -> Any:
+    """Attach the object-count check to an annotation that is not a generated model."""
+    check = _make_property_count_check(schema)
+    return Annotated[annotation, BeforeValidator(check)] if check is not None else annotation
+
+
+def _canonical_json(value: Any) -> str:
+    """Canonical JSON form of *value*, used as an equality key.
+
+    Mirrors the ``sortedKeysStringify`` apcore-typescript uses for the same
+    purpose: keys sorted, no insignificant whitespace.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _check_unique(v: list[Any]) -> list[Any]:
-    if len(v) != len(set(v)):
+    """Assert `uniqueItems` (§6.4.3) by comparing canonical JSON forms.
+
+    `set(v)` raised a bare ``TypeError`` on an array of objects — ``dict`` is not
+    hashable — and Pydantic only converts ``ValueError``/``AssertionError`` into a
+    validation error, so the ``TypeError`` escaped the module call and the caller
+    saw it instead of ``SCHEMA_VALIDATION_ERROR``. apcore-typescript and
+    apcore-rust both reject the duplicate rather than raising.
+
+    Values are rebuilt with `_to_jsonable` first: this runs as an *after*
+    validator, so a nested object has already become a Pydantic model by now.
+    """
+    keys = [_canonical_json(_to_jsonable(item)) for item in v]
+    if len(keys) != len(set(keys)):
         raise ValueError("Items must be unique")
     return v
+
+
+def _reject_bool(value: Any) -> Any:
+    """Reject a bool where a number is expected.
+
+    `bool` subclasses `int` in Python, so Pydantic's lax mode happily reads `True`
+    as `1`. JSON Schema treats the two as distinct instance types — `{"type":
+    "integer"}` rejects `true` — and so do apcore-typescript and apcore-rust.
+    Runs before conversion so the numeric branch of a union declines the value and
+    a sibling `boolean` branch can still claim it.
+    """
+    if isinstance(value, bool):
+        raise ValueError("Input should be a number, not a boolean")
+    return value
+
+
+def _require_bool(value: Any) -> Any:
+    """Reject a non-bool where a boolean is expected.
+
+    The mirror of `_reject_bool`: lax mode reads `1` and `"true"` as `True`, while
+    `{"type": "boolean"}` accepts neither.
+    """
+    if not isinstance(value, bool):
+        raise ValueError("Input should be a valid boolean")
+    return value
+
+
+def _json_integer(value: Any) -> Any:
+    """Normalise a JSON `integer` instance before Pydantic's strict `int` check.
+
+    JSON Schema 2020-12 §6.1.1 defines `integer` as *any* number with a zero
+    fractional part, so `4.0` is an integer — the `jsonschema` reference
+    implementation, apcore-typescript and apcore-rust all accept it. Pydantic
+    sees a Python `float` and, in the strict mode the module-invocation boundary
+    runs in (TYPE_MAPPING §17.3), rejects it. Narrowing the zero-fraction case
+    here keeps "no coercion" meaning "no *type* coercion" rather than
+    "reject a JSON integer written with a decimal point".
+
+    Note this is not coercion: `4.5` still fails, and so does `"4"` — neither is
+    an integer instance. Bool declines for the reason `_reject_bool` documents.
+    """
+    if isinstance(value, bool):
+        raise ValueError("Input should be a number, not a boolean")
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+_NO_BOOL = BeforeValidator(_reject_bool)
+_ONLY_BOOL = BeforeValidator(_require_bool)
+_JSON_INTEGER = BeforeValidator(_json_integer)
+
+
+def _scalar_annotation(type_name: str) -> Any:
+    """Annotation for a scalar JSON Schema type, with the bool/number guards applied."""
+    base = _TYPE_MAP.get(type_name, Any)
+    if type_name == "integer":
+        return Annotated[base, _JSON_INTEGER]
+    if type_name == "number":
+        return Annotated[base, _NO_BOOL]
+    if type_name == "boolean":
+        return Annotated[base, _ONLY_BOOL]
+    return base
 
 
 def _to_jsonable(value: Any) -> Any:
     """Convert a validated Pydantic value back to plain JSON data for a jsonschema check."""
     if isinstance(value, BaseModel):
-        return value.model_dump()
+        return value.model_dump(mode="json")
     if isinstance(value, dict):
         return {k: _to_jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -65,23 +340,86 @@ def _to_jsonable(value: Any) -> Any:
     return value
 
 
-def _make_combinator_assertion(sub_schema: dict[str, Any]) -> Callable[[Any], Any]:
+def _make_schema_assertion(
+    sub_schema: dict[str, Any],
+    *,
+    plain_data: bool = False,
+    registry: Registry | None = None,
+) -> Callable[[Any], Any]:
     """Build an AfterValidator asserting *sub_schema* on an already-typed value.
 
     Pydantic has no way to intersect a combinator keyword onto a type-derived
     annotation, so the sibling assertion is delegated to the jsonschema library —
     the same engine `hardening.validate_schema_dict` uses, which keeps the two
     validation paths in agreement.
-    """
-    validator = Draft202012Validator(sub_schema)
 
-    def assert_combinator(value: Any) -> Any:
-        errors = list(validator.iter_errors(_to_jsonable(value)))
-        if errors:
-            raise ValueError(errors[0].message)
+    `plain_data` skips the `_to_jsonable` rebuild when the annotation can only
+    produce values jsonschema already reads (see `_is_json_native`); the rebuild
+    is a full deep copy run on every single validation.
+
+    The sub-schema is checked against the metaschema here, at model-build time, so
+    a malformed contract fails when the module is registered rather than raising a
+    bare `AttributeError` out of `iter_errors` on the first real call.
+    """
+    try:
+        Draft202012Validator.check_schema(sub_schema)
+    except JsonSchemaError as exc:
+        raise SchemaParseError(message=f"Invalid schema for keyword(s) {sorted(sub_schema)}: {exc.message}") from exc
+
+    validator = (
+        Draft202012Validator(sub_schema)
+        if registry is None
+        else Draft202012Validator(sub_schema, registry=registry)
+    )
+
+    def assert_sub_schema(value: Any) -> Any:
+        data = value if plain_data else _to_jsonable(value)
+        for error in validator.iter_errors(data):
+            # `validator` is the failing keyword name (`enum`, `const`, `not`, …).
+            # Passing it through as the error type keeps the reported `constraint`
+            # specific instead of collapsing every combinator to "value".
+            raise PydanticCustomError(
+                cast(Any, str(error.validator or "value")),
+                error.message,
+                {"expected": error.validator_value},
+            )
         return value
 
-    return assert_combinator
+    return assert_sub_schema
+
+
+# Base URI the root document is registered under so a lazy `$ref` can be pointed
+# at it. `urn:` keeps it distinguishable from anything a schema author could
+# write, and nothing ever dereferences it over the network.
+_ROOT_BASE_URI = "urn:apcore:schema-root"
+
+
+def _ref_assertion_schema(ref: str, root: dict[str, Any]) -> tuple[dict[str, Any], Registry] | None:
+    """Build the (schema, registry) pair that asserts *ref* against *root*.
+
+    `RefResolver` leaves a self-reference in place instead of inlining it
+    (PROTOCOL_SPEC §4.15.2), so a recursive schema still carries `$ref` nodes when
+    it reaches model generation. Pydantic has no annotation for "whatever this
+    pointer names, recursively", so the sub-tree is delegated to jsonschema — the
+    same engine combinator siblings and applicators already use — with the whole
+    root document registered under a synthetic base URI. Every nested `#…`
+    reference inside the target then resolves against the real document rather
+    than against the fragment handed to the validator.
+
+    Returns None for a reference this SDK cannot anchor (an external URI the
+    resolver could not inline), leaving the caller to widen to `Any` rather than
+    failing the whole conversion.
+    """
+    if ref in ("#", "#/") or ref == root.get("$id"):
+        pointer = "#"
+    elif ref.startswith("#/"):
+        pointer = ref
+    else:
+        return None
+
+    resource = Resource.from_contents(root, default_specification=DRAFT202012)
+    registry = Registry().with_resource(_ROOT_BASE_URI, resource)
+    return {"$ref": f"{_ROOT_BASE_URI}{pointer}"}, registry
 
 
 def _branch_constraints(prop_schema: dict[str, Any], type_name: str) -> dict[str, Any]:
@@ -90,9 +428,72 @@ def _branch_constraints(prop_schema: dict[str, Any], type_name: str) -> dict[str
         mapping = _STRING_CONSTRAINTS
     elif type_name in ("integer", "number"):
         mapping = _NUMERIC_CONSTRAINTS
+    elif type_name == "array":
+        mapping = _ARRAY_CONSTRAINTS
     else:
         return {}
     return {arg: prop_schema[keyword] for keyword, arg in mapping.items() if keyword in prop_schema}
+
+
+def _field_constraints(prop_schema: dict[str, Any], *, is_array: bool) -> dict[str, Any]:
+    """Collect the field-wide constraint arguments for a Pydantic Field.
+
+    Gated on a single declared scalar/array `type`, because a Field constraint is
+    unconditional: it fires on whatever value reaches the field. That is only the
+    right reading when the annotation has already narrowed the value to the type
+    the keyword describes.
+
+    A `type` array carries its option keywords per union branch instead (see
+    `_union_from_types`); repeating them field-wide would apply a numeric bound to
+    the string branch and a length bound to the numeric one.
+
+    A *missing* `type` is the case that was wrong. `minLength` was collected and
+    attached to an `Any`-annotated field, so it rejected `[1]` and `{"a": 1}` —
+    instances §17.1 R2 requires it to pass, and which apcore-typescript and
+    apcore-rust do pass. Worse, pydantic cannot place `ge` or `pattern` on an
+    `any` core schema and its `apply_known_metadata` fallback raised a bare
+    `TypeError`, which `BuiltinInputValidation` does not catch (it catches only
+    `pydantic.ValidationError`), so the module call died uncoded. Those keywords
+    now travel through `_bare_assertion_schema` instead, where jsonschema makes
+    them inert by construction.
+    """
+    schema_type = prop_schema.get("type")
+    if not isinstance(schema_type, str):
+        return {}
+    if is_array or schema_type == "array":
+        return _branch_constraints(prop_schema, "array")
+    if schema_type == "string":
+        return _branch_constraints(prop_schema, "string")
+    if schema_type in ("integer", "number"):
+        return _branch_constraints(prop_schema, "integer")
+    return {}
+
+
+def _is_json_native(prop_schema: dict[str, Any]) -> bool:
+    """True when the validated value is already something jsonschema can read.
+
+    jsonschema consumes plain scalars, lists and dicts directly; only a value that
+    can hold a Pydantic model needs rebuilding first. Getting this right matters
+    for more than tidiness — the rebuild is a full deep copy run on every single
+    validation, so a large array pays for it per call.
+    """
+    schema_type = prop_schema.get("type")
+    if isinstance(schema_type, str):
+        members = [schema_type]
+    elif isinstance(schema_type, list):
+        members = schema_type
+    else:
+        return False
+
+    for member in members:
+        if member in _TYPE_MAP:
+            continue
+        if member == "array":
+            items = prop_schema.get("items")
+            if isinstance(items, dict) and items.get("type") in _TYPE_MAP:
+                continue
+        return False
+    return bool(members)
 
 
 class SchemaLoader:
@@ -179,25 +580,44 @@ class SchemaLoader:
         )
         return input_rs, output_rs
 
-    def generate_model(self, json_schema: dict[str, Any], model_name: str) -> type[BaseModel]:
-        """Dynamically generate a Pydantic BaseModel from a JSON Schema dict."""
+    def generate_model(
+        self, json_schema: dict[str, Any], model_name: str, *, root: dict[str, Any] | None = None
+    ) -> type[BaseModel]:
+        """Dynamically generate a Pydantic BaseModel from a JSON Schema dict.
+
+        ``root`` is the document that ``#``-anchored ``$ref`` strings resolve
+        against. It defaults to *json_schema* on the outermost call and is passed
+        down unchanged through every nested model, so a ``$ref`` buried in
+        ``properties`` still finds ``$defs`` at the top of the document.
+        """
+        if root is None:
+            root = json_schema
         properties = json_schema.get("properties", {})
         required = set(json_schema.get("required", []))
 
-        # Respect additionalProperties: false → Pydantic extra="forbid".
-        # An object form (`{"type": "integer"}`) keeps undeclared keys but constrains
-        # their values, which Pydantic expresses as extra="allow" plus a typed
-        # __pydantic_extra__ annotation.
+        # `additionalProperties: false` forbids undeclared keys; every other form
+        # permits them, so they are kept rather than silently dropped (Pydantic's
+        # default extra="ignore" would drop them, diverging from the other SDKs).
+        # A sub-schema form additionally constrains their values, which Pydantic
+        # expresses as a typed __pydantic_extra__ annotation. `true` and `{}` are
+        # the same always-true assertion and are treated alike.
+        # A `patternProperties` sibling redefines which keys are "additional"
+        # (§10.3.2.3 exempts every pattern-matched one), which `extra="forbid"`
+        # cannot express; the delegated applicator assertion enforces the pair.
         additional = json_schema.get("additionalProperties", True)
-        config = ConfigDict(extra="forbid") if additional is False else ConfigDict()
+        forbid_extra = additional is False and "patternProperties" not in json_schema
+        config = ConfigDict(extra="forbid") if forbid_extra else ConfigDict(extra="allow")
 
         field_definitions: dict[str, Any] = {}
         if isinstance(additional, dict) and additional:
-            config = ConfigDict(extra="allow")
-            extra_type = self._schema_to_type(additional, "additionalProperties", model_name)
+            # Asserted through jsonschema rather than mapped to a native annotation:
+            # the sub-schema may be an array, a nested object, a bare constraint set
+            # or a combinator, and a shallow type mapping silently widens all of
+            # those to Any.
+            extra_type = Annotated[Any, AfterValidator(_make_schema_assertion(additional))]
             field_definitions["__pydantic_extra__"] = (dict[str, extra_type], ...)  # type: ignore[valid-type]
         for prop_name, prop_schema in properties.items():
-            python_type, field_info = self._schema_to_field_info(prop_schema, prop_name, model_name)
+            python_type, field_info = self._schema_to_field_info(prop_schema, prop_name, model_name, root)
             is_required = prop_name in required
 
             if not is_required:
@@ -210,7 +630,55 @@ class SchemaLoader:
 
             field_definitions[prop_name] = (python_type, field_info)
 
-        model = create_model(model_name, __config__=config, **field_definitions)  # type: ignore[call-overload]
+        # §6.5.1/§6.5.2 on the schema this model was generated from. Attached at
+        # model level because the count belongs to the whole instance, not to any
+        # one field; `_handle_object` covers the object schemas that never reach
+        # `create_model` because they declare no `properties`.
+        validators: dict[str, Any] = {}
+        count_check = _make_property_count_check(json_schema)
+        if count_check is not None:
+            validators["_apcore_property_count"] = _as_model_before_validator(count_check)
+
+        # §10.3/§11 applicators declared on the schema this model was generated
+        # from. Model level for the same reason as the count above: they assert
+        # over the whole instance, not over any one field.
+        applicators = _applicator_assertion_schema(json_schema)
+        if applicators is not None:
+            validators["_apcore_applicators"] = _as_model_before_validator(
+                _make_schema_assertion(applicators, plain_data=True)
+            )
+
+        # §10.2 combinators declared on the schema this model was generated from.
+        # `_schema_to_field_info` already intersects them onto every *property*,
+        # but a combinator at the top of the schema had no owner: a root-level
+        # `oneOf`/`anyOf` declares no `properties`, so `create_model` produced a
+        # field-less `extra="allow"` model that accepted literally anything. That
+        # left the union rule enforced only when validation happened to go through
+        # `SchemaValidator._validate_top_level_union`, and bypassed entirely by the
+        # bare `model_validate()` call in `BuiltinInputValidation` (spec §4.15.1).
+        top_level = {key: json_schema[key] for key in _COMBINATOR_KEYWORDS if key in json_schema}
+        if top_level:
+            validators["_apcore_combinators"] = _as_model_before_validator(
+                _make_schema_assertion(top_level, plain_data=True)
+            )
+
+        # A lazy `$ref` at the top of the schema — a schema that is nothing but a
+        # reference into its own document — has no property to hang off either.
+        top_ref = json_schema.get("$ref")
+        if isinstance(top_ref, str) and json_schema is not root:
+            built = _ref_assertion_schema(top_ref, root)
+            if built is not None:
+                ref_schema, registry = built
+                validators["_apcore_ref"] = _as_model_before_validator(
+                    _make_schema_assertion(ref_schema, plain_data=True, registry=registry)
+                )
+
+        model = create_model(  # type: ignore[call-overload]
+            model_name,
+            __config__=config,
+            __validators__=validators or None,
+            **field_definitions,
+        )
         # A-D-08: retain the source JSON Schema on the generated model so
         # SchemaValidator.validate() can detect a top-level oneOf/anyOf and route
         # it through the jsonschema-backed exhaustive union check (parity with the
@@ -218,9 +686,17 @@ class SchemaLoader:
         # A top-level union produces a property-less Pydantic model that would
         # otherwise accept any value via the always-true empty-schema path.
         model.__apcore_source_schema__ = json_schema  # type: ignore[attr-defined]
+        # Whether the model carries assertions that live outside `model_fields`.
+        # `SchemaValidator.validate` short-circuits a field-less model as the
+        # always-true empty schema; a root-level combinator, applicator or
+        # property-count check produces exactly such a model while asserting
+        # plenty, so the shortcut has to know to stand down.
+        model.__apcore_has_assertions__ = bool(validators)  # type: ignore[attr-defined]
         return model
 
-    def _schema_to_field_info(self, prop_schema: dict[str, Any], prop_name: str, parent_name: str) -> tuple[Any, Any]:
+    def _schema_to_field_info(
+        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str, root: dict[str, Any]
+    ) -> tuple[Any, Any]:
         """Convert a JSON Schema property to (python_type, FieldInfo).
 
         `type` and its combinator siblings (`const`, `enum`, `oneOf`, `anyOf`,
@@ -231,21 +707,38 @@ class SchemaLoader:
         the first matching keyword winning and the rest being discarded.
         """
         if not prop_schema:
-            return dict[str, Any], Field(default=...)
+            # The empty schema asserts nothing (Draft 2020-12 always-true), so it
+            # must accept every instance type, not just a mapping.
+            return Any, Field(default=...)
 
-        if "if" in prop_schema:
-            raise SchemaParseError(message="if/then/else not yet supported")
-
-        python_type, consumed, is_array = self._base_annotation(prop_schema, prop_name, parent_name)
+        python_type, consumed, is_array = self._base_annotation(prop_schema, prop_name, parent_name, root)
 
         siblings = {key: prop_schema[key] for key in _COMBINATOR_KEYWORDS if key in prop_schema and key not in consumed}
         if siblings:
-            python_type = Annotated[python_type, AfterValidator(_make_combinator_assertion(siblings))]
+            assertion = _make_schema_assertion(siblings, plain_data=_is_json_native(prop_schema))
+            python_type = Annotated[python_type, AfterValidator(assertion)]
+
+        # `before` so the applicators see the raw instance: they assert over key
+        # presence and array positions, both of which conversion erases.
+        applicators = _applicator_assertion_schema(prop_schema)
+        if applicators is not None:
+            python_type = Annotated[
+                python_type, BeforeValidator(_make_schema_assertion(applicators, plain_data=True))
+            ]
+
+        # The §6/§10.3 keywords a `type`-less position has no annotation to carry.
+        # `before` for the same reason as the applicators, and because the
+        # annotation there is `Any` — there is nothing for conversion to hand over.
+        bare = _bare_assertion_schema(prop_schema, applicators)
+        if bare is not None:
+            python_type = Annotated[
+                python_type, BeforeValidator(_make_schema_assertion(bare, plain_data=True))
+            ]
 
         return python_type, self._build_field(prop_schema, is_array=is_array)
 
     def _base_annotation(
-        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str
+        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str, root: dict[str, Any]
     ) -> tuple[Any, tuple[str, ...], bool]:
         """Derive the annotation from the keyword that can express it natively.
 
@@ -253,20 +746,27 @@ class SchemaLoader:
         only when the annotation fully enforces it; anything left over is applied
         by the caller as a sibling assertion.
         """
+        # A lazy `$ref` the resolver deliberately left in place: the sub-tree is
+        # recursive, so no finite Pydantic annotation describes it. §8.2.3.1 also
+        # makes `$ref` override every sibling keyword in 2020-12 only for
+        # `$recursiveRef`-free documents — the delegated check honours whichever
+        # applies.
+        if "$ref" in prop_schema:
+            return self._ref_annotation(prop_schema["$ref"], root), ("$ref",), False
+
         schema_type = prop_schema.get("type")
 
         if isinstance(schema_type, list):
-            return self._union_from_types(prop_schema, schema_type, prop_name, parent_name), (), False
+            return self._union_from_types(prop_schema, schema_type, prop_name, parent_name, root), (), False
 
         if schema_type == "object":
-            return self._handle_object(prop_schema, prop_name, parent_name), (), False
+            return self._handle_object(prop_schema, prop_name, parent_name, root), (), False
 
         if schema_type == "array":
-            base_type, _ = self._handle_array(prop_schema, prop_name, parent_name)
-            return base_type, (), True
+            return self._handle_array(prop_schema, prop_name, parent_name, root), (), True
 
         if isinstance(schema_type, str):
-            return _TYPE_MAP.get(schema_type, Any), (), False
+            return _scalar_annotation(schema_type), (), False
 
         # No `type`: let a combinator carry the annotation itself.
         if "const" in prop_schema:
@@ -278,7 +778,7 @@ class SchemaLoader:
         for keyword in ("oneOf", "anyOf"):
             if keyword in prop_schema:
                 types = [
-                    self._schema_to_type(sub, f"{prop_name}_{keyword}_{i}", parent_name)
+                    self._schema_to_type(sub, f"{prop_name}_{keyword}_{i}", parent_name, root)
                     for i, sub in enumerate(prop_schema[keyword])
                 ]
                 # The branch annotations are shape-only (`_schema_to_type` widens a
@@ -287,76 +787,194 @@ class SchemaLoader:
                 return Union[tuple(types)], (), False
 
         if "allOf" in prop_schema:
-            return self._handle_all_of(prop_schema["allOf"], prop_name, parent_name), ("allOf",), False
+            # `_handle_all_of` merges the members into one model, and that merge is
+            # lossy (a later member's property definition overwrites an earlier one).
+            # The keyword stays unconsumed so the sibling assertion enforces what the
+            # merge dropped — the same treatment oneOf/anyOf get above.
+            return self._handle_all_of(prop_schema["allOf"], prop_name, parent_name, root), (), False
 
         if "not" in prop_schema:
             return Any, (), False
 
-        return dict[str, Any], (), False
+        # No `type` and no combinator: whatever else the schema carries (a bare
+        # §6 constraint, an applicator) applies only to instances of its own type
+        # and is inert on every other one, so the annotation must not narrow to a
+        # mapping. `Any` leaves the assertions to the delegated checks.
+        return Any, (), False
+
+    def _ref_annotation(self, ref: Any, root: dict[str, Any]) -> Any:
+        """Annotation for a lazy `$ref`, delegating the whole sub-tree to jsonschema.
+
+        A `before` validator, so the raw instance is what gets checked: the target
+        is typically recursive and no finite Pydantic annotation describes it, so
+        there is nothing for a coercing conversion to hand over afterwards.
+        """
+        if not isinstance(ref, str):
+            return Any
+        built = _ref_assertion_schema(ref, root)
+        if built is None:
+            # An external reference this SDK cannot anchor asserts nothing rather
+            # than failing the whole conversion — the same widening the
+            # apcore-typescript converter applies.
+            return Any
+        ref_schema, registry = built
+        assertion = _make_schema_assertion(ref_schema, plain_data=True, registry=registry)
+        return Annotated[Any, BeforeValidator(assertion)]
 
     def _union_from_types(
-        self, prop_schema: dict[str, Any], schema_type: list[str], prop_name: str, parent_name: str
+        self,
+        prop_schema: dict[str, Any],
+        schema_type: list[str],
+        prop_name: str,
+        parent_name: str,
+        root: dict[str, Any],
     ) -> Any:
         """Convert a `type` array to a union, keeping each type's option keywords on its own branch."""
         branches: list[Any] = []
         for type_name in schema_type:
             if type_name == "object":
-                branches.append(self._handle_object(prop_schema, prop_name, parent_name))
-            elif type_name == "array":
-                base_type, _ = self._handle_array(prop_schema, prop_name, parent_name)
-                branches.append(base_type)
+                branches.append(self._handle_object(prop_schema, prop_name, parent_name, root))
+                continue
+            if type_name not in _TYPE_MAP and type_name != "array":
+                raise SchemaParseError(message=f"Unknown type '{type_name}' in type array for '{prop_name}'")
+
+            if type_name == "array":
+                base_type = self._handle_array(prop_schema, prop_name, parent_name, root)
             else:
-                base_type = _TYPE_MAP.get(type_name, Any)
-                constraints = _branch_constraints(prop_schema, type_name)
-                branches.append(Annotated[base_type, Field(**constraints)] if constraints else base_type)
+                base_type = _scalar_annotation(type_name)
+            constraints = _branch_constraints(prop_schema, type_name)
+            branches.append(Annotated[base_type, Field(**constraints)] if constraints else base_type)
 
         if not branches:
-            return type(None)
+            # The metaschema requires `type` arrays to be non-empty; an empty one
+            # asserts nothing can validate, which is never what a contract means.
+            raise SchemaParseError(message=f"Empty type array for '{prop_name}'")
         return Union[tuple(branches)]
 
-    def _schema_to_type(self, schema: dict[str, Any], name: str, parent_name: str) -> Any:
+    def _schema_to_type(self, schema: dict[str, Any], name: str, parent_name: str, root: dict[str, Any]) -> Any:
         """Convert a sub-schema to a Python type (for Union branches)."""
+        if "$ref" in schema:
+            return self._ref_annotation(schema["$ref"], root)
         schema_type = schema.get("type")
         if schema_type == "object" and "properties" in schema:
-            return self.generate_model(schema, f"{parent_name}_{name}")
+            return self.generate_model(schema, f"{parent_name}_{name}", root=root)
         if schema_type and isinstance(schema_type, str):
-            return _TYPE_MAP.get(schema_type, Any)
+            # `_scalar_annotation`, not a bare `_TYPE_MAP` lookup: array items and
+            # union branches need the same bool / JSON-integer guards a top-level
+            # scalar property gets, or `{"items": {"type": "integer"}}` diverges
+            # from `{"type": "integer"}` for the same instance.
+            return _scalar_annotation(schema_type)
         return Any
 
-    def _handle_object(self, prop_schema: dict[str, Any], prop_name: str, parent_name: str) -> Any:
-        """Handle object type schemas."""
-        if "properties" in prop_schema:
-            return self.generate_model(prop_schema, f"{parent_name}_{prop_name}")
-        if "additionalProperties" in prop_schema:
-            additional = prop_schema["additionalProperties"]
-            if isinstance(additional, dict) and "type" in additional:
-                value_type = _TYPE_MAP.get(additional["type"], Any)
-                return dict[str, value_type]  # type: ignore[valid-type]
-            return dict[str, Any]
-        return dict[str, Any]
+    def _handle_object(
+        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str, root: dict[str, Any]
+    ) -> Any:
+        """Handle object type schemas.
 
-    def _handle_array(self, prop_schema: dict[str, Any], prop_name: str, parent_name: str) -> tuple[Any, Any]:
+        A schema with `properties` becomes a generated model, which carries its own
+        `minProperties`/`maxProperties` check; the open-mapping forms below get one
+        attached here, since they never reach `create_model`.
+        """
+        if "properties" in prop_schema:
+            return self.generate_model(prop_schema, f"{parent_name}_{prop_name}", root=root)
+        annotation: Any = dict[str, Any]
+        additional = prop_schema.get("additionalProperties")
+        if isinstance(additional, dict) and "type" in additional:
+            value_type = _scalar_annotation(additional["type"])
+            annotation = dict[str, value_type]  # type: ignore[valid-type]
+        return _with_property_count(annotation, prop_schema)
+
+    def _handle_array(
+        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str, root: dict[str, Any]
+    ) -> Any:
         """Handle array type schemas."""
-        items = prop_schema.get("items")
+        # With a `prefixItems` sibling, `items` describes only the positions past
+        # the prefix (§10.3.1.2); `list[T]` would apply it to the tuple head too,
+        # so both are left to the delegated applicator assertion.
+        items = None if "prefixItems" in prop_schema else prop_schema.get("items")
         if items:
-            item_type = self._schema_to_type(items, f"{prop_name}_item", parent_name)
-            base_type = list[item_type]  # type: ignore[valid-type]
+            item_type = self._item_annotation(items, f"{prop_name}_item", parent_name, root)
+            base_type: Any = list[item_type]  # type: ignore[valid-type]
         else:
             base_type = list[Any]
 
         if prop_schema.get("uniqueItems"):
-            base_type = Annotated[base_type, AfterValidator(_check_unique)]  # type: ignore[valid-type]
+            base_type = Annotated[base_type, AfterValidator(_check_unique)]
 
-        return base_type, self._build_field(prop_schema, is_array=True)
+        contains = prop_schema.get("contains")
+        if isinstance(contains, dict):
+            # §6.4.4/§6.4.5 assert nothing on their own — they are meaningful only
+            # alongside `contains` (§10.3.1.3), so the three travel together. No
+            # Pydantic annotation expresses "at least N items match this sub-schema",
+            # so the group is delegated to jsonschema, as combinator siblings are.
+            # apcore-typescript emits the same trio onto its TypeBox array options.
+            group = {"contains": contains}
+            for keyword in ("minContains", "maxContains"):
+                if keyword in prop_schema:
+                    group[keyword] = prop_schema[keyword]
+            assertion = _make_schema_assertion(group, plain_data=_is_json_native(prop_schema))
+            base_type = Annotated[base_type, AfterValidator(assertion)]
 
-    def _handle_all_of(self, sub_schemas: list[dict[str, Any]], prop_name: str, parent_name: str) -> Any:
-        """Merge allOf sub-schemas into a single model."""
+        return base_type
+
+    def _item_annotation(self, schema: dict[str, Any], name: str, parent_name: str, root: dict[str, Any]) -> Any:
+        """Annotation for an array element.
+
+        `_schema_to_type` derives the *shape* only. The combinator and applicator
+        keywords sitting beside it are independent assertions (§10.2/§10.3) that a
+        `list[T]` annotation cannot express, so they are delegated to jsonschema
+        exactly as `_schema_to_field_info` does for a property — otherwise
+        `{"items": {"oneOf": [...]}}` widened every element to `Any` and the
+        exclusivity rule vanished inside arrays.
+        """
+        annotation = self._schema_to_type(schema, name, parent_name, root)
+
+        siblings = {key: schema[key] for key in _COMBINATOR_KEYWORDS if key in schema}
+        if siblings:
+            assertion = _make_schema_assertion(siblings, plain_data=_is_json_native(schema))
+            annotation = Annotated[annotation, AfterValidator(assertion)]
+
+        applicators = _applicator_assertion_schema(schema)
+        if applicators is not None:
+            annotation = Annotated[
+                annotation, BeforeValidator(_make_schema_assertion(applicators, plain_data=True))
+            ]
+
+        # §17.3: the §6/§10.3 keywords hold "inside `items` … exactly as at the
+        # top level", so a type-less element schema gets the same delegation a
+        # type-less property does.
+        bare = _bare_assertion_schema(schema, applicators)
+        if bare is not None:
+            annotation = Annotated[
+                annotation, BeforeValidator(_make_schema_assertion(bare, plain_data=True))
+            ]
+        return annotation
+
+    def _handle_all_of(
+        self, sub_schemas: list[dict[str, Any]], prop_name: str, parent_name: str, root: dict[str, Any]
+    ) -> Any:
+        """Merge allOf sub-schemas into a single model, or widen to `Any`.
+
+        The merge only describes an *object* intersection. When a member is not
+        object-shaped — `{"type": "string"}`, a bare `{"minimum": 1}`, an
+        `{"enum": [...]}` — there is no model to merge and the annotation widens
+        to `Any`, exactly as `not` does.
+
+        Widening is not a silent drop. `allOf` is left unconsumed by
+        `_base_annotation`, so `_schema_to_field_info` hands the whole keyword to
+        jsonschema as a sibling assertion and every member is still enforced.
+        Raising `SchemaParseError` here instead made a contract apcore-typescript
+        and apcore-rust both accept *and enforce* impossible to even register in
+        Python. §17.1 R1 licenses a load-time rejection only when the keyword
+        cannot be enforced, and this one can.
+        """
+        if any(sub.get("type") != "object" and "properties" not in sub for sub in sub_schemas):
+            return Any
+
         merged_properties: dict[str, Any] = {}
         merged_required: list[str] = []
 
         for sub in sub_schemas:
-            if sub.get("type") != "object" and "properties" not in sub:
-                raise SchemaParseError(message=f"allOf with non-object sub-schema not supported in '{prop_name}'")
             for name, prop in sub.get("properties", {}).items():
                 if name in merged_properties:
                     existing_type = merged_properties[name].get("type")
@@ -373,58 +991,21 @@ class SchemaLoader:
             "properties": merged_properties,
             "required": list(set(merged_required)),
         }
-        return self.generate_model(merged_schema, f"{parent_name}_{prop_name}")
+        return self.generate_model(merged_schema, f"{parent_name}_{prop_name}", root=root)
 
     def _build_field(self, prop_schema: dict[str, Any], is_array: bool = False) -> Any:
         """Build a Pydantic Field from JSON Schema constraints."""
-        kwargs: dict[str, Any] = {"default": ...}
-
-        if "default" in prop_schema:
-            kwargs["default"] = prop_schema["default"]
+        kwargs: dict[str, Any] = {"default": prop_schema.get("default", ...)}
 
         if "description" in prop_schema:
             kwargs["description"] = prop_schema["description"]
         if "title" in prop_schema:
             kwargs["title"] = prop_schema["title"]
 
-        # A `type` array carries its option keywords per union branch (see
-        # `_union_from_types`); repeating them field-wide would apply a numeric
-        # bound to the string branch and vice versa.
-        per_branch = isinstance(prop_schema.get("type"), list)
-
-        # Numeric constraints
-        if not per_branch:
-            if "minimum" in prop_schema:
-                kwargs["ge"] = prop_schema["minimum"]
-            if "maximum" in prop_schema:
-                kwargs["le"] = prop_schema["maximum"]
-            if "exclusiveMinimum" in prop_schema:
-                kwargs["gt"] = prop_schema["exclusiveMinimum"]
-            if "exclusiveMaximum" in prop_schema:
-                kwargs["lt"] = prop_schema["exclusiveMaximum"]
-            if "multipleOf" in prop_schema:
-                kwargs["multiple_of"] = prop_schema["multipleOf"]
-
-        # String constraints
-        if is_array:
-            if "minItems" in prop_schema:
-                kwargs["min_length"] = prop_schema["minItems"]
-            if "maxItems" in prop_schema:
-                kwargs["max_length"] = prop_schema["maxItems"]
-        elif not per_branch:
-            if "minLength" in prop_schema:
-                kwargs["min_length"] = prop_schema["minLength"]
-            if "maxLength" in prop_schema:
-                kwargs["max_length"] = prop_schema["maxLength"]
-
-        if "pattern" in prop_schema and not per_branch:
-            kwargs["pattern"] = prop_schema["pattern"]
+        kwargs.update(_field_constraints(prop_schema, is_array=is_array))
 
         # LLM extensions and format as json_schema_extra
-        extra: dict[str, Any] = {}
-        for key, value in prop_schema.items():
-            if key.startswith("x-"):
-                extra[key] = value
+        extra: dict[str, Any] = {key: value for key, value in prop_schema.items() if key.startswith("x-")}
         if "format" in prop_schema:
             extra["format"] = prop_schema["format"]
         if extra:

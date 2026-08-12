@@ -60,8 +60,14 @@ class _DictSchemaAdapter:
     def model_json_schema(self) -> dict[str, Any]:
         return self._schema
 
-    def model_validate(self, data: Any) -> Any:
-        """Pass-through: returns *data* unchanged (no validation)."""
+    def model_validate(self, data: Any, *, strict: bool | None = None) -> Any:
+        """Pass-through: returns *data* unchanged (no validation).
+
+        ``strict`` is accepted and ignored so this shim stays signature-
+        compatible with ``BaseModel.model_validate``: the module-invocation
+        boundary passes ``strict=True`` (TYPE_MAPPING §17.3) and must not blow
+        up on a module that declared its schema as a raw dict.
+        """
         return data
 
     def model_rebuild(self) -> None:
@@ -202,6 +208,29 @@ def _validate_streaming_signature(module_id: str, module: Any) -> None:
     # the @runtime_checkable Protocol already validates structural presence.
     # The "not_async" and "wrong_arity" checks cover the practically important
     # mismatches; "wrong_return_type" would only fire on annotation-only errors.
+
+
+def _validate_streaming_annotation(module_id: str, module: Any) -> None:
+    """Enforce Issue #62 when ``annotations.streaming`` is explicitly True.
+
+    Shared by ``register`` and ``register_internal`` so a sys module cannot
+    advertise streaming it does not implement. Previously only ``register``
+    performed the check, contradicting ``register_internal``'s own docstring
+    ("bypasses **only** the reserved word check"); apcore-rust routes both entry
+    points through ``register_core``, which performs it.
+
+    Accepts both annotation carriers: a ``ModuleAnnotations`` dataclass and a
+    raw dict.
+    """
+    annotations = getattr(module, "annotations", None)
+    if isinstance(annotations, dict):
+        streaming_declared = annotations.get("streaming") is True
+    elif annotations is not None:
+        streaming_declared = getattr(annotations, "streaming", None) is True
+    else:
+        streaming_declared = False
+    if streaming_declared:
+        _validate_streaming_signature(module_id, module)
 
 
 def _is_ephemeral(module_id: str) -> bool:
@@ -907,14 +936,36 @@ class Registry:
         load_order: list[str],
         valid_classes: dict[str, type],
     ) -> dict[str, type]:
-        """Stage 7.5 — drop classes whose IDs collide (A03 batch detection).
+        """Stage 7.5 — drop classes whose IDs are invalid or collide.
 
-        Errors are excluded from the registration set; warnings are logged
-        but the module proceeds.
+        Two checks, in the order ``register()`` applies them:
+
+        1. **PROTOCOL_SPEC §2.7 grammar** (empty → pattern → length → reserved).
+           ``_validate_module_id`` used to be reachable only from ``register()``
+           and ``register_internal()``, so nothing on the discovery path enforced
+           the ID grammar at all. ``_apply_id_map_overrides`` is the concrete
+           vector: it rewrites ``canonical_id`` from the YAML ID map *after*
+           scanning and never re-validates, so ``{'id': 'Foo-Bar'}`` or a
+           200-character ID reached ``_modules`` intact. Hyphens in particular
+           are banned to keep MCP / OpenAI tool-name normalisation bijective.
+        2. **A03 batch conflict detection** (duplicate / reserved / case).
+
+        Both are non-fatal: the offending module is dropped with a warning and
+        the rest of the discovery run proceeds. Raising would let one bad ID-map
+        entry take down every module under the same root. Parity with
+        apcore-typescript ``_filterIdConflicts`` (validate-then-detect, skip on
+        failure) and apcore-rust, which validates each discovered entry.
         """
         filtered = dict(valid_classes)
         batch_ids: set[str] = set()
         for mod_id in load_order:
+            try:
+                _validate_module_id(mod_id, allow_reserved=False)
+            except InvalidInputError as exc:
+                logger.warning("Skipping discovered module with invalid ID '%s': %s", mod_id, exc)
+                filtered.pop(mod_id, None)
+                continue
+
             conflict = detect_id_conflicts(
                 new_id=mod_id,
                 existing_ids=batch_ids | set(self._modules.keys()),
@@ -1109,15 +1160,7 @@ class Registry:
             if errors:
                 raise InvalidInputError(message=f"Custom validator rejected module '{module_id}': {'; '.join(errors)}")
 
-        # Validate stream() signature when annotations.streaming is explicitly True
-        annotations = getattr(module, "annotations", None)
-        streaming_declared = False
-        if isinstance(annotations, dict):
-            streaming_declared = annotations.get("streaming") is True
-        elif annotations is not None:
-            streaming_declared = getattr(annotations, "streaming", None) is True
-        if streaming_declared:
-            _validate_streaming_signature(module_id, module)
+        _validate_streaming_annotation(module_id, module)
 
         effective_version = version or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
 
@@ -1540,9 +1583,9 @@ class Registry:
                 Defaults to False.
 
         Returns:
-            A dict with keys ``module_id``, ``description``, ``input_schema``,
-            ``output_schema``, and ``definitions``; or ``None`` if the module
-            is not found.
+            A dict with keys ``module_id``, ``description``, ``input_schema``
+            and ``output_schema``; or ``None`` if the module is not found.
+            Pinned by ``schemas/module-schema-export.schema.json``.
 
         Aligned with ``apcore-rust Registry::export_schema``.
         """
@@ -1550,30 +1593,29 @@ class Registry:
         if descriptor is None:
             return None
 
-        from apcore.schema.exporter import SchemaExporter
-        from apcore.schema.types import SchemaDefinition
-
-        schema_def = SchemaDefinition(
-            module_id=descriptor.module_id,
-            description=descriptor.description,
-            input_schema=descriptor.input_schema,
-            output_schema=descriptor.output_schema,
-        )
-
-        exporter = SchemaExporter()
-
+        input_schema = descriptor.input_schema
+        output_schema = descriptor.output_schema
         if strict:
-            from apcore.schema.strict import to_strict_schema
             import copy
 
-            schema_def = SchemaDefinition(
-                module_id=descriptor.module_id,
-                description=descriptor.description,
-                input_schema=to_strict_schema(copy.deepcopy(descriptor.input_schema)),
-                output_schema=to_strict_schema(copy.deepcopy(descriptor.output_schema)),
-            )
+            from apcore.schema.strict import to_strict_schema
 
-        return exporter.export_generic(schema_def)
+            input_schema = to_strict_schema(copy.deepcopy(input_schema))
+            output_schema = to_strict_schema(copy.deepcopy(output_schema))
+
+        # Built directly rather than through ``SchemaExporter.export_generic``:
+        # that helper also emits ``definitions``, which is a field of a
+        # ``SchemaDefinition`` parsed from a YAML schema file. A descriptor has
+        # no such field, so on this path it was always ``{}`` — a second,
+        # permanently empty place to look for the ``$defs`` that JSON Schema
+        # already keeps inside ``input_schema``. See
+        # ``schemas/module-schema-export.schema.json``.
+        return {
+            "module_id": descriptor.module_id,
+            "description": descriptor.description,
+            "input_schema": input_schema,
+            "output_schema": output_schema,
+        }
 
     def describe(self, module_id: str) -> str:
         """Return a human-readable description of a module.
@@ -2166,9 +2208,10 @@ class Registry:
 
         Raises:
             InvalidInputError: If module_id is empty, malformed, exceeds the
-                length limit, or is already registered.
-            ValueError: If module_id falls under the ``ephemeral.*`` namespace
-                (must use :meth:`register` instead).
+                length limit, is already registered, or falls under the
+                ``ephemeral.*`` namespace (which must use :meth:`register`).
+            StreamingInterfaceError: If ``annotations.streaming`` is True but
+                the module does not implement a conformant ``stream()``.
             RuntimeError: If module.on_load() fails (propagated).
         """
         # Per apcore RFC docs/spec/rfc-ephemeral-modules.md
@@ -2180,14 +2223,30 @@ class Registry:
         # ``ephemeral`` ID (no dot) is rejected here too — ``startswith``
         # missed it, leaving a one-character carveout that contradicted
         # the canonical _is_ephemeral classifier used everywhere else.
+        # Typed, coded error like every other rejection in this method: a bare
+        # builtin ``ValueError`` carried no error code, so no conformance
+        # fixture could cover the path and no caller could branch on it.
+        # apcore-typescript throws ``InvalidInputError``; apcore-rust returns
+        # ``ModuleError(GeneralInvalidInput)``.
         if _is_ephemeral(module_id):
-            raise ValueError(
-                f"ephemeral.* module IDs must be registered via Registry.register(), "
-                f"not register_internal() (got: {module_id!r}). See apcore "
-                f"docs/spec/rfc-ephemeral-modules.md "
-                f"§'register_internal() interaction' for rationale."
+            raise InvalidInputError(
+                message=(
+                    f"ephemeral.* module IDs must be registered via Registry.register(), "
+                    f"not register_internal() (got: {module_id!r}). See apcore "
+                    f"docs/spec/rfc-ephemeral-modules.md "
+                    f"§'register_internal() interaction' for rationale."
+                ),
+                code=ErrorCodes.INVALID_MODULE_ID,
             )
         _validate_module_id(module_id, allow_reserved=True)
+
+        # Issue #62: a module that declares ``streaming=True`` MUST implement a
+        # conformant ``stream()``. This method bypasses **only** the
+        # reserved-word check — its docstring has always said so — but the
+        # streaming check ran on ``register()`` alone, so a sys module could
+        # advertise streaming it cannot do. apcore-rust routes both entry points
+        # through the shared ``register_core``, which performs the check.
+        _validate_streaming_annotation(module_id, module)
 
         _ensure_schema_adapter(module)
 

@@ -164,7 +164,13 @@ class TestAPCoreConstruction:
         import yaml
 
         config_file = tmp_path / "apcore.yaml"
-        config_data = {"extensions": {"root": "/custom/path"}}
+        # `version` and `project.name` have no canonical default, so
+        # Config.load()'s default validate=True requires them (§9.1).
+        config_data = {
+            "version": "1.0.0",
+            "project": {"name": "test"},
+            "extensions": {"root": "/custom/path"},
+        }
         config_file.write_text(yaml.dump(config_data))
 
         config = Config.load(str(config_file))

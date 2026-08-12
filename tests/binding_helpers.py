@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 
 def typed_function(name: str, count: int = 1) -> dict:
     """A simple typed function for binding tests."""
@@ -31,3 +33,20 @@ class ComplexService:
 
 
 NOT_CALLABLE = 42
+
+
+def strict_incompatible_function(tags: set[str]) -> dict:
+    """Input renders with `uniqueItems`, which OpenAI structured outputs rejects.
+
+    Used by the ``auto_schema: strict`` binding tests.
+    """
+    return {"tags": sorted(tags)}
+
+
+def strict_compatible_function(name: str, when: datetime, note: str | None = None) -> dict:
+    """Optional + datetime fields — both accepted by OpenAI structured outputs.
+
+    ``str | None`` renders as a nested ``anyOf`` and ``datetime`` as
+    ``format: date-time``; the previous ad-hoc detector wrongly rejected both.
+    """
+    return {"name": name, "when": when.isoformat(), "note": note}

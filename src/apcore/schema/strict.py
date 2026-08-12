@@ -36,6 +36,9 @@ def _apply_llm_descriptions(node: Any) -> None:
             _apply_llm_descriptions(prop)
     if "items" in node and isinstance(node["items"], dict):
         _apply_llm_descriptions(node["items"])
+    if "prefixItems" in node and isinstance(node["prefixItems"], list):
+        for item in node["prefixItems"]:
+            _apply_llm_descriptions(item)
     for keyword in ("oneOf", "anyOf", "allOf"):
         if keyword in node and isinstance(node[keyword], list):
             for sub in node[keyword]:
@@ -72,12 +75,26 @@ def _strip_extensions(node: Any, *, strip_defaults: bool = True) -> None:
                     _strip_extensions(item, strip_defaults=strip_defaults)
 
 
+def _declares_object_type(type_value: Any) -> bool:
+    """True when a ``type`` keyword declares "object", as a string or inside a list."""
+    if isinstance(type_value, str):
+        return type_value == "object"
+    if isinstance(type_value, list):
+        return "object" in type_value
+    return False
+
+
 def _convert_to_strict(node: Any) -> None:
     """Enforce strict mode rules on an object schema. Mutates in place."""
     if not isinstance(node, dict):
         return
 
-    if node.get("type") == "object" and "properties" in node:
+    # `type` may be a string ("object"), a list (["object", "null"] — what the
+    # nullable wrapper below produces for an optional nested object), or absent
+    # entirely: `properties` alone already implies an object schema, and
+    # requiring a `type` keyword let ``{"properties": {...}}`` through
+    # unhardened, which OpenAI structured outputs then rejects (A23 / §4.16).
+    if "properties" in node and ("type" not in node or _declares_object_type(node["type"])):
         node["additionalProperties"] = False
         existing_required = set(node.get("required", []))
         all_names = list(node["properties"].keys())
@@ -92,8 +109,13 @@ def _convert_to_strict(node: Any) -> None:
                     if "null" not in prop["type"]:
                         prop["type"].append("null")
             else:
-                # Pure $ref or composition — wrap in oneOf with null
-                node["properties"][name] = {"oneOf": [prop, {"type": "null"}]}
+                # Pure $ref or composition — wrap in anyOf with null. ``anyOf``,
+                # not ``oneOf``: OpenAI structured outputs accepts only ``anyOf``
+                # as the nullable-union spelling, and strict mode exists to feed
+                # that adapter. A ``oneOf`` the module author wrote is preserved
+                # untouched inside the wrapper — rewriting it would drop the
+                # exclusivity their contract asserts.
+                node["properties"][name] = {"anyOf": [prop, {"type": "null"}]}
 
         node["required"] = sorted(all_names)
 
@@ -103,6 +125,11 @@ def _convert_to_strict(node: Any) -> None:
             _convert_to_strict(prop)
     if "items" in node and isinstance(node["items"], dict):
         _convert_to_strict(node["items"])
+    # ``prefixItems`` — the Draft 2020-12 tuple form. Without this, an object
+    # sitting at a tuple position was never hardened.
+    if "prefixItems" in node and isinstance(node["prefixItems"], list):
+        for item in node["prefixItems"]:
+            _convert_to_strict(item)
     for keyword in ("oneOf", "anyOf", "allOf"):
         if keyword in node and isinstance(node[keyword], list):
             for sub in node[keyword]:

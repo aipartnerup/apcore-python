@@ -41,6 +41,7 @@ __all__ = [
     "CircularCallError",
     "CallFrequencyExceededError",
     "InvalidInputError",
+    "InvalidParentIdError",
     "ContextBindingError",
     "FuncMissingTypeHintError",
     "FuncMissingReturnTypeError",
@@ -728,6 +729,51 @@ class InvalidInputError(ModuleError):
         super().__init__(code=code, message=message, **kwargs)
 
 
+class InvalidParentIdError(ModuleError, ValueError):
+    """Raised when ``TraceContext.inject`` gets a ``parent_id`` override that is
+    not 16 lowercase hex characters (``^[0-9a-f]{16}$``).
+
+    Decision D-51 (``docs/features/observability.md`` §"Optional ``parent_id``
+    Override on ``inject()``") pins the wire code ``INVALID_PARENT_ID`` for this
+    rejection in every SDK: apcore-typescript throws an ``Error`` carrying
+    ``code = 'INVALID_PARENT_ID'`` and apcore-rust returns
+    ``ErrorCode::InvalidParentId``.
+
+    Why it also inherits :class:`ValueError`: ``TraceContext.inject`` is public
+    API that raised a bare ``ValueError`` from 0.13.0 through 0.26.x, and the
+    spec's own Python example documents ``except ValueError``. Inheriting both
+    gives existing ``except ValueError`` callers an unbroken contract while
+    supplying the ``.code`` a polyglot caller matches on. The MRO is
+    ``InvalidParentIdError -> ModuleError -> ValueError -> Exception``, so
+    ``ModuleError.__str__`` wins and ``str(exc)`` renders
+    ``"[INVALID_PARENT_ID] parent_id must be 16 lowercase hex chars, got 'ZZZZ'"``.
+
+    ``user_fixable`` is set on the class rather than in
+    :data:`_USER_FIXABLE_BY_CODE` because that map is asserted equal to
+    ``conformance/fixtures/error_recovery_metadata.json``, which does not
+    enumerate this code. ``True`` matches apcore-rust's ``user_fixable_for_code``
+    — the caller supplies the bad ``parent_id`` and can fix it by passing a
+    valid 16-hex span id.
+    """
+
+    _default_retryable: bool | None = False
+
+    def __init__(self, parent_id: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("user_fixable", True)
+        kwargs.setdefault(
+            "ai_guidance",
+            "The parent_id override passed to TraceContext.inject() must be 16 "
+            "lowercase hex characters (^[0-9a-f]{16}$). Pass a valid span id or "
+            "omit the argument to let apcore derive one.",
+        )
+        super().__init__(
+            code="INVALID_PARENT_ID",
+            message=f"parent_id must be 16 lowercase hex chars, got {parent_id!r}",
+            details={"parent_id": parent_id},
+            **kwargs,
+        )
+
+
 class ContextBindingError(ModuleError):
     """Raised when an Executor attempts to bind itself to a Context that is
     already bound to a *different* Executor instance.
@@ -1383,6 +1429,10 @@ class ErrorCodes:
     SYS_MODULES_DISABLED = "SYS_MODULES_DISABLED"
     STREAMING_INTERFACE_MISMATCH = "STREAMING_INTERFACE_MISMATCH"
     CONTEXT_BINDING_ERROR = "CONTEXT_BINDING_ERROR"
+    # W3C Trace Context (decision D-51): a `parent_id` override passed to
+    # `TraceContext.inject()` that is not `^[0-9a-f]{16}$`. Cross-language:
+    # TypeScript `code = 'INVALID_PARENT_ID'`, Rust `ErrorCode::InvalidParentId`.
+    INVALID_PARENT_ID = "INVALID_PARENT_ID"
 
     # Note: this class is intentionally NOT instantiated. All callers access the
     # constants as class attributes (`ErrorCodes.MODULE_NOT_FOUND`). A previous

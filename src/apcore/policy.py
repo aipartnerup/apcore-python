@@ -96,6 +96,41 @@ def _read_annotation_bool(annotations: Any, name: str) -> bool:
     return bool(getattr(annotations, name, False))
 
 
+def _require_bool(value: Any, key: str) -> bool:
+    """Return *value* as a bool, or raise when it is anything else.
+
+    Governance switches must not be set by type coercion. ``bool(value)`` read
+    ``gate_destructive: "false"`` as **True** — a non-empty string is truthy —
+    and ``gate_destructive: []`` as False, while apcore-rust's serde-typed
+    ``bool`` field and apcore-typescript's ``_requireBoolean`` reject either
+    outright. The same governance document produced a different effective policy
+    per runtime.
+
+    That matters more than a normal type nit: ``gate_destructive`` is the switch
+    that turns a ``destructive`` annotation into an approval gate
+    (PROTOCOL_SPEC §7.9.2), so a silent coercion is a governance decision made by
+    accident. §7.9.4 already makes ``from_dict`` fail loud on unknown keys; this
+    extends the same discipline to the values.
+
+    ``None`` (and an absent key) mean "unset" and take the documented default of
+    ``False`` rather than raising — parity with apcore-typescript.
+
+    Note ``bool`` is checked before ``int``: ``True`` is an ``int`` in Python, so
+    an ``isinstance(value, int)`` test would accept ``1`` and ``0`` as flags.
+
+    Raises:
+        ValueError: When *value* is neither None nor a bool.
+    """
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"Policy key '{key}' must be a boolean, got {type(value).__name__} ({value!r}); "
+            "a governance switch must not be set by type coercion"
+        )
+    return value
+
+
 def _restrictiveness(rule: PolicyRule) -> tuple[bool, bool]:
     """Tie-break key: rules that force gating rank above rules that relax it."""
     return (rule.requires_approval is True, rule.destructive is True)
@@ -197,8 +232,13 @@ class ExecutionPolicy:
     def from_dict(cls, data: Any) -> ExecutionPolicy:
         """Build a policy from a plain mapping (YAML/JSON governance file).
 
-        Parsing is strict: unknown keys raise ``ValueError`` so a typo in a
-        governance file fails loud instead of silently disabling a control.
+        Parsing is strict in both directions: unknown keys raise ``ValueError``
+        so a typo in a governance file fails loud instead of silently disabling
+        a control, and ``gate_destructive`` / ``strict`` must be real booleans
+        rather than anything ``bool()`` happens to accept. ``gate_destructive:
+        "false"`` used to enable the gate (a non-empty string is truthy) while
+        apcore-rust and apcore-typescript both rejected the document — see
+        :func:`_require_bool`.
 
         Expected shape::
 
@@ -244,6 +284,6 @@ class ExecutionPolicy:
 
         return cls(
             rules,
-            gate_destructive=bool(data.get("gate_destructive", False)),
-            strict=bool(data.get("strict", False)),
+            gate_destructive=_require_bool(data.get("gate_destructive"), "gate_destructive"),
+            strict=_require_bool(data.get("strict"), "strict"),
         )

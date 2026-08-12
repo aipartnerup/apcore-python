@@ -2,28 +2,18 @@
 
 from __future__ import annotations
 
-import json
-import os
 import re
-from pathlib import Path
 
 import pytest
 
 from apcore.events.emitter import ApCoreEvent, EventEmitter, _DLQ_EVENT_TYPE
 from apcore.events.retry import EventRetryConfig
-
-
-def _fixture_path() -> Path:
-    env = os.environ.get("APCORE_SPEC_REPO")
-    if env:
-        return Path(env) / "conformance" / "fixtures" / "event_delivery_semantics.json"
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    return repo_root.parent / "apcore" / "conformance" / "fixtures" / "event_delivery_semantics.json"
+from conformance.canonical_fixtures import load_fixture
 
 
 def _load_fixture() -> dict:
-    with _fixture_path().open() as f:
-        return json.load(f)
+    """Load the canonical fixture from the apcore spec repo."""
+    return load_fixture("event_delivery_semantics.json")
 
 
 def _make_event(name: str, payload: dict) -> ApCoreEvent:

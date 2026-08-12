@@ -500,16 +500,24 @@ class TestRegisterInternalRejectsEphemeral:
     def test_register_internal_rejects_ephemeral_id(self) -> None:
         registry = Registry()
         mod = _EphemeralModuleApproved()
-        with pytest.raises(ValueError, match="ephemeral"):
+        with pytest.raises(InvalidInputError, match="ephemeral"):
             registry.register_internal("ephemeral.test_v1", mod)
         # And the rejection MUST short-circuit before any state mutation.
         assert registry.get("ephemeral.test_v1") is None
 
     def test_register_internal_error_mentions_register(self) -> None:
-        """The error message MUST point the caller to ``Registry.register()``."""
+        """The error message MUST point the caller to ``Registry.register()``.
+
+        The error is a typed, coded ``InvalidInputError`` — the same class every
+        other rejection in ``register_internal`` raises, and what
+        apcore-typescript throws / apcore-rust returns. It used to be a bare
+        builtin ``ValueError`` with no code, which no conformance fixture could
+        cover and no caller could branch on.
+        """
         registry = Registry()
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(InvalidInputError) as exc_info:
             registry.register_internal("ephemeral.bad", _EphemeralModuleApproved())
         msg = str(exc_info.value)
         assert "Registry.register()" in msg
         assert "ephemeral" in msg
+        assert exc_info.value.code == "INVALID_MODULE_ID"

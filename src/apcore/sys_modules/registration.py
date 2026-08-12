@@ -653,11 +653,18 @@ def _create_subscriber(sub_cfg: dict[str, Any]) -> EventSubscriber:
 def _bridge_registry_events(registry: Registry, emitter: EventEmitter) -> None:
     """Bridge registry register/unregister events to the EventEmitter.
 
-    Emits both the canonical ``apcore.registry.module_registered`` /
-    ``apcore.registry.module_unregistered`` event types and, for the
-    deprecation window, the legacy bare names with ``deprecated: true``
-    in the payload. Legacy names are scheduled for removal in v0.22.0
-    (Issue #36).
+    Emits the canonical ``apcore.registry.module_registered`` /
+    ``apcore.registry.module_unregistered`` event types, and ONLY those.
+
+    Correction: this docstring previously described a dual emit of the legacy
+    bare names (``module_registered`` / ``module_unregistered``) carrying
+    ``deprecated: true``, "scheduled for removal in v0.22.0 (Issue #36)". The
+    removal happened and the code below has emitted the canonical name alone
+    ever since; only the docstring still described the deprecation window — the
+    description a maintainer would trust when deciding whether a legacy
+    subscriber still receives anything. The inverse assertion is pinned by the
+    ``legacy_names_are_not_emitted`` case of
+    ``conformance/fixtures/event_naming.json`` (apcore#78).
     """
 
     def _now() -> str:

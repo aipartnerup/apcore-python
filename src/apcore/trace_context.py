@@ -8,6 +8,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
+from apcore.errors import InvalidParentIdError
+
 Context: TypeAlias = Any
 
 __all__ = [
@@ -98,8 +100,12 @@ class TraceContext:
         ``trace-id`` field.  The ``parent-id`` is, in order of preference:
 
         1. The explicit *parent_id* argument when provided.  Must be a
-           16-character lowercase hex string; otherwise :class:`ValueError`
-           is raised.
+           16-character lowercase hex string; otherwise
+           :class:`~apcore.errors.InvalidParentIdError` is raised.  That class
+           carries ``code == "INVALID_PARENT_ID"`` (decision D-51, matching
+           apcore-typescript and apcore-rust) and still inherits
+           :class:`ValueError`, so callers written against the pre-0.27
+           ``except ValueError`` contract keep working.
         2. The ``span_id`` of the most recent span on the tracing stack
            (``context.data['_apcore.mw.tracing.spans']``) if present.
         3. A random 8-byte value.
@@ -111,7 +117,7 @@ class TraceContext:
         """
         if parent_id is not None:
             if not isinstance(parent_id, str) or not _PARENT_ID_RE.match(parent_id):
-                raise ValueError(f"parent_id must be 16 lowercase hex chars, got {parent_id!r}")
+                raise InvalidParentIdError(parent_id)
             chosen_parent_id = parent_id
         else:
             spans_stack = context.data.get("_apcore.mw.tracing.spans")
@@ -171,6 +177,17 @@ class TraceContext:
         Raises:
             ValueError: If *traceparent* does not match the expected
                 ``00-{32hex}-{16hex}-{2hex}`` format.
+
+        Note:
+            This deliberately raises a *bare* ``ValueError`` rather than
+            :class:`~apcore.errors.InvalidParentIdError`.  D-51 pins
+            ``INVALID_PARENT_ID`` for one thing only: a caller-supplied
+            ``parent_id`` override on :meth:`inject`.  Here the whole inbound
+            header is malformed, which is a different failure, and
+            apcore-typescript's ``fromTraceparent`` also throws a codeless
+            ``Error`` (apcore-rust has no equivalent entry point).  Attaching
+            ``INVALID_PARENT_ID`` here would invent a third shape rather than
+            close a gap.
         """
         match = _TRACEPARENT_RE.match(traceparent.strip().lower())
         if match is None:

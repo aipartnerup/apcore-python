@@ -9,6 +9,24 @@ from typing import Any
 
 REDACTED_VALUE: str = "***REDACTED***"
 
+# Correlation identifiers that MUST NEVER be redacted, whatever the configured
+# ``sensitive_keys`` or ``regex_patterns`` say.
+#
+#   observability.md § Redaction configuration: "Implementations MUST NOT redact
+#   `trace_id`, `caller_id`, `module_id`, or `span_id`; these correlation fields
+#   MUST appear unmodified in every log entry."
+#
+# The rule is unconditional, so the exemption covers BOTH the field-name rule and
+# the value-regex rule — a ``trace_id`` whose VALUE happens to match a secret
+# regex must still survive, which is exactly where correlation matters most.
+# Canonical home: this leaf module, so the executor capture path
+# (``redact_sensitive``) and the log-emission path
+# (``apcore.observability.context_logger``) share one definition instead of
+# guarding at one call site and not the other. Mirrors apcore-rust
+# ``NEVER_REDACT_FIELDS`` (src/observability/redaction.rs:18) and
+# apcore-typescript ``PROTECTED_LOG_FIELDS``.
+PROTECTED_LOG_FIELDS: frozenset[str] = frozenset({"trace_id", "span_id", "caller_id", "module_id", "target_id"})
+
 
 def _default_sensitive_keys() -> list[str]:
     """Return the spec-default ``obs.redaction.sensitive_keys`` list.
@@ -178,15 +196,25 @@ def _redact_by_keys_and_regex(
     Replaces the legacy ``_redact_secret_prefix`` walk (Issue #43 §5).
     The default ``sensitive_keys`` list still contains ``_secret_*`` so
     every existing call site retains its prior behaviour.
+
+    Keys in :data:`PROTECTED_LOG_FIELDS` are exempt from both rules at every
+    depth, matching apcore-rust's per-entry ``NEVER_REDACT_FIELDS`` check.
     """
     for key in data:
         value = data[key]
         if value is None:
             continue
-        if _key_matches(key, sensitive_keys):
+        # A correlation identifier is exempt from BOTH rules below. Note the
+        # guard does not stop the walk: a container under a protected key is
+        # still descended into, only the protected field's own scalar value is
+        # immune (apcore-rust `redact_inner`: "Containers below a protected key
+        # are still descended into ... only the protected field's own scalar
+        # value is immune").
+        protected = key in PROTECTED_LOG_FIELDS
+        if not protected and _key_matches(key, sensitive_keys):
             data[key] = token
             continue
-        if _value_matches(value, regex_patterns):
+        if not protected and _value_matches(value, regex_patterns):
             data[key] = token
             continue
         if isinstance(value, dict):

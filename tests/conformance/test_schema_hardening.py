@@ -6,24 +6,58 @@ Exercises five fixture files:
   schema_hardening_constraints.json — numeric + string constraint enforcement
   schema_hardening_formats.json     — format-level warnings (SHOULD, not hard error)
   schema_hardening_cache.json       — SHA-256 content-addressable deduplication
+
+DRIVER CONTRACT (union + recursive): those two fixtures MUST be driven through
+the code path a module invocation takes — ``SchemaLoader.resolve()``, i.e.
+``RefResolver`` followed by ``generate_model()``, then ``SchemaValidator``. They
+used to call ``validate_schema_dict()``, which hands the raw JSON Schema straight
+to the ``jsonschema`` library. That is not what a module call goes through, and it
+is exactly where the recursive-schema defect lived: ``jsonschema`` resolved
+``{"$ref": "#"}`` happily while ``RefResolver`` in front of it raised
+``SCHEMA_CIRCULAR_REF``, so conformance stayed green on a schema no module could
+register. The remaining three fixtures assert properties of
+``hardening``/``content_hash`` themselves and keep calling them directly.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
+from apcore.config import Config
 from apcore.schema.hardening import content_hash, validate_schema_dict
+from apcore.schema.loader import SchemaLoader
+from apcore.schema.types import SchemaDefinition, SchemaValidationResult
+from apcore.schema.validator import SchemaValidator
+from conformance.canonical_fixtures import load_fixture
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
+# Read the canonical fixture in the spec repo, not a vendored snapshot, so a
+# spec-side edit reaches this driver on the next run — the same contract
+# apcore-typescript and apcore-rust already honour.
+_load = load_fixture
 
 
-def _load(name: str) -> dict[str, Any]:
-    return json.loads((FIXTURES_DIR / name).read_text())
+def _module_model(schema: dict[str, Any]) -> type[BaseModel]:
+    """Compile *schema* exactly as registering a module would.
+
+    ``SchemaLoader.resolve()`` runs ``RefResolver`` and then ``generate_model()``
+    — the pair ``BuiltinInputValidation`` ultimately validates against.
+    """
+    loader = SchemaLoader(Config({}))
+    definition = SchemaDefinition(
+        module_id="conformance.schema_hardening",
+        description="conformance fixture",
+        input_schema=schema,
+        output_schema={},
+    )
+    return loader.resolve(definition)[0].model
+
+
+def _validate_via_module_path(data: Any, schema: dict[str, Any]) -> SchemaValidationResult:
+    return SchemaValidator(coerce_types=False).validate(data, _module_model(schema))
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +79,7 @@ class TestUnionFixture:
         schema: dict[str, Any] = tc["schema"]
         data = tc["input"]
         expected = tc["expected"]
-        result = validate_schema_dict(data, schema)
+        result = _validate_via_module_path(data, schema)
         assert result.valid == expected["valid"], (
             f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
         )
@@ -74,7 +108,7 @@ class TestRecursiveFixture:
         schema: dict[str, Any] = self._fixture["schema"]
         data = tc["input"]
         expected = tc["expected"]
-        result = validate_schema_dict(data, schema)
+        result = _validate_via_module_path(data, schema)
         assert result.valid == expected["valid"], (
             f"[{tc['id']}] valid mismatch: got {result.valid}, expected {expected['valid']}. " f"errors={result.errors}"
         )

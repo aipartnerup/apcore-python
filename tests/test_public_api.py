@@ -553,6 +553,7 @@ class TestPublicAPIAll:
         "IdTooLongError",
         "InternalError",
         "InvalidInputError",
+        "InvalidParentIdError",
         "InvalidSegmentError",
         "ModuleExecuteError",
         "ModuleIdConflictError",
@@ -769,6 +770,12 @@ class TestPublicAPIAll:
         "METRIC_DURATION_SECONDS",
         # Health utility
         "classify_health_status",
+        # Context-data namespace validation (middleware-system.md 1.1) — peer of
+        # apcore-typescript validateContextKey / apcore-rust validate_context_key
+        "validate_context_key",
+        "NamespaceCheck",
+        "APCORE_KEY_PREFIX",
+        "EXT_KEY_PREFIX",
     }
 
     def test_all_contains_all_expected_names(self):

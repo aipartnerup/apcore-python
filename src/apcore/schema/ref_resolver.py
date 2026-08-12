@@ -20,6 +20,22 @@ __all__ = ["RefResolver"]
 _INLINE_SENTINEL = Path("__inline__")
 
 
+def _root_ref_aliases(document: dict[str, Any]) -> list[str]:
+    """The ``$ref`` strings that denote *document* itself.
+
+    Seeding the visited set with them makes a self-reference lazy from the very
+    first encounter, so a recursive schema is never inlined even once
+    (PROTOCOL_SPEC §4.15.2). The root ``$id`` is included because JSON Schema
+    lets a document reference itself by identifier —
+    ``{"$id": "TreeNode", ... "$ref": "TreeNode"}``.
+    """
+    aliases = ["#", "#/"]
+    schema_id = document.get("$id")
+    if isinstance(schema_id, str) and schema_id:
+        aliases.append(schema_id)
+    return aliases
+
+
 class RefResolver:
     """Resolves $ref references in JSON Schema documents.
 
@@ -42,8 +58,11 @@ class RefResolver:
         result = copy.deepcopy(schema)
         # Cache the inline schema so local $ref (#/...) can resolve against it
         self._file_cache[_INLINE_SENTINEL] = result
+        # Only meaningful for an inline document: with a `current_file`, `#` points
+        # at that file rather than at the schema passed in.
+        visited: set[str] = set() if current_file else set(_root_ref_aliases(result))
         try:
-            self._resolve_node(result, current_file, visited_refs=set(), depth=0)
+            self._resolve_node(result, current_file, visited_refs=visited, depth=0)
         finally:
             self._file_cache.pop(_INLINE_SENTINEL, None)
         return result
@@ -55,13 +74,27 @@ class RefResolver:
         visited_refs: set[str] | None = None,
         depth: int = 0,
         sibling_keys: dict[str, Any] | None = None,
+        from_ref_chain: bool = False,
     ) -> Any:
-        """Resolve a single $ref string to its target content."""
+        """Resolve a single $ref string to its target content.
+
+        ``from_ref_chain`` marks the caller as another ``$ref`` that had this one
+        as its immediate target — a ``$ref`` → ``$ref`` hop that never reaches a
+        schema body. Re-entering a reference along such a chain is a genuine
+        cycle (PROTOCOL_SPEC §4.15.2 "circular reference"): resolution cannot
+        terminate and there is nothing to defer to, so ``SCHEMA_CIRCULAR_REF`` is
+        raised. Re-entering a reference after descending through ``properties`` /
+        ``items`` / a combinator is instead a *self-reference* — a recursive data
+        structure — and the ``$ref`` is preserved verbatim as a lazy reference for
+        the model generator to bind.
+        """
         if visited_refs is None:
             visited_refs = set()
 
         if ref_string in visited_refs:
-            raise SchemaCircularRefError(ref_path=ref_string)
+            if from_ref_chain:
+                raise SchemaCircularRefError(ref_path=ref_string)
+            return {"$ref": ref_string, **(sibling_keys or {})}
 
         if depth >= self._max_depth:
             raise SchemaMaxDepthExceededError(
@@ -91,6 +124,7 @@ class RefResolver:
                 visited_refs,
                 depth + 1,
                 nested_siblings if nested_siblings else None,
+                from_ref_chain=True,
             )
 
         self._resolve_node(result, effective_file, visited_refs, depth + 1)

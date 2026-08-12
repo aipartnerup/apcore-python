@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from apcore.utils.redaction import PROTECTED_LOG_FIELDS as _PROTECTED_LOG_FIELDS
+
 from apcore.context_keys import LOGGING_STARTS
 from apcore.middleware.base import Middleware
 
@@ -32,11 +34,16 @@ _REDACTED = "***REDACTED***"
 # inspected — secrets buried below depth 32 are out of scope.
 _MAX_REDACTION_DEPTH = 32
 
-# Correlation-ID fields that must NEVER be replaced by user-supplied
-# RedactionConfig field patterns.  Removing or scrambling these would break
-# log/trace correlation.  Mirrors the TS PROTECTED_LOG_FIELDS and Rust
-# NEVER_REDACT_FIELDS sets.
-PROTECTED_LOG_FIELDS: frozenset[str] = frozenset({"trace_id", "span_id", "caller_id", "module_id", "target_id"})
+# Correlation-ID fields that must NEVER be redacted, by any rule.  Removing or
+# scrambling these would break log/trace correlation.  Mirrors the TS
+# PROTECTED_LOG_FIELDS and Rust NEVER_REDACT_FIELDS sets.
+#
+# Re-exported from :mod:`apcore.utils.redaction`, which owns the canonical set:
+# the exemption has to hold on BOTH mandated surfaces ("Redaction MUST apply
+# both at log emission and at the executor's input/output capture point"), and
+# two independent literals is how it came to hold on neither of the recursive
+# ones.  Kept importable from this module — it is the documented public name.
+PROTECTED_LOG_FIELDS = _PROTECTED_LOG_FIELDS
 
 
 @dataclass
@@ -226,22 +233,40 @@ def _redact_secrets_recursive(
     :data:`_MAX_REDACTION_DEPTH` the current node is returned as-is —
     secrets deeper than that threshold are not inspected (defensive bound
     matching the schema validation depth limit).
+
+    Keys in :data:`PROTECTED_LOG_FIELDS` are exempt from both the name rule
+    and the value regex, at every depth.  Only the protected field's own scalar
+    value is immune: a container under a protected key is still descended into,
+    and array elements — having no key of their own — are never protected.
     """
     if config is None:
         config = RedactionConfig.default()
     if depth > _MAX_REDACTION_DEPTH:
         return value
+
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
-            if isinstance(k, str) and _key_matches_sensitive(k, config.sensitive_keys):
+            # A correlation-ID key is exempt from BOTH rules below, not just the
+            # name one: observability.md states the exemption unconditionally, so
+            # a trace_id whose VALUE happens to match a secret regex must survive
+            # too. Decided once per entry, as apcore-rust does in `redact_inner`.
+            protected = isinstance(k, str) and k in PROTECTED_LOG_FIELDS
+            if not protected and isinstance(k, str) and _key_matches_sensitive(k, config.sensitive_keys):
                 out[k] = config.replacement
-            elif isinstance(v, str) and _value_matches_regex(v, config.regex_patterns):
+            elif not protected and isinstance(v, str) and _value_matches_regex(v, config.regex_patterns):
                 out[k] = config.replacement
+            elif protected and not isinstance(v, (dict, list)):
+                # Only the protected field's OWN scalar value is immune; a
+                # container under a protected key falls through and is descended
+                # into, matching apcore-rust.
+                out[k] = v
             else:
                 out[k] = _redact_secrets_recursive(v, depth + 1, config)
         return out
     if isinstance(value, list):
+        # Array elements have no key of their own, so none of them is protected
+        # — including elements directly under a protected key.
         return [_redact_secrets_recursive(item, depth + 1, config) for item in value]
     if isinstance(value, str) and _value_matches_regex(value, config.regex_patterns):
         return config.replacement

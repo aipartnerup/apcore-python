@@ -397,8 +397,48 @@ class BuiltinApprovalGate(BaseStep):
         """Replace the execution policy used by this step at runtime."""
         self._policy = policy
 
+    @staticmethod
+    def _take_approval_token(ctx: PipelineContext) -> str | None:
+        """Remove ``_approval_token`` from ``ctx.inputs`` and return it, or None.
+
+        Rebuilds the inputs rather than calling ``ctx.inputs.pop``.
+        ``PipelineContext`` holds the very dict the caller passed to ``call()``
+        (``Executor.call_async`` does ``inputs=inputs or {}``, no copy), so
+        popping mutated the caller's own object — a module invocation silently
+        edited its caller's data. apcore-typescript rebuilds too
+        (``const { _approval_token: _, ...rest } = ctx.inputs``).
+
+        The non-string check runs here, before every early return, so a
+        malformed token never reaches ``check_approval`` regardless of whether
+        the module turns out to be gated (parity with apcore-rust, which rejects
+        it with ``GENERAL_INVALID_INPUT``).
+
+        Raises:
+            InvalidInputError: When the token is present but not a string.
+        """
+        if "_approval_token" not in ctx.inputs:
+            return None
+        token = ctx.inputs["_approval_token"]
+        ctx.inputs = {k: v for k, v in ctx.inputs.items() if k != "_approval_token"}
+        if not isinstance(token, str):
+            raise InvalidInputError(
+                message="_approval_token must be a string",
+                code="GENERAL_INVALID_INPUT",
+            )
+        return token
+
     async def execute(self, ctx: PipelineContext) -> StepResult:
         module = ctx.module
+        # PROTOCOL_SPEC §7.4 states this unconditionally: "_approval_token MUST
+        # be removed from arguments before passing to subsequent steps". It is a
+        # protocol-level key, not part of any module's input contract, so it has
+        # to go before *every* exit from this step — including the not-gated and
+        # no-handler-skip paths, which used to leak it into input validation
+        # (where `additionalProperties: false` rejects it as an undeclared key)
+        # and into the module's own execute(). Parity with apcore-typescript,
+        # which extracts it as the first statement of execute().
+        approval_token = self._take_approval_token(ctx)
+
         decision: PolicyDecision | None = None
         if self._policy is not None:
             decision = self._policy.resolve(ctx.module_id, getattr(module, "annotations", None))
@@ -442,19 +482,10 @@ class BuiltinApprovalGate(BaseStep):
             )
             return StepResult(action="continue")
 
-        # Phase B token resume vs fresh request
-        if "_approval_token" in ctx.inputs:
-            token = ctx.inputs.pop("_approval_token")
-            # Security gate: reject a non-string token before it reaches the
-            # handler. A malformed token must never be passed raw to
-            # check_approval (mirrors Rust rejecting it with
-            # GENERAL_INVALID_INPUT — the safest cross-language behavior).
-            if not isinstance(token, str):
-                raise InvalidInputError(
-                    message="_approval_token must be a string",
-                    code="GENERAL_INVALID_INPUT",
-                )
-            result = await self._handler.check_approval(token)
+        # Phase B token resume vs fresh request. The token was taken off the
+        # inputs at the top of this method, before any early return.
+        if approval_token is not None:
+            result = await self._handler.check_approval(approval_token)
         else:
             annotations = _coerce_annotations(getattr(module, "annotations", None))
             if decision is not None:
@@ -630,6 +661,70 @@ def _module_is_destructive(module: Any) -> bool:
     return False
 
 
+def _read_module_timeout_ms(module: Any, module_id: str) -> int | None:
+    """Read a module's declared per-module timeout in milliseconds, or None.
+
+    The declaration lives at ``resources.timeout`` (PROTOCOL_SPEC §5.2,
+    ``docs/features/core-executor.md`` §Timeout Specification). Three spellings
+    are accepted, matching how each SDK's descriptor stores it:
+
+    * ``module.resources["timeout"]`` — the direct attribute, as
+      apcore-typescript's ``mod['resources']`` reads it;
+    * ``module.annotations.extra["resources"]["timeout"]`` — where
+      ``ModuleAnnotations.from_dict`` files a non-canonical top-level key, and
+      where apcore-rust reads it (``annotations.extra["resources"]``);
+    * ``module.annotations["resources"]["timeout"]`` — a raw dict annotations
+      block, as apcore-typescript's ``mod.annotations.resources`` reads it.
+
+    Prior revisions read ``module.timeout_ms``, an attribute no apcore-python
+    module ever defines. The per-module half of the dual-timeout model was
+    therefore dead code: every call fell back to ``executor.default_timeout``
+    and the "negative timeout MUST raise ``GENERAL_INVALID_INPUT``" rule was
+    unreachable.
+
+    Returns None when nothing is declared or the value is not a real number, so
+    the caller falls back to the default. ``bool`` is excluded on purpose: it
+    subclasses ``int`` in Python, and ``True`` must not become a 1 ms timeout.
+
+    Raises:
+        InvalidInputError: When a declared timeout is negative.
+    """
+
+    def read_number(value: Any) -> int | float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if value != value or value in (float("inf"), float("-inf")):  # NaN / infinity
+            return None
+        if value < 0:
+            raise InvalidInputError(
+                message=f"Module '{module_id}' declares a negative timeout: {value}",
+                code="GENERAL_INVALID_INPUT",
+            )
+        return value
+
+    def read_resources(resources: Any) -> int | float | None:
+        if isinstance(resources, dict):
+            return read_number(resources.get("timeout"))
+        if resources is not None:
+            return read_number(getattr(resources, "timeout", None))
+        return None
+
+    declared = read_resources(getattr(module, "resources", None))
+
+    if declared is None:
+        annotations = getattr(module, "annotations", None)
+        if isinstance(annotations, ModuleAnnotations):
+            declared = read_resources(annotations.extra.get("resources"))
+        elif isinstance(annotations, dict):
+            declared = read_resources(annotations.get("resources"))
+        elif annotations is not None:
+            extra = getattr(annotations, "extra", None)
+            if isinstance(extra, dict):
+                declared = read_resources(extra.get("resources"))
+
+    return None if declared is None else int(declared)
+
+
 def _coerce_annotations(annotations: Any) -> ModuleAnnotations:
     """Coerce raw module annotations into a ``ModuleAnnotations`` instance."""
     if isinstance(annotations, ModuleAnnotations):
@@ -750,7 +845,15 @@ class BuiltinInputValidation(BaseStep):
             return StepResult(action="continue")
 
         try:
-            input_schema.model_validate(ctx.inputs)
+            # ``strict=True``: the module-invocation boundary performs NO type
+            # coercion. A contract that declares ``integer`` receives an
+            # integer — ``"42"`` is a type error, not an integer spelled
+            # differently. A module's input contract has to mean the same thing
+            # regardless of which host loaded it, so this is not host-
+            # configurable (TYPE_MAPPING §17.3). ``SchemaValidator`` still
+            # exposes ``coerce_types`` as a library-level knob for callers
+            # doing their own validation; it has no effect on this path.
+            input_schema.model_validate(ctx.inputs, strict=True)
         except pydantic.ValidationError as exc:
             errors = _convert_validation_errors(exc)
             raise SchemaValidationError(
@@ -825,18 +928,13 @@ class BuiltinExecute(BaseStep):
             ctx.output_stream = module.stream(inputs, ctx.context)
             return StepResult(action="skip_to", skip_to="return_result")
 
-        # Determine per-module timeout
-        module_timeout_ms = getattr(module, "timeout_ms", None)
-        if module_timeout_ms is not None:
-            if module_timeout_ms < 0:
-                raise InvalidInputError(
-                    message=f"Negative timeout: {module_timeout_ms}",
-                )
-            timeout_s = module_timeout_ms / 1000.0
-        elif self._default_timeout > 0:
-            timeout_s = self._default_timeout / 1000.0
-        else:
-            timeout_s = None
+        # Determine per-module timeout. `0` means "no per-module limit" on both
+        # sides of the fallback — the same reading apcore-typescript
+        # (`if (timeoutMs === 0)`) and apcore-rust (`if timeout_ms > 0`) use.
+        # The global deadline below still applies.
+        module_timeout_ms = _read_module_timeout_ms(module, ctx.module_id)
+        effective_timeout_ms = self._default_timeout if module_timeout_ms is None else module_timeout_ms
+        timeout_s = effective_timeout_ms / 1000.0 if effective_timeout_ms > 0 else None
 
         # Clamp to global deadline if set
         if global_deadline is not None:
@@ -902,7 +1000,9 @@ class BuiltinOutputValidation(BaseStep):
             return StepResult(action="continue")
 
         try:
-            output_schema.model_validate(ctx.output)
+            # ``strict=True`` — symmetric with input validation above: the
+            # module boundary never coerces (TYPE_MAPPING §17.3).
+            output_schema.model_validate(ctx.output, strict=True)
         except pydantic.ValidationError as exc:
             errors = _convert_validation_errors(exc)
             raise SchemaValidationError(

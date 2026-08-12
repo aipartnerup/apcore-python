@@ -43,9 +43,22 @@ _EXPECTED_KEYS = (
 
 
 class SchemaValidator:
-    """Validates runtime data against Pydantic models and produces apcore-standard error output."""
+    """Validates runtime data against Pydantic models and produces apcore-standard error output.
 
-    def __init__(self, coerce_types: bool = True) -> None:
+    ``coerce_types`` is a **library-level** knob, for a caller validating its own
+    untyped input (a CLI parsing argv, a form handler). It does **not** reach the
+    module-invocation boundary: ``BuiltinInputValidation`` /
+    ``BuiltinOutputValidation`` call ``model_validate(strict=True)`` directly and
+    never coerce, under any host configuration (TYPE_MAPPING §17.3). There is no
+    ``schema.validation.coerce_types`` setting and never was one an SDK read — a
+    module's contract has to mean the same thing regardless of who loaded it.
+
+    It defaults to ``False``, matching the boundary and the other two SDKs.
+    Coercion is opt-in: a validator that silently rewrites its input is the wrong
+    default for the common case of checking data you already believe is well-formed.
+    """
+
+    def __init__(self, coerce_types: bool = False) -> None:
         self._coerce_types = coerce_types
 
     def validate(self, data: Any, model: type[BaseModel]) -> SchemaValidationResult:
@@ -68,7 +81,11 @@ class SchemaValidator:
             return union_result
 
         # Empty schema (always-true) — accept any value, including non-dict.
-        if not model.model_fields:
+        # A field-less model is not necessarily an empty schema: a root-level
+        # combinator (`{"allOf": [...]}`), applicator or property-count keyword
+        # declares no `properties` either, and `generate_model` expresses those as
+        # model-level validators. Taking the shortcut there accepted every input.
+        if not model.model_fields and not getattr(model, "__apcore_has_assertions__", False):
             extra_cfg = model.model_config.get("extra", "ignore")
             if extra_cfg != "forbid":
                 return SchemaValidationResult(valid=True, errors=[])

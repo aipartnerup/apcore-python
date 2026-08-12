@@ -444,3 +444,70 @@ class TestPathTraversalContainment:
         schema = yaml.safe_load(main_file.read_text())
         result = resolver.resolve(schema, current_file=main_file)
         assert result["properties"]["e"] == {"type": "object"}
+
+
+# ---------------------------------------------------------------------------
+# Self-reference vs. circular reference (PROTOCOL_SPEC §4.15)
+# ---------------------------------------------------------------------------
+
+TREE_SCHEMA: dict[str, Any] = {
+    "$id": "TreeNode",
+    "type": "object",
+    "required": ["value"],
+    "properties": {
+        "value": {"type": "string"},
+        "children": {"type": "array", "items": {"$ref": "#"}},
+    },
+}
+
+
+class TestSelfReference:
+    """A recursive `$ref` is preserved lazily; only a `$ref` → `$ref` cycle fails."""
+
+    def test_hash_self_reference_is_preserved_not_rejected(self, tmp_path: Path) -> None:
+        # Regression: every self-referencing schema was unregisterable — the
+        # resolver treated the recursion anchor as a cycle and raised
+        # SCHEMA_CIRCULAR_REF, so `SchemaLoader.resolve()` failed before the model
+        # generator ever saw the schema.
+        resolved = RefResolver(schemas_dir=str(tmp_path)).resolve(TREE_SCHEMA)
+        assert resolved["properties"]["children"]["items"] == {"$ref": "#"}
+
+    def test_self_reference_by_document_id_is_preserved(self, tmp_path: Path) -> None:
+        schema = {
+            **TREE_SCHEMA,
+            "properties": {
+                "value": {"type": "string"},
+                "children": {"type": "array", "items": {"$ref": "TreeNode"}},
+            },
+        }
+        # Previously this took the relative-file branch and raised
+        # SchemaNotFoundError looking for a file named `TreeNode` on disk.
+        resolved = RefResolver(schemas_dir=str(tmp_path)).resolve(schema)
+        assert resolved["properties"]["children"]["items"] == {"$ref": "TreeNode"}
+
+    def test_self_referencing_defs_entry_is_preserved_at_re_entry(self, tmp_path: Path) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"root": {"$ref": "#/$defs/Node"}},
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "properties": {"child": {"$ref": "#/$defs/Node"}},
+                }
+            },
+        }
+        resolved = RefResolver(schemas_dir=str(tmp_path)).resolve(schema)
+        root = resolved["properties"]["root"]
+        assert root["type"] == "object"
+        assert root["properties"]["child"] == {"$ref": "#/$defs/Node"}
+
+    def test_ref_only_cycle_still_raises_circular_ref(self, tmp_path: Path) -> None:
+        # A `$ref` → `$ref` chain reaches no schema body, consumes no instance and
+        # cannot terminate: that is the circular case §4.15 still rejects.
+        schema = {
+            "$ref": "#/$defs/a",
+            "$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}},
+        }
+        with pytest.raises(SchemaCircularRefError) as exc_info:
+            RefResolver(schemas_dir=str(tmp_path)).resolve(schema)
+        assert exc_info.value.code == "SCHEMA_CIRCULAR_REF"

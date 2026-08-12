@@ -26,11 +26,11 @@ from apcore.errors import (
     BindingNotCallableError,
     BindingSchemaInferenceFailedError,
     BindingSchemaModeConflictError,
-    BindingStrictSchemaIncompatibleError,
     FuncMissingReturnTypeError,
     FuncMissingTypeHintError,
 )
 from apcore.registry import Registry
+from apcore.schema.openai_strict import assert_openai_strict_compatible
 
 __all__ = ["BindingLoader"]
 
@@ -50,16 +50,6 @@ _UNSUPPORTED_KEYS = {"oneOf", "anyOf", "allOf", "$ref", "format"}
 _SUPPORTED_SPEC_VERSIONS = {"1.0"}
 
 _AUTO_SCHEMA_VALID_STRINGS = {"true", "permissive", "strict"}
-
-_STRICT_INCOMPATIBLE_FORMATS = {
-    "date-time",
-    "date",
-    "time",
-    "email",
-    "uri",
-    "uuid",
-    "binary",
-}
 
 
 def _build_model_from_json_schema(schema: dict[str, Any], model_name: str = "DynamicModel") -> type[BaseModel]:
@@ -101,29 +91,6 @@ def _normalize_auto_schema(value: Any) -> str | None:
     if isinstance(value, str) and value in _AUTO_SCHEMA_VALID_STRINGS:
         return "permissive" if value == "true" else value
     raise ValueError(f"auto_schema must be a boolean or one of {sorted(_AUTO_SCHEMA_VALID_STRINGS)}; got {value!r}")
-
-
-def _detect_strict_incompatibilities(schema_dict: dict[str, Any]) -> list[str]:
-    """Walk a JSON Schema dict; return list of features incompatible with OpenAI/Anthropic strict mode."""
-    incompatibilities: list[str] = []
-
-    def _walk(node: Any, path: str = "$") -> None:
-        if not isinstance(node, dict):
-            return
-        for combinator in ("oneOf", "anyOf"):
-            if combinator in node:
-                incompatibilities.append(f"{path}.{combinator}")
-        fmt = node.get("format")
-        if isinstance(fmt, str) and fmt in _STRICT_INCOMPATIBLE_FORMATS:
-            incompatibilities.append(f"{path}.format={fmt}")
-        for k, v in node.get("properties", {}).items():
-            _walk(v, f"{path}.{k}")
-        items = node.get("items")
-        if isinstance(items, dict):
-            _walk(items, f"{path}[]")
-
-    _walk(schema_dict)
-    return incompatibilities
 
 
 def _detect_schema_modes(binding: dict[str, Any]) -> list[str]:
@@ -398,14 +365,12 @@ class BindingLoader:
         file_path: str,
     ) -> None:
         """Validate that the model's JSON schema is OpenAI/Anthropic-strict-compatible."""
-        schema_dict = schema_model.model_json_schema()
-        incompatibilities = _detect_strict_incompatibilities(schema_dict)
-        if incompatibilities:
-            raise BindingStrictSchemaIncompatibleError(
-                module_id=module_id,
-                features_listed=[f"{side}:{feat}" for feat in incompatibilities],
-                file_path=file_path,
-            )
+        assert_openai_strict_compatible(
+            schema_model.model_json_schema(),
+            module_id=module_id,
+            side=side,
+            file_path=file_path,
+        )
 
     def _create_module_from_binding(
         self,

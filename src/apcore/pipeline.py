@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from apcore.errors import ModuleError
+from apcore.middleware.manager import MiddlewareChainError
 from apcore.utils.pattern import match_pattern
 
 _logger = logging.getLogger(__name__)
@@ -133,7 +134,26 @@ class PipelineTrace:
 
 @dataclass
 class PipelineState:
-    """Snapshot passed to run_until predicates after each step completes."""
+    """Snapshot passed to run_until predicates and to StepMiddleware hooks.
+
+    ``outputs`` maps step name to that step's output. In a **StepMiddleware
+    hook** it contains exactly the steps that completed *before*
+    ``step_name`` — the current step is never present, in any of the three
+    hooks: ``before_step`` has not run it, ``on_step_error`` has no output to
+    record, and in ``after_step`` the current step's output is the ``result``
+    argument. One rule with one meaning, so a middleware never has to know
+    which hook it is in before reading the map
+    (middleware-system.md § "What ``state.outputs`` contains").
+
+    A ``run_until`` predicate is the exception, and deliberately so: it is
+    evaluated *after* the step it judges, so ``outputs`` there does include
+    ``step_name``.
+
+    ``outputs`` is a **live reference** to the engine's map, not a copy — the
+    same aliasing apcore-typescript has. Read it (or copy it) inside the hook:
+    a middleware that stashes the state object and inspects it after the run
+    sees the final map, in which every step is present.
+    """
 
     step_name: str
     outputs: dict[str, Any]
@@ -148,14 +168,51 @@ class StepMiddleware(Protocol):
     middlewares wrap whole module calls.  All three hooks are optional and
     each method may be either synchronous or ``async``.
 
-    Hook semantics:
+    Hook semantics (middleware-system.md § "Pipeline Step Middleware", pinned
+    by ``conformance/fixtures/pipeline_step_middleware.json``):
 
-    * ``before_step(step_name, state)`` — invoked just before the step runs.
-    * ``after_step(step_name, state, result)`` — invoked after a successful step.
-    * ``on_step_error(step_name, state, error)`` — invoked when a step raises.
-      Returning a truthy value is treated as a *recovery result* (a
-      :class:`StepResult`) and execution continues normally.  Returning
-      ``None`` lets the original exception propagate.
+    * ``before_step(step_name, state)`` — invoked just before the step runs, in
+      **registration order**.  It is an *observation* hook: a Step is
+      ``execute(ctx)`` and takes no ``inputs`` argument, so the return value
+      carries no meaning and MUST NOT change what the step body sees.  Input
+      rewriting is the module-level ``Middleware.before`` contract.
+      An exception raised here is wrapped in :class:`MiddlewareChainError`,
+      stops the chain (the step body does NOT run), and triggers
+      ``on_step_error`` on only the middlewares whose ``before_step`` already
+      executed.  **That failure is terminal** — see below.
+    * ``after_step(step_name, state, result)`` — invoked after a successful
+      step **and after a recovered one**, in **reverse registration order**
+      (onion model).  A recovered step produced an output and the pipeline
+      continued, so the onion MUST close or the recovery path leaks whatever
+      ``before_step`` acquired.  It is NOT invoked when the step failed
+      unrecovered, and NOT invoked after a ``before_step`` failure.
+    * ``on_step_error(step_name, state, error)`` — invoked when a step raises,
+      in **reverse registration order**.  The FIRST handler returning a
+      non-``None`` value supplies the recovery result and short-circuits the
+      remaining handlers (first-recovery-wins); the original error does not
+      propagate.  Returning ``None`` from every handler lets the original
+      exception propagate (subject to the step's ``ignore_errors``).
+      A handler that itself raises is logged and iteration continues.
+
+    **``state.outputs`` never contains the current step**, in any of the three
+    hooks — it holds exactly the steps that completed before ``step_name``.
+    ``before_step`` has not run it; ``on_step_error`` has no output to record;
+    and in ``after_step`` the current step's output is the ``result``
+    argument.  The alternative reading, "outputs of completed steps", would
+    make ``after_step`` the one hook whose ``outputs`` differs in shape, so a
+    middleware would have to know which hook it was in before reading the map.
+
+    **A ``before_step`` failure terminates the step — it is not recoverable.**
+    A ``before_step`` failure and a step-body failure are categorically
+    different and MUST NOT share a recovery path.  On the ``before_step`` path
+    ``on_step_error`` still runs, on the already-entered middlewares, in
+    reverse order — but for *observation and cleanup only*: any value it
+    returns is **discarded**, ``after_step`` does not fire, and the step's
+    ``ignore_errors`` does not apply.  ``MiddlewareChainError`` propagates
+    regardless.  Honouring the recovery would advance the pipeline past a step
+    whose body never ran, and ``acl_check`` / ``approval_gate`` sit in the
+    built-in strategy, so it is a silent authorization bypass reachable from an
+    extension point that carries no authority.
 
     Both sync and async returns are supported: the engine awaits any return
     value that ``inspect.isawaitable()`` reports as awaitable, mirroring the
@@ -224,9 +281,9 @@ class ExecutionStrategy:
     def add_step_middleware(self, middleware: StepMiddleware) -> None:
         """Register a :class:`StepMiddleware` for this strategy.
 
-        Middlewares are invoked in registration order for ``before_step`` and
-        ``on_step_error``, and in reverse order for ``after_step`` (onion
-        semantics).
+        Middlewares are invoked in registration order for ``before_step``, and
+        in reverse registration order for ``after_step`` and ``on_step_error``
+        (onion semantics).
         """
         self.step_middlewares.append(middleware)
 
@@ -330,15 +387,15 @@ async def _invoke_step_mw_hook(
     hook: str,
     *args: Any,
     reverse: bool = False,
-) -> Any:
-    """Invoke ``hook`` on each middleware that defines it, awaiting awaitables.
+) -> None:
+    """Invoke a *best-effort* ``hook`` on each middleware that defines it.
 
-    Returns the first non-None return value seen (used by ``on_step_error``
-    for recovery); for ``before_step``/``after_step`` callers ignore the
-    return.
+    Used for ``after_step``, whose return value carries no meaning and whose
+    failures are SDK-defined: an exception is logged and iteration continues.
+    Awaitable returns are awaited so async middlewares are never dropped as
+    un-awaited coroutines.
     """
     iterable = reversed(middlewares) if reverse else middlewares
-    last_value: Any = None
     for mw in iterable:
         fn = getattr(mw, hook, None)
         if fn is None:
@@ -346,13 +403,128 @@ async def _invoke_step_mw_hook(
         try:
             value = fn(*args)
             if inspect.isawaitable(value):
-                value = await value
+                await value
         except Exception:
             _logger.exception("StepMiddleware %r raised in %s", type(mw).__name__, hook)
             continue
+
+
+async def _invoke_before_step(
+    middlewares: Sequence[StepMiddleware],
+    step_name: str,
+    state: PipelineState,
+) -> None:
+    """Run ``before_step`` on every middleware in REGISTRATION order.
+
+    ``before_step`` is an observation hook — its return value is discarded
+    (a Step is ``execute(ctx)``; there is no ``inputs`` parameter to replace),
+    but an awaitable return is still awaited so async middlewares complete
+    before the step body runs.
+
+    An exception raised by a ``before_step`` implementation is NOT swallowed:
+    it is wrapped in :class:`~apcore.middleware.manager.MiddlewareChainError`
+    carrying the middlewares whose ``before_step`` had already been entered
+    (including the one that raised), and the chain stops — the step body must
+    not execute.  Mirrors the module-level ``MiddlewareManager.execute_before``
+    contract (middleware-system.md § "Pipeline Step Middleware").
+    """
+    executed: list[Any] = []
+    for mw in middlewares:
+        executed.append(mw)
+        fn = getattr(mw, "before_step", None)
+        if fn is None:
+            continue
+        try:
+            value = fn(step_name, state)
+            if inspect.isawaitable(value):
+                await value
+        except Exception as exc:
+            raise MiddlewareChainError(exc, list(executed)) from exc
+
+
+async def _invoke_on_step_error(
+    middlewares: Sequence[StepMiddleware],
+    step_name: str,
+    state: PipelineState,
+    error: Exception,
+) -> Any:
+    """Run ``on_step_error`` in REVERSE registration order, first-recovery-wins.
+
+    This is the STEP-BODY failure path, the only one on which a recovery is
+    sought.  The first handler returning a non-``None`` value supplies the
+    recovery result and short-circuits the remaining handlers.  Returning
+    ``None`` from every handler yields ``None``, letting the original error
+    propagate.
+
+    Do NOT reuse this for a ``before_step`` failure — see
+    :func:`_invoke_step_cleanup_hooks`.
+
+    A handler that itself raises MUST NOT mask the original error: the
+    exception is logged and iteration continues with the next middleware.
+    """
+    for mw in reversed(list(middlewares)):
+        fn = getattr(mw, "on_step_error", None)
+        if fn is None:
+            continue
+        try:
+            value = fn(step_name, state, error)
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception:
+            _logger.exception(
+                "StepMiddleware %r raised in on_step_error",
+                type(mw).__name__,
+            )
+            continue
         if value is not None:
-            last_value = value
-    return last_value
+            return value
+    return None
+
+
+async def _invoke_step_cleanup_hooks(
+    middlewares: Sequence[Any],
+    step_name: str,
+    state: PipelineState,
+    error: Exception,
+) -> None:
+    """Notify ``on_step_error`` on the ``before_step`` failure path — cleanup only.
+
+    Deliberately a SEPARATE helper from :func:`_invoke_on_step_error` rather
+    than a flag on it, because the two passes have opposite purposes and the
+    recovery-seeking one is unsafe here:
+
+    * every return value is DISCARDED — a broken middleware chain is not
+      recoverable, so nothing a handler returns may become the step's output or
+      let the pipeline continue; and
+    * **first-recovery-wins MUST NOT apply.** Short-circuiting exists to stop
+      shopping for a recovery once one is found; no recovery is being sought
+      here, so **every** already-entered middleware MUST be notified.  Stopping
+      at the first one that happens to return a value would strand the cleanup
+      of every middleware registered behind it — the opposite of what this pass
+      is for.
+
+    Reverse registration order still holds: cleanup unwinds the onion in the
+    order the middlewares were entered.  Mirrors apcore-typescript
+    ``_runStepCleanupHooks``.  See middleware-system.md § "A `before_step`
+    failure terminates the step — it is not recoverable".
+
+    A handler that itself raises is logged and iteration continues, so one
+    broken cleanup cannot strand the rest.
+    """
+    for mw in reversed(list(middlewares)):
+        fn = getattr(mw, "on_step_error", None)
+        if fn is None:
+            continue
+        try:
+            value = fn(step_name, state, error)
+            if inspect.isawaitable(value):
+                await value
+        except Exception:
+            _logger.exception(
+                "StepMiddleware %r raised in on_step_error",
+                type(mw).__name__,
+            )
+            continue
 
 
 class PipelineEngine:
@@ -370,6 +542,14 @@ class PipelineEngine:
             module_id=ctx.module_id,
             strategy_name=strategy.name,
         )
+        # Publish the live trace onto the context so a caller that only ever
+        # sees the raised exception can still read what happened. Without this,
+        # ``Executor.call_async_with_trace`` had nothing to return on the
+        # middleware-recovery path and fabricated an empty ``PipelineTrace``.
+        # ``PipelineContext.trace`` already existed for exactly this and was
+        # never assigned. Parity with apcore-typescript ``pipelineCtx.trace``
+        # and apcore-rust ``pipeline_ctx.trace``.
+        ctx.trace = trace
         start = time.monotonic()
         steps = strategy.steps
         step_mws = strategy.step_middlewares
@@ -419,14 +599,56 @@ class PipelineEngine:
             # (3) Execute with optional per-step timeout
             step_start = time.monotonic()
 
-            # ── Step middleware: before_step ──
+            # ── Step middleware: before_step (registration order) ──
+            # Deliberately OUTSIDE the step-body ``try`` below. A before_step
+            # failure is categorically different from a step-body failure and
+            # the two MUST NOT share a recovery path (middleware-system.md
+            # § "A `before_step` failure terminates the step — it is not
+            # recoverable"). While they shared one, an on_step_error recovery
+            # value advanced the pipeline past a step whose body never ran;
+            # with ``acl_check`` and ``approval_gate`` in the built-in
+            # strategy, that is a silent authorization bypass reachable from an
+            # extension point that carries no authority.
             if step_mws:
                 pre_state = PipelineState(
                     step_name=step.name,
                     outputs=step_outputs,
                     context=ctx,
                 )
-                await _invoke_step_mw_hook(step_mws, "before_step", step.name, pre_state)
+                try:
+                    await _invoke_before_step(step_mws, step.name, pre_state)
+                except MiddlewareChainError as chain_exc:
+                    duration = (time.monotonic() - step_start) * 1000
+                    # on_step_error still runs, in reverse order, on the
+                    # middlewares whose before_step had already been entered —
+                    # for OBSERVATION AND CLEANUP ONLY. Its return value is
+                    # discarded: it MUST NOT become the step's output and MUST
+                    # NOT let the pipeline continue. The cleanup-only helper is
+                    # used, NOT the recovery-seeking one: first-recovery-wins
+                    # MUST NOT apply here or the cleanup of every middleware
+                    # behind the first one to return a value is stranded.
+                    await _invoke_step_cleanup_hooks(
+                        chain_exc.executed_middlewares,
+                        step.name,
+                        pre_state,
+                        chain_exc,
+                    )
+                    trace.steps.append(
+                        StepTrace(
+                            name=step.name,
+                            duration_ms=duration,
+                            result=StepResult(action="abort", explanation=str(chain_exc)),
+                        )
+                    )
+                    trace.total_duration_ms = (time.monotonic() - start) * 1000
+                    # ``after_step`` MUST NOT fire — no step body ran, so there
+                    # is nothing to close over — and the step's ``ignore_errors``
+                    # MUST NOT apply: it declares that *this step's* failure is
+                    # tolerable, and a broken middleware chain is not a step
+                    # failure. MiddlewareChainError propagates regardless, in
+                    # its canonical wrapper (never re-wrapped as
+                    # PipelineStepError).
+                    raise
 
             try:
                 if timeout_ms > 0:
@@ -477,22 +699,36 @@ class PipelineEngine:
             except Exception as exc:
                 duration = (time.monotonic() - step_start) * 1000
 
-                # ── Step middleware: on_step_error ──
-                # A non-None return is a recovery value (treated as the step's
-                # ``StepResult``); None means propagate.
+                # ── Step middleware: on_step_error (reverse order) ──
+                # This is the STEP-BODY failure path: every registered step
+                # middleware entered ``before_step``, so every one may observe
+                # the error, and the FIRST non-None return is the recovery
+                # value and short-circuits the remaining handlers; None means
+                # propagate. A ``before_step`` failure never reaches here — it
+                # is terminal and handled above.
+                #
+                # A MiddlewareChainError CAN still arrive here, from the
+                # ``middleware_before`` step body re-raising the MODULE-level
+                # chain error. Its ``executed_middlewares`` are module
+                # Middleware instances, not StepMiddlewares, so they must not
+                # be substituted for ``step_mws``.
+                error_mws: Sequence[StepMiddleware] = step_mws
                 recovery: Any = None
-                if step_mws:
+                if error_mws:
                     err_state = PipelineState(
                         step_name=step.name,
                         outputs=step_outputs,
                         context=ctx,
                     )
-                    recovery = await _invoke_step_mw_hook(step_mws, "on_step_error", step.name, err_state, exc)
+                    recovery = await _invoke_on_step_error(error_mws, step.name, err_state, exc)
 
                 if recovery is not None:
                     # Coerce non-StepResult recoveries (e.g. plain dicts) into
                     # a continue StepResult, matching middleware-on-error semantics.
+                    # The recovery value itself becomes the step's output.
                     if not isinstance(recovery, StepResult):
+                        if isinstance(recovery, dict):
+                            ctx.output = recovery
                         recovery = StepResult(
                             action="continue",
                             explanation=f"Recovered from {type(exc).__name__}",
@@ -525,6 +761,13 @@ class PipelineEngine:
                         )
                     )
                     trace.total_duration_ms = (time.monotonic() - start) * 1000
+                    if isinstance(exc, MiddlewareChainError):
+                        # A middleware chain failure is already in its canonical
+                        # wrapper; re-wrapping would hide MiddlewareChainError
+                        # from callers that catch it (spec: "MUST be wrapped in
+                        # MiddlewareChainError, identical to the module-level
+                        # contract").
+                        raise
                     raise PipelineStepError(step_name=step.name, cause=exc, trace=trace) from exc
 
             # (5) Record successful step trace
@@ -536,11 +779,16 @@ class PipelineEngine:
             )
             trace.steps.append(step_trace)
 
-            # (6) Snapshot output for run_until predicates (shallow copy prevents
-            # later in-place mutations from altering the historical record)
-            step_outputs[step.name] = dict(ctx.output) if ctx.output is not None else None
-
             # ── Step middleware: after_step (reverse order, onion semantics) ──
+            # Runs BEFORE the ``step_outputs`` snapshot below, deliberately.
+            # ``state.outputs`` holds exactly the steps that completed BEFORE
+            # the current one, in all three hooks, so a middleware never has to
+            # know which hook it is in to read the map (middleware-system.md
+            # § "What `state.outputs` contains"). The current step's output is
+            # not missing from ``after_step`` — it is the ``result`` argument;
+            # carrying the same value down two paths is how the two drift
+            # apart. This ordering is what enforces the rule, and it is what
+            # apcore-typescript (src/pipeline.ts) and apcore-rust already do.
             if step_mws:
                 post_state = PipelineState(
                     step_name=step.name,
@@ -548,6 +796,13 @@ class PipelineEngine:
                     context=ctx,
                 )
                 await _invoke_step_mw_hook(step_mws, "after_step", step.name, post_state, result, reverse=True)
+
+            # (6) Snapshot output for run_until predicates (shallow copy prevents
+            # later in-place mutations from altering the historical record).
+            # Placed after ``after_step`` (above) and before the ``run_until``
+            # predicate (below): run_until observes the step that just
+            # completed, step middleware hooks do not.
+            step_outputs[step.name] = dict(ctx.output) if ctx.output is not None else None
 
             if result.action == "abort":
                 trace.total_duration_ms = (time.monotonic() - start) * 1000

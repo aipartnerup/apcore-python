@@ -23,7 +23,7 @@ from apcore.builtin_steps import (
     BuiltinCallChainGuard,
     build_standard_strategy,
 )
-from apcore.errors import InvalidInputError
+from apcore.errors import InvalidInputError, SchemaValidationError
 from apcore.pipeline import (
     BaseStep,
     ExecutionStrategy,
@@ -376,6 +376,87 @@ class TestInputValidationStep:
         assert result.action == "abort"
 
 
+class TestModuleBoundaryDoesNotCoerceTypes:
+    """The module-invocation boundary performs NO type coercion (TYPE_MAPPING §17.3).
+
+    A contract that declares ``integer`` receives an integer. ``"42"`` is a type
+    error, not an integer spelled differently — and no host configuration may
+    relax that, or the same contract would mean different things in different
+    deployments. Parity with apcore-typescript (``new SchemaValidator(false)``)
+    and apcore-rust (``validate_against_schema``), both of which already rejected
+    this input while apcore-python accepted it.
+    """
+
+    @staticmethod
+    def _model(name: str) -> Any:
+        from apcore.config import Config
+        from apcore.schema.loader import SchemaLoader
+
+        return SchemaLoader(Config({})).generate_model(
+            {
+                "type": "object",
+                "properties": {"a": {"type": "integer"}},
+                "required": ["a"],
+            },
+            name,
+        )
+
+    async def test_input_numeric_string_is_rejected(self) -> None:
+        module = FakeModule(input_schema=self._model("BoundaryIn"))
+        ctx = _make_ctx(inputs={"a": "42"}, module=module)
+        with pytest.raises(SchemaValidationError) as exc_info:
+            await BuiltinInputValidation().execute(ctx)
+        assert "Input validation failed" in exc_info.value.message
+
+    async def test_output_numeric_string_is_rejected(self) -> None:
+        module = FakeModule(output_schema=self._model("BoundaryOut"))
+        ctx = _make_ctx(module=module)
+        ctx.output = {"a": "42"}
+        with pytest.raises(SchemaValidationError):
+            await BuiltinOutputValidation().execute(ctx)
+
+    async def test_input_integer_is_accepted(self) -> None:
+        module = FakeModule(input_schema=self._model("BoundaryInOk"))
+        ctx = _make_ctx(inputs={"a": 42}, module=module)
+        result = await BuiltinInputValidation().execute(ctx)
+        assert result.action == "continue"
+
+    async def test_input_zero_fraction_number_is_accepted(self) -> None:
+        """§6.1.1: `integer` matches any number with a zero fractional part.
+
+        "No coercion" is about instance *types*, not renderings — `4.0` is an
+        integer instance, and the `jsonschema` reference implementation,
+        apcore-typescript and apcore-rust all accept it.
+        """
+        module = FakeModule(input_schema=self._model("BoundaryInFloat"))
+        ctx = _make_ctx(inputs={"a": 4.0}, module=module)
+        result = await BuiltinInputValidation().execute(ctx)
+        assert result.action == "continue"
+
+    async def test_input_fractional_number_is_rejected(self) -> None:
+        module = FakeModule(input_schema=self._model("BoundaryInFrac"))
+        ctx = _make_ctx(inputs={"a": 4.5}, module=module)
+        with pytest.raises(SchemaValidationError):
+            await BuiltinInputValidation().execute(ctx)
+
+    async def test_raw_dict_schema_module_still_passes_through(self) -> None:
+        """A module that declared its schema as a raw dict must not break.
+
+        ``_DictSchemaAdapter.model_validate`` is a pass-through; it has to accept
+        the ``strict`` keyword the boundary now passes.
+        """
+        from apcore.registry.registry import _DictSchemaAdapter
+
+        module = FakeModule(
+            input_schema=_DictSchemaAdapter(
+                {"type": "object", "properties": {"a": {"type": "integer"}}}
+            )
+        )
+        ctx = _make_ctx(inputs={"a": "42"}, module=module)
+        result = await BuiltinInputValidation().execute(ctx)
+        assert result.action == "continue"
+
+
 class TestMiddlewareBeforeStep:
     """Test BuiltinMiddlewareBefore execute."""
 
@@ -476,8 +557,9 @@ class TestFormatWarningAtTheValidationBoundary:
             result = await step.execute(ctx)
         assert result.action == "continue"
         assert ctx.validated_inputs == {"contact": "not-an-email"}
-        assert len(caplog.records) == 1
-        assert "email" in caplog.records[0].getMessage()
+        records = [r for r in caplog.records if r.name == "apcore.schema.hardening"]
+        assert len(records) == 1
+        assert "email" in records[0].getMessage()
 
     async def test_input_validation_silent_for_a_conformant_value(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -487,7 +569,7 @@ class TestFormatWarningAtTheValidationBoundary:
         step = BuiltinInputValidation()
         with caplog.at_level(logging.WARNING, logger="apcore.schema.hardening"):
             await step.execute(ctx)
-        assert caplog.records == []
+        assert [r for r in caplog.records if r.name == "apcore.schema.hardening"] == []
 
     async def test_output_validation_warns_without_failing(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -499,4 +581,206 @@ class TestFormatWarningAtTheValidationBoundary:
         with caplog.at_level(logging.WARNING, logger="apcore.schema.hardening"):
             result = await step.execute(ctx)
         assert result.action == "continue"
-        assert len(caplog.records) == 1
+        assert len([r for r in caplog.records if r.name == "apcore.schema.hardening"]) == 1
+
+
+class TestPerModuleResourceTimeout:
+    """`resources.timeout` is the per-module timeout (spec §5.2, core-executor §Timeout).
+
+    ``BuiltinExecute`` used to read ``module.timeout_ms``, an attribute no
+    apcore-python module ever defines, so the whole per-module half of the
+    dual-timeout model was dead code: every call fell back to
+    ``executor.default_timeout`` and the "negative timeout →
+    GENERAL_INVALID_INPUT" MUST was unreachable. apcore-typescript reads
+    ``mod.resources.timeout`` / ``mod.annotations.resources.timeout``;
+    apcore-rust reads ``descriptor.annotations.extra["resources"]["timeout"]``.
+    """
+
+    class SlowModule:
+        """Module that sleeps long enough to trip any short timeout."""
+
+        def __init__(self, **attrs: Any) -> None:
+            for key, value in attrs.items():
+                setattr(self, key, value)
+
+        async def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+            import asyncio
+
+            await asyncio.sleep(5)
+            return {"result": "too-late"}
+
+    @staticmethod
+    def _annotations(resources: dict[str, Any]) -> Any:
+        from apcore.module import ModuleAnnotations
+
+        return ModuleAnnotations(extra={"resources": resources})
+
+    async def _run(self, module: Any) -> Any:
+        ctx = _make_ctx(inputs={}, context=FakeContext(), module=module)
+        ctx.validated_inputs = {}
+        return await BuiltinExecute().execute(ctx)
+
+    async def test_direct_resources_attribute_is_honoured(self) -> None:
+        from apcore.errors import ModuleTimeoutError
+
+        module = self.SlowModule(resources={"timeout": 10})
+        with pytest.raises(ModuleTimeoutError) as exc_info:
+            await self._run(module)
+        assert exc_info.value.timeout_ms == 10
+
+    async def test_annotations_extra_resources_is_honoured(self) -> None:
+        from apcore.errors import ModuleTimeoutError
+
+        module = self.SlowModule(annotations=self._annotations({"timeout": 10}))
+        with pytest.raises(ModuleTimeoutError) as exc_info:
+            await self._run(module)
+        assert exc_info.value.timeout_ms == 10
+
+    async def test_dict_annotations_resources_is_honoured(self) -> None:
+        from apcore.errors import ModuleTimeoutError
+
+        module = self.SlowModule(annotations={"resources": {"timeout": 10}})
+        with pytest.raises(ModuleTimeoutError):
+            await self._run(module)
+
+    async def test_direct_resources_wins_over_annotations(self) -> None:
+        module = self.SlowModule(
+            resources={"timeout": 0},
+            annotations=self._annotations({"timeout": 10}),
+        )
+        # `0` means "no per-module limit" and must beat the annotation's 10 ms,
+        # so the module is allowed to run past 10 ms. Cancel rather than wait 5 s.
+        import asyncio
+
+        task = asyncio.ensure_future(self._run(module))
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.parametrize(
+        ("case", "module_kwargs"),
+        [
+            ("direct", {"resources": {"timeout": -1}}),
+            ("annotations", {"annotations": None}),
+        ],
+    )
+    async def test_negative_timeout_is_invalid_input(
+        self, case: str, module_kwargs: dict[str, Any]
+    ) -> None:
+        if case == "annotations":
+            module_kwargs = {"annotations": self._annotations({"timeout": -1})}
+        module = self.SlowModule(**module_kwargs)
+        with pytest.raises(InvalidInputError) as exc_info:
+            await self._run(module)
+        assert exc_info.value.code == "GENERAL_INVALID_INPUT"
+
+    async def test_non_numeric_timeout_falls_back_to_default(self) -> None:
+        # A non-numeric value is "not declared" (parity with apcore-typescript
+        # `_readModuleTimeoutMs`), not an error and not a zero timeout.
+        module = self.SlowModule(resources={"timeout": "soon"})
+        import asyncio
+
+        task = asyncio.ensure_future(self._run(module))
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_bool_timeout_is_not_read_as_an_integer(self) -> None:
+        # `bool` subclasses `int` in Python; `True` must not become a 1 ms timeout.
+        module = self.SlowModule(resources={"timeout": True})
+        import asyncio
+
+        task = asyncio.ensure_future(self._run(module))
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+class TestApprovalTokenStripping:
+    """PROTOCOL_SPEC §7.4: "The ``_approval_token`` key **MUST** be removed from
+    arguments before passing to subsequent steps." — unconditionally.
+
+    Python stripped it only inside the gated-and-handler-configured branch, so
+    on every early return (module not gated, no handler configured, policy skip)
+    the protocol key travelled on into input validation — where a contract with
+    ``additionalProperties: false`` rejects it as an undeclared key — and into
+    the module's own ``execute()``. And the strip was ``ctx.inputs.pop()``,
+    which mutates the *caller's* dict: ``PipelineContext`` holds the very object
+    the caller passed to ``call()``. apcore-typescript extracts the token as the
+    first statement of ``execute()``, before any early return, and rebuilds the
+    inputs rather than mutating them.
+    """
+
+    @staticmethod
+    def _ctx(inputs: dict[str, Any], annotations: Any = None) -> PipelineContext:
+        return _make_ctx(
+            inputs=inputs,
+            context=FakeContext(),
+            module=FakeModule(annotations=annotations),
+        )
+
+    async def test_stripped_when_the_module_is_not_gated(self) -> None:
+        ctx = self._ctx({"x": 1, "_approval_token": "tok"})
+        result = await BuiltinApprovalGate().execute(ctx)
+        assert result.action == "continue"
+        assert "_approval_token" not in ctx.inputs
+        assert ctx.inputs == {"x": 1}
+
+    async def test_stripped_when_gated_but_no_handler_is_configured(self) -> None:
+        from apcore.module import ModuleAnnotations
+
+        ctx = self._ctx(
+            {"x": 1, "_approval_token": "tok"},
+            annotations=ModuleAnnotations(requires_approval=True),
+        )
+        result = await BuiltinApprovalGate(handler=None).execute(ctx)
+        assert result.action == "continue"
+        assert "_approval_token" not in ctx.inputs
+
+    async def test_the_callers_own_dict_is_never_mutated(self) -> None:
+        caller_inputs = {"x": 1, "_approval_token": "tok"}
+        ctx = self._ctx(caller_inputs)
+        await BuiltinApprovalGate().execute(ctx)
+        assert caller_inputs == {"x": 1, "_approval_token": "tok"}
+        assert ctx.inputs is not caller_inputs
+
+    async def test_absent_token_leaves_the_inputs_object_alone(self) -> None:
+        caller_inputs = {"x": 1}
+        ctx = self._ctx(caller_inputs)
+        await BuiltinApprovalGate().execute(ctx)
+        assert ctx.inputs is caller_inputs
+
+    async def test_token_still_reaches_check_approval_on_the_gated_path(self) -> None:
+        from apcore.approval import ApprovalResult
+        from apcore.module import ModuleAnnotations
+
+        from apcore.context import Context
+
+        handler = MagicMock()
+        handler.check_approval = AsyncMock(return_value=ApprovalResult(status="approved"))
+        # A real Context: the gated path emits an approval audit, which reads
+        # `context.data`.
+        ctx = _make_ctx(
+            inputs={"x": 1, "_approval_token": "tok"},
+            context=Context.create(),
+            module=FakeModule(annotations=ModuleAnnotations(requires_approval=True)),
+        )
+        result = await BuiltinApprovalGate(handler=handler).execute(ctx)
+        assert result.action == "continue"
+        handler.check_approval.assert_awaited_once_with("tok")
+        assert "_approval_token" not in ctx.inputs
+
+    async def test_non_string_token_is_rejected_before_reaching_the_handler(self) -> None:
+        handler = MagicMock()
+        handler.check_approval = AsyncMock()
+        ctx = self._ctx({"_approval_token": 123})
+        with pytest.raises(InvalidInputError) as exc_info:
+            await BuiltinApprovalGate(handler=handler).execute(ctx)
+        assert exc_info.value.code == "GENERAL_INVALID_INPUT"
+        handler.check_approval.assert_not_awaited()

@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import os
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,19 +11,12 @@ import pytest
 from apcore.errors import InvalidInputError
 from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.registry import Registry
-
-
-def _fixture_path() -> Path:
-    env = os.environ.get("APCORE_SPEC_REPO")
-    if env:
-        return Path(env) / "conformance" / "fixtures" / "registry_load_ordering.json"
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    return repo_root.parent / "apcore" / "conformance" / "fixtures" / "registry_load_ordering.json"
+from conformance.canonical_fixtures import load_fixture
 
 
 def _load_fixture() -> dict:
-    with _fixture_path().open() as f:
-        return json.load(f)
+    """Load the canonical fixture from the apcore spec repo."""
+    return load_fixture("registry_load_ordering.json")
 
 
 @pytest.fixture

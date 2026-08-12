@@ -364,3 +364,133 @@ class TestSkipToTraceOrdering:
         # The target step should NOT be marked skipped — it actually ran.
         target = next(s for s in trace.steps if s.name == "target")
         assert target.skipped is False
+
+
+# ---------------------------------------------------------------------------
+# D-19: the trace variant shares call()'s error-recovery semantics
+# ---------------------------------------------------------------------------
+
+
+class _RaisingStep(BaseStep):
+    """Step that raises a typed error, so the engine wraps it in PipelineStepError."""
+
+    def __init__(self, exc: Exception) -> None:
+        super().__init__(name="raiser", description="raises", removable=True, replaceable=True)
+        self._exc = exc
+
+    async def execute(self, ctx: PipelineContext) -> StepResult:
+        raise self._exc
+
+
+class _RecordingOnError:
+    """Middleware that records the error it saw and optionally recovers."""
+
+    def __init__(self, *, recover: bool = False) -> None:
+        self.seen: list[Exception] = []
+        self._recover = recover
+
+    def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+        return inputs
+
+    def after(self, module_id: str, output: dict[str, Any], context: Any) -> dict[str, Any]:
+        return output
+
+    def on_error(
+        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any
+    ) -> dict[str, Any] | None:
+        self.seen.append(error)
+        return {"recovered": True} if self._recover else None
+
+
+def _strategy_that_raises(exc: Exception, middleware: Any) -> ExecutionStrategy:
+    """A minimal strategy: run middleware_before, then blow up in a step."""
+    from apcore.builtin_steps import BuiltinMiddlewareBefore
+
+    return ExecutionStrategy(
+        name="raising",
+        steps=[BuiltinMiddlewareBefore(middlewares=[middleware]), _RaisingStep(exc)],
+    )
+
+
+class TestCallWithTraceErrorSemantics:
+    """D-19: "the trace variant MUST share identical error-recovery semantics
+    with the underlying call()" (``docs/features/core-executor.md`` §Trace Variants).
+
+    ``call_async`` unwraps ``PipelineStepError`` to its typed cause before
+    handing it to the recovery chain; ``call_async_with_trace`` passed the raw
+    wrapper, so the same failure surfaced as ``MODULE_NOT_FOUND`` through
+    ``call()`` and ``PIPELINE_STEP_ERROR`` through ``call_with_trace()`` — both
+    to on_error middleware and to the caller. apcore-typescript
+    (``executor.ts``) and apcore-rust (``executor.rs``) both unwrap first.
+    """
+
+    @staticmethod
+    def _executor(exc: Exception, middleware: Any) -> Executor:
+        ex = Executor(registry=_make_registry(), strategy=_strategy_that_raises(exc, middleware))
+        ex.use(middleware)
+        return ex
+
+    @pytest.mark.asyncio
+    async def test_caller_sees_the_typed_cause_not_the_step_wrapper(self) -> None:
+        from apcore.errors import ModuleNotFoundError
+
+        mw = _RecordingOnError()
+        ex = self._executor(ModuleNotFoundError(module_id="missing.mod"), mw)
+
+        with pytest.raises(Exception) as exc_info:
+            await ex.call_async_with_trace("test.echo", {})
+        assert exc_info.value.code == "MODULE_NOT_FOUND"  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_on_error_middleware_sees_the_typed_cause(self) -> None:
+        from apcore.errors import ModuleNotFoundError
+
+        mw = _RecordingOnError()
+        ex = self._executor(ModuleNotFoundError(module_id="missing.mod"), mw)
+
+        with pytest.raises(Exception):
+            await ex.call_async_with_trace("test.echo", {})
+        assert mw.seen, "on_error middleware must run for a step-raised error"
+        assert mw.seen[0].code == "MODULE_NOT_FOUND"  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_error_code_matches_the_plain_call_variant(self) -> None:
+        from apcore.errors import ModuleNotFoundError
+
+        trace_mw = _RecordingOnError()
+        plain_mw = _RecordingOnError()
+        trace_ex = self._executor(ModuleNotFoundError(module_id="missing.mod"), trace_mw)
+        plain_ex = self._executor(ModuleNotFoundError(module_id="missing.mod"), plain_mw)
+
+        with pytest.raises(Exception) as trace_exc:
+            await trace_ex.call_async_with_trace("test.echo", {})
+        with pytest.raises(Exception) as plain_exc:
+            await plain_ex.call_async("test.echo", {})
+        assert trace_exc.value.code == plain_exc.value.code  # type: ignore[attr-defined]
+        assert [e.code for e in trace_mw.seen] == [e.code for e in plain_mw.seen]  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_recovery_returns_the_trace_captured_during_the_failing_run(self) -> None:
+        """D-19: the trace is the record of what happened, not an empty stub.
+
+        apcore-typescript returns ``pipelineCtx.trace``; apcore-rust clones
+        ``pipeline_ctx.trace``. Python fabricated a fresh ``PipelineTrace``,
+        so a caller recovering through on_error got a trace with zero steps and
+        no way to see how far the pipeline had got.
+        """
+        from apcore.errors import ModuleNotFoundError
+
+        mw = _RecordingOnError(recover=True)
+        ex = self._executor(ModuleNotFoundError(module_id="missing.mod"), mw)
+
+        result, trace = await ex.call_async_with_trace("test.echo", {})
+        assert result == {"recovered": True}
+        assert isinstance(trace, PipelineTrace)
+        assert trace.module_id == "test.echo"
+        assert trace.strategy_name == "raising"
+        # The middleware_before step ran and the raising step failed — both are
+        # in the trace the engine built.
+        assert [s.name for s in trace.steps] == ["middleware_before", "raiser"]
+        assert trace.success is False
+        assert trace.steps[-1].result.action == "abort"
+        assert trace.total_duration_ms > 0

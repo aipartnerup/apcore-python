@@ -571,7 +571,12 @@ def _schema_tools() -> tuple[SchemaLoader, SchemaValidator]:
         _GLOBAL_ENV_MAP.clear()
         _GLOBAL_ENV_MAP_CLAIMED.clear()
     config = Config(data={})
-    return SchemaLoader(config), SchemaValidator()
+    # `coerce_types=True` explicitly: this fixture's `expected_valid_coerce` half
+    # documents the opt-in library-level coercing mode, which is NOT what the
+    # module-invocation boundary does (TYPE_MAPPING §17.3 — that path never
+    # coerces and is covered by schema_keyword_parity.json). Naming the mode here
+    # keeps the assertion independent of the constructor default.
+    return SchemaLoader(config), SchemaValidator(coerce_types=True)
 
 
 @pytest.mark.parametrize(
@@ -603,7 +608,7 @@ def test_schema_validation(
     if "expected_valid" in case:
         expected_valid = case["expected_valid"]
     elif "expected_valid_strict" in case:
-        # Pydantic default is coerce mode
+        # This validator was built with coerce_types=True — assert that half.
         expected_valid = case["expected_valid_coerce"]
     else:
         expected_valid = True
@@ -1324,10 +1329,17 @@ def test_core_schema_structure() -> None:
     assert "default_effect" in s["properties"]
     assert "audit" in s["properties"]
 
-    # apcore-config.schema.json
+    # apcore-config.schema.json — exactly the two keys with no canonical
+    # default (PROTOCOL_SPEC §9.1). `extensions`, `schema` and `acl` all carry
+    # defaults in defaults.schema.json, so requiring them would reject a
+    # document the framework resolves fine; they must stay OUT of `required`.
     s = _load_schema("apcore-config")
-    for key in ["version", "project", "extensions", "schema", "acl"]:
-        assert key in s["required"], f"apcore-config: missing required key {key!r}"
+    assert sorted(s["required"]) == ["project", "version"], (
+        f"apcore-config: required must be exactly [version, project], got {s['required']!r}"
+    )
+    defaults_props = set(_load_schema("defaults")["properties"])
+    for key in s["required"]:
+        assert key not in defaults_props, f"apcore-config: required key {key!r} has a canonical default"
 
     # binding.schema.json
     s = _load_schema("binding")

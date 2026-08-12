@@ -217,9 +217,22 @@ class TestApprovalGateSync:
         assert req.tags == ["admin"]
         assert req.context.trace_id is not None
 
-    def test_approval_token_pops_and_calls_check(self, registry: Registry) -> None:
-        """_approval_token is popped from arguments and check_approval is called."""
+    def test_approval_token_is_consumed_without_mutating_the_callers_dict(
+        self, registry: Registry
+    ) -> None:
+        """_approval_token drives check_approval and never reaches the module.
+
+        PROTOCOL_SPEC §7.4 requires the key to be gone "before passing to
+        subsequent steps" — that is about what the pipeline sees downstream, not
+        a licence to edit the caller's object. ``PipelineContext`` holds the very
+        dict the caller passed to ``call()``, so the old ``ctx.inputs.pop()``
+        meant a module invocation silently mutated its caller's data.
+        apcore-typescript rebuilds the inputs instead
+        (``const { _approval_token: _, ...rest } = ctx.inputs``); this asserts
+        the same contract.
+        """
         check_called_with: list[str] = []
+        seen_by_module: list[dict[str, Any]] = []
 
         class TokenHandler:
             async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
@@ -229,13 +242,23 @@ class TestApprovalGateSync:
                 check_called_with.append(approval_id)
                 return ApprovalResult(status="approved", approved_by="token-check")
 
+        class RecordingModule(ApprovalRequiredModule):
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                seen_by_module.append(dict(inputs))
+                return {"status": "executed"}
+
+        registry.unregister("test.approval_required")
+        registry.register("test.approval_required", RecordingModule())
+
         executor = Executor(registry=registry, approval_handler=TokenHandler())
         inputs: dict[str, Any] = {"_approval_token": "my-token", "data": "value"}
         result = executor.call("test.approval_required", inputs)
         assert result["status"] == "executed"
         assert check_called_with == ["my-token"]
-        # Token should be removed from inputs
-        assert "_approval_token" not in inputs
+        # The module never sees the protocol key…
+        assert seen_by_module == [{"data": "value"}]
+        # …and the caller's own dict is left exactly as it was passed in.
+        assert inputs == {"_approval_token": "my-token", "data": "value"}
 
     def test_from_registry_with_handler(self, registry: Registry) -> None:
         """from_registry() passes approval_handler through."""

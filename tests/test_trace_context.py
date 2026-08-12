@@ -7,6 +7,7 @@ import re
 import pytest
 
 from apcore.context import Context
+from apcore.errors import ErrorCodes, InvalidParentIdError
 from apcore.trace_context import (
     TraceContext,
     TraceParent,
@@ -397,7 +398,15 @@ class TestInjectTracestate:
 
 
 class TestInjectParentIdOverride:
-    """inject(context, parent_id=...) accepts an explicit parent_id."""
+    """inject(context, parent_id=...) accepts an explicit parent_id.
+
+    The rejection tests below assert BOTH halves of the D-51 contract. They used
+    to check `pytest.raises(ValueError)` only, which was satisfied by the bare
+    `ValueError` this method raised before 0.27 — an exception carrying no
+    `code`, so a caller matching on `INVALID_PARENT_ID` got nothing (Issue #32).
+    `ValueError` is still asserted deliberately: `InvalidParentIdError` inherits
+    it so pre-0.27 `except ValueError` callers keep working.
+    """
 
     def test_explicit_parent_id_used_verbatim(self):
         ctx = Context.create()
@@ -405,17 +414,19 @@ class TestInjectParentIdOverride:
         parts = headers["traceparent"].split("-")
         assert parts[2] == "aaaaaaaaaaaaaaaa"
 
-    def test_explicit_parent_id_rejects_malformed(self):
+    @pytest.mark.parametrize(
+        "bad_parent_id",
+        ["not-hex", "abcdef", "AAAAAAAAAAAAAAAA", "", "aaaaaaaaaaaaaaaaa"],
+        ids=["non_hex", "too_short", "uppercase", "empty", "too_long"],
+    )
+    def test_explicit_parent_id_rejected_with_invalid_parent_id_code(self, bad_parent_id):
         ctx = Context.create()
-        with pytest.raises(ValueError):
-            TraceContext.inject(ctx, parent_id="not-hex")
-
-    def test_explicit_parent_id_rejects_wrong_length(self):
-        ctx = Context.create()
-        with pytest.raises(ValueError):
-            TraceContext.inject(ctx, parent_id="abcdef")
-
-    def test_explicit_parent_id_rejects_uppercase(self):
-        ctx = Context.create()
-        with pytest.raises(ValueError):
-            TraceContext.inject(ctx, parent_id="AAAAAAAAAAAAAAAA")
+        with pytest.raises(ValueError) as excinfo:
+            TraceContext.inject(ctx, parent_id=bad_parent_id)
+        raised = excinfo.value
+        assert isinstance(raised, InvalidParentIdError)
+        assert raised.code == ErrorCodes.INVALID_PARENT_ID, (
+            f"the wire code is the cross-SDK contract; got {raised.code!r}"
+        )
+        assert raised.details["parent_id"] == bad_parent_id
+        assert repr(bad_parent_id) in str(raised)

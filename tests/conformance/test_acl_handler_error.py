@@ -7,30 +7,17 @@ non-null ``handler_error``.
 
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 
 import pytest
 
 from apcore.acl import ACL, ACLRule, AuditEntry
 from apcore.context import Context
-
-
-def _fixture_path() -> Path:
-    env = os.environ.get("APCORE_FIXTURES")
-    if env:
-        return Path(env) / "acl_handler_error.json"
-    env_repo = os.environ.get("APCORE_SPEC_REPO")
-    if env_repo:
-        return Path(env_repo) / "conformance" / "fixtures" / "acl_handler_error.json"
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    return repo_root.parent / "apcore" / "conformance" / "fixtures" / "acl_handler_error.json"
+from conformance.canonical_fixtures import load_fixture
 
 
 def _load_fixture() -> dict:
-    with _fixture_path().open() as f:
-        return json.load(f)
+    """Load the canonical fixture from the apcore spec repo."""
+    return load_fixture("acl_handler_error.json")
 
 
 _FIXTURE = _load_fixture()

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from apcore.errors import (
     CircularDependencyError,
+    ErrorCodes,
     InvalidInputError,
     ModuleNotFoundError,
 )
@@ -1507,3 +1508,179 @@ class TestRegisterInternalValidation:
         reg.register_internal("system.unversioned", _ValidModule())
         with pytest.raises(ModuleNotFoundError, match="not version-tracked"):
             reg.get("system.unversioned", version_hint="1.0.0")
+
+
+class TestDiscoveryValidatesModuleIds:
+    """PROTOCOL_SPEC §2.7 module-ID grammar applies to the discovery path too.
+
+    ``_validate_module_id`` was reachable from ``register()`` and
+    ``register_internal()`` only. The filesystem-discovery chain ran A03
+    conflict detection (duplicate / reserved / case) and nothing else, so no
+    grammar or length check stood between a scanned or ID-map-overridden name
+    and ``_modules``. ``_apply_id_map_overrides`` is the concrete vector: it
+    rewrites ``canonical_id`` from the YAML map *after* scanning, with no
+    re-validation.
+
+    Hyphens are banned so MCP / OpenAI tool-name normalisation stays bijective.
+    apcore-typescript validates post-override in ``_filterIdConflicts``;
+    apcore-rust validates per entry. Both skip the offender with a warning
+    rather than failing the whole discovery run.
+    """
+
+    @staticmethod
+    def _discover_with_id_map(
+        tmp_path: Path, override_id: str, caplog: pytest.LogCaptureFixture
+    ) -> Registry:
+        ext = tmp_path / "extensions"
+        ext.mkdir()
+        _write_module_file(ext / "hello.py", "HelloModule", "Hello module")
+        id_map = tmp_path / "id_map.yaml"
+        id_map.write_text(yaml.dump({"mappings": [{"file": "hello.py", "id": override_id}]}))
+        reg = Registry(extensions_dir=str(ext), id_map_path=str(id_map))
+        with caplog.at_level(logging.WARNING):
+            reg.discover()
+        return reg
+
+    @pytest.mark.parametrize(
+        ("case", "bad_id"),
+        [
+            ("hyphen", "foo-bar"),
+            ("uppercase", "Foo.Bar"),
+            ("leading_digit_segment", "1foo"),
+            ("space", "foo bar"),
+            ("slash", "foo/bar"),
+            ("trailing_dot", "foo."),
+            ("too_long", "a" * 201),
+        ],
+    )
+    def test_id_map_override_with_an_invalid_id_is_skipped(
+        self, case: str, bad_id: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        reg = self._discover_with_id_map(tmp_path, bad_id, caplog)
+        assert not reg.has(bad_id), f"invalid ID {bad_id!r} reached the registry"
+        assert bad_id not in reg._modules
+        assert any(bad_id in r.getMessage() for r in caplog.records)
+
+    def test_id_map_override_with_a_valid_id_still_registers(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        reg = self._discover_with_id_map(tmp_path, "custom.hello", caplog)
+        assert reg.has("custom.hello")
+
+    def test_one_invalid_id_does_not_abort_the_whole_discovery_run(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ext = tmp_path / "extensions"
+        ext.mkdir()
+        _write_module_file(ext / "good.py", "GoodModule", "Good module")
+        _write_module_file(ext / "bad.py", "BadModule", "Bad module")
+        id_map = tmp_path / "id_map.yaml"
+        id_map.write_text(yaml.dump({"mappings": [{"file": "bad.py", "id": "not-valid"}]}))
+        reg = Registry(extensions_dir=str(ext), id_map_path=str(id_map))
+        with caplog.at_level(logging.WARNING):
+            count = reg.discover()
+        assert count == 1
+        assert reg.has("good")
+        assert not reg.has("not-valid")
+
+    def test_reserved_first_segment_from_the_id_map_is_skipped(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # `register()` rejects a reserved first segment; discovery must too.
+        reg = self._discover_with_id_map(tmp_path, "system.hello", caplog)
+        assert not reg.has("system.hello")
+
+
+class TestRegisterInternalParity:
+    """``register_internal`` bypasses **only** the reserved-word check.
+
+    Its docstring has always said so; two checks disagreed.
+
+    * The ``ephemeral.*`` rejection raised a bare builtin ``ValueError`` while
+      every other rejection in the same method raises ``InvalidInputError``.
+      With no error code attached, no conformance fixture could cover the path.
+      apcore-typescript throws ``InvalidInputError``; apcore-rust returns
+      ``ModuleError(GeneralInvalidInput)``.
+    * The streaming-annotation ⇔ streaming-interface check (Issue #62) ran on
+      ``register()`` only. apcore-rust keeps it on both paths — its
+      ``register_internal`` delegates to the shared ``register_core``, which
+      performs the check.
+    """
+
+    class _StreamingLiar:
+        """Declares streaming=True and provides no stream() at all."""
+
+        input_schema = None
+        output_schema = None
+        description = "Claims to stream"
+
+        def __init__(self) -> None:
+            from apcore.module import ModuleAnnotations
+
+            self.annotations = ModuleAnnotations(streaming=True)
+
+        def execute(self, inputs: dict[str, Any], context: Any = None) -> dict[str, Any]:
+            return {}
+
+    class _SyncStreamLiar(_StreamingLiar):
+        """Declares streaming=True with a non-async stream()."""
+
+        def stream(self, inputs: dict[str, Any], context: Any = None) -> Any:
+            return iter(())
+
+    def test_ephemeral_rejection_is_a_typed_invalid_input_error(self) -> None:
+        reg = Registry()
+        with pytest.raises(InvalidInputError) as exc_info:
+            reg.register_internal("ephemeral.test_v1", _ValidModule())
+        assert exc_info.value.code == ErrorCodes.INVALID_MODULE_ID
+        assert "ephemeral" in str(exc_info.value)
+        assert "Registry.register()" in str(exc_info.value)
+        # The rejection still short-circuits before any state mutation.
+        assert reg.get("ephemeral.test_v1") is None
+
+    def test_bare_ephemeral_id_is_rejected_the_same_way(self) -> None:
+        reg = Registry()
+        with pytest.raises(InvalidInputError) as exc_info:
+            reg.register_internal("ephemeral", _ValidModule())
+        assert exc_info.value.code == ErrorCodes.INVALID_MODULE_ID
+
+    @pytest.mark.parametrize("liar", ["missing_stream", "sync_stream"])
+    def test_streaming_annotation_is_checked_on_the_internal_path(self, liar: str) -> None:
+        from apcore.errors import StreamingInterfaceError
+
+        module = self._StreamingLiar() if liar == "missing_stream" else self._SyncStreamLiar()
+        reg = Registry()
+        with pytest.raises(StreamingInterfaceError):
+            reg.register_internal("system.streaming_liar", module)
+        assert reg.get("system.streaming_liar") is None
+
+    def test_register_raises_the_same_streaming_error(self) -> None:
+        from apcore.errors import StreamingInterfaceError
+
+        reg = Registry()
+        with pytest.raises(StreamingInterfaceError):
+            reg.register("plain.streaming_liar", self._StreamingLiar())
+
+    def test_a_real_streaming_module_still_registers_internally(self) -> None:
+        from apcore.module import ModuleAnnotations
+
+        class _RealStreamer:
+            input_schema = None
+            output_schema = None
+            description = "Streams for real"
+            annotations = ModuleAnnotations(streaming=True)
+
+            def execute(self, inputs: dict[str, Any], context: Any = None) -> dict[str, Any]:
+                return {}
+
+            async def stream(self, inputs: dict[str, Any], context: Any = None) -> Any:
+                yield {}
+
+        reg = Registry()
+        reg.register_internal("system.real_streamer", _RealStreamer())
+        assert reg.has("system.real_streamer")
+
+    def test_reserved_first_segment_is_still_permitted(self) -> None:
+        reg = Registry()
+        reg.register_internal("system.health", _ValidModule())
+        assert reg.has("system.health")

@@ -30,7 +30,7 @@ A schema-enforced module standard for the AI-Perceivable era.
 - **Async task management** -- Background module execution with status tracking, cancellation, and concurrency limiting
 - **Behavioral annotations** -- Declare module traits (readonly, destructive, idempotent, cacheable, paginated, streaming) for AI-aware orchestration
 - **W3C Trace Context** -- traceparent header injection/extraction for distributed tracing interop
-- **Circuit breakers** -- `CircuitBreakerMiddleware` for per-module OPEN/CLOSED/HALF_OPEN protection; `CircuitBreakerWrapper` (`from apcore.events.circuit_breaker import CircuitBreakerWrapper`) for per-subscriber event delivery resilience
+- **Circuit breakers** -- `CircuitBreakerMiddleware` for per-`(module_id, caller_id)` OPEN/CLOSED/HALF_OPEN protection; `CircuitBreakerWrapper` (`from apcore.events.circuit_breaker import CircuitBreakerWrapper`) for per-subscriber event delivery resilience
 - **Multi-class module discovery** -- Opt-in `@multi_class` decorator (`from apcore.registry.multi_class import multi_class`) for multiple Module classes per file with snake_case ID derivation (PROTOCOL_SPEC §2.1.1)
 - **Pluggable stores** -- `TaskStore` for async task persistence; `ObservabilityStore` for error/metric backends; `AuditStore` for control-module audit trails
 - **Prometheus / K8s integration** -- `PrometheusExporter` (`from apcore.observability import PrometheusExporter`) with `/metrics`, `/healthz`, `/readyz` endpoints; `UsageCollector` and `MetricsCollector` emit standard Prometheus gauge/counter metrics
@@ -69,7 +69,7 @@ A schema-enforced module standard for the AI-Perceivable era.
 | `ErrorHistoryMiddleware` | Records errors into ErrorHistory |
 | `PlatformNotifyMiddleware` | Emits events on error rate/latency spikes |
 | `ObsLoggingMiddleware` | Observability-aware structured logging middleware |
-| `CircuitBreakerMiddleware` | Per-module circuit breaker (OPEN/CLOSED/HALF_OPEN) |
+| `CircuitBreakerMiddleware` | Circuit breaker keyed on `(module_id, caller_id)` (OPEN/CLOSED/HALF_OPEN) |
 
 **Schema**
 
@@ -106,7 +106,7 @@ A schema-enforced module standard for the AI-Perceivable era.
 | `ExtensionManager` | Unified extension point management |
 | `AsyncTaskManager` | Background module execution with pluggable `TaskStore`, retry, and reaper |
 | `TaskStore` / `InMemoryTaskStore` | Pluggable async task persistence backend |
-| `RetryPolicy` / `BackoffStrategy` | Per-task retry configuration with exponential backoff |
+| `RetryPolicy` / `BackoffStrategy` | **Deprecated (0.21.0)** — per-task retry configuration. Use `RetryConfig` for cross-language field-name parity. |
 | `CancelToken` | Cooperative cancellation token |
 | `BindingLoader` | Load modules from YAML binding files |
 | `ErrorCodeRegistry` | Central registry for structured error codes |
@@ -213,7 +213,7 @@ Canonical event type names use dot-namespaced identifiers. `apcore.*` is reserve
 ## Documentation
 
 For full documentation, including Quick Start guides for both Python and TypeScript, visit:
-**[https://aiperceivable.github.io/apcore/getting-started.html](https://aiperceivable.github.io/apcore/getting-started.html)**
+**[https://aiperceivable.github.io/apcore/getting-started/](https://aiperceivable.github.io/apcore/getting-started/)**
 
 ## Requirements
 

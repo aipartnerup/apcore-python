@@ -13,6 +13,10 @@ from __future__ import annotations
 from apcore.schema.annotations import merge_annotations, merge_examples, merge_metadata
 from apcore.schema.exporter import SchemaExporter
 from apcore.schema.loader import SchemaLoader
+from apcore.schema.openai_strict import (
+    assert_openai_strict_compatible,
+    detect_openai_strict_incompatibilities,
+)
 from apcore.schema.ref_resolver import RefResolver
 from apcore.schema.strict import to_strict_schema
 from apcore.schema.types import (
@@ -39,6 +43,8 @@ __all__ = [
     "SchemaValidator",
     "SchemaExporter",
     "to_strict_schema",
+    "assert_openai_strict_compatible",
+    "detect_openai_strict_incompatibilities",
     "merge_annotations",
     "merge_examples",
     "merge_metadata",

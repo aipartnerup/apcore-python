@@ -136,7 +136,13 @@ class ACL:
         for key, value in conditions.items():
             handler = cls._condition_handlers.get(key)
             if handler is None:
+                # Record the diagnostic, not just the log line: a typo'd key
+                # (`role:` for `roles:`) denies exactly like a correctly-spelled
+                # unmet condition, and `AuditEntry.handler_error` is the only
+                # place the two are distinguishable. apcore-typescript records
+                # on this path too (`acl.ts` "Unknown ACL condition").
                 _logger.warning("Unknown ACL condition %r — treated as unsatisfied", key)
+                _handler_error_var.set(f"{key}: unknown ACL condition")
                 return False
             try:
                 result = handler.evaluate(value, context)
@@ -162,11 +168,17 @@ class ACL:
                     return False
                 else:
                     # Coroutine suspended — genuinely async, can't run in sync path.
+                    # This is a *configuration* fault, not an unmet condition, so
+                    # it belongs in the audit diagnostic (parity with
+                    # apcore-typescript's "Async condition … in sync context").
                     result.close()  # type: ignore[union-attr]
                     _logger.warning(
                         "Async condition %r suspended in sync context — treated as "
                         "unsatisfied. Use async_check() for handlers needing await.",
                         key,
+                    )
+                    _handler_error_var.set(
+                        f"{key}: async condition suspended in sync context — use async_check()"
                     )
                     return False
             if not result:
@@ -185,7 +197,10 @@ class ACL:
             # operators recurse through the async path and properly await.
             handler = cls._async_condition_handlers.get(key) or cls._condition_handlers.get(key)
             if handler is None:
+                # Same diagnostic as the sync path — an unknown key must not
+                # deny silently on either one.
                 _logger.warning("Unknown ACL condition %r — treated as unsatisfied", key)
+                _handler_error_var.set(f"{key}: unknown ACL condition")
                 return False
             try:
                 result = handler.evaluate(value, context)

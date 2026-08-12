@@ -27,6 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from apcore.errors import InvalidInputError
 from apcore.registry.registry import Registry
 
 
@@ -66,12 +67,12 @@ class _FailingOnLoadModule(_NoopModule):
 class TestRegisterInternalRejectsBareEphemeralId:
     def test_bare_ephemeral_id_rejected(self) -> None:
         reg = Registry()
-        with pytest.raises(ValueError, match="ephemeral"):
+        with pytest.raises(InvalidInputError, match="ephemeral"):
             reg.register_internal("ephemeral", _NoopModule())
 
     def test_namespaced_ephemeral_id_rejected(self) -> None:
         reg = Registry()
-        with pytest.raises(ValueError, match="ephemeral"):
+        with pytest.raises(InvalidInputError, match="ephemeral"):
             reg.register_internal("ephemeral.foo", _NoopModule())
 
 

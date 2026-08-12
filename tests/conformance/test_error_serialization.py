@@ -7,29 +7,16 @@ inside ``details``, and omit null/None optional fields (sparse output).
 
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 
 import pytest
 
 from apcore.errors import ModuleError
-
-
-def _fixture_path() -> Path:
-    env = os.environ.get("APCORE_FIXTURES")
-    if env:
-        return Path(env) / "error_serialization.json"
-    env_repo = os.environ.get("APCORE_SPEC_REPO")
-    if env_repo:
-        return Path(env_repo) / "conformance" / "fixtures" / "error_serialization.json"
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    return repo_root.parent / "apcore" / "conformance" / "fixtures" / "error_serialization.json"
+from conformance.canonical_fixtures import load_fixture
 
 
 def _load_fixture() -> dict:
-    with _fixture_path().open() as f:
-        return json.load(f)
+    """Load the canonical fixture from the apcore spec repo."""
+    return load_fixture("error_serialization.json")
 
 
 _FIXTURE = _load_fixture()

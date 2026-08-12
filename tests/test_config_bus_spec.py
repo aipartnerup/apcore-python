@@ -59,6 +59,15 @@ def _write_yaml(path: Path, body: str) -> str:
     return str(path)
 
 
+#: `project.name` is one of the two keys with no canonical default, so a
+#: legacy-mode document without it is rejected by `Config.load()`'s default
+#: `validate=True` (PROTOCOL_SPEC §9.1/§9.3). Fixtures below exercise load /
+#: get / reload *properties*, not required-field validation, so they carry
+#: these two keys to stay valid.
+_PROJECT_BLOCK = "project:\n  name: spec_fixture\n"
+_REQUIRED_HEADER = "version: '0.15.0'\n" + _PROJECT_BLOCK
+
+
 @dataclasses.dataclass
 class _PluginCfg:
     timeout: int = 5000
@@ -199,7 +208,7 @@ class TestLoadContract:
 
         Contract declares async: false — load returns a Config, not a coroutine.
         """
-        path = _write_yaml(tmp_path / "ok.yaml", "version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "ok.yaml", _REQUIRED_HEADER)
         result = Config.load(path)
         assert isinstance(result, Config)
         assert not inspect.iscoroutinefunction(Config.load.__func__)
@@ -209,7 +218,7 @@ class TestLoadContract:
 
         Loading the same file twice produces equivalent Config instances.
         """
-        path = _write_yaml(tmp_path / "idem.yaml", "version: '0.15.0'\nexecutor:\n  default_timeout: 30000\n")
+        path = _write_yaml(tmp_path / "idem.yaml", _REQUIRED_HEADER + "executor:\n  default_timeout: 30000\n")
         first = Config.load(path)
         second = Config.load(path)
         assert first.get("executor.default_timeout") == second.get("executor.default_timeout")
@@ -221,7 +230,7 @@ class TestLoadContract:
         Contract declares pure: false — the result reflects on-disk content,
         proving it reads the filesystem rather than returning a constant.
         """
-        path = _write_yaml(tmp_path / "fs.yaml", "version: '9.9.9'\n")
+        path = _write_yaml(tmp_path / "fs.yaml", "version: '9.9.9'\n" + _PROJECT_BLOCK)
         config = Config.load(path)
         assert config.get("version") == "9.9.9"
 
@@ -276,7 +285,7 @@ class TestGetContract:
 
         Two identical calls on the same state return identical outcomes.
         """
-        path = _write_yaml(tmp_path / "g.yaml", "executor:\n  default_timeout: 1234\n")
+        path = _write_yaml(tmp_path / "g.yaml", _REQUIRED_HEADER + "executor:\n  default_timeout: 1234\n")
         config = Config.load(path)
         first = config.get("executor.default_timeout")
         second = config.get("executor.default_timeout")
@@ -287,7 +296,7 @@ class TestGetContract:
 
         get must not mutate config: any public query is unchanged after calling.
         """
-        path = _write_yaml(tmp_path / "p.yaml", "executor:\n  default_timeout: 77\n")
+        path = _write_yaml(tmp_path / "p.yaml", _REQUIRED_HEADER + "executor:\n  default_timeout: 77\n")
         config = Config.load(path)
         snapshot = config.data
         config.get("executor.default_timeout")
@@ -580,7 +589,7 @@ class TestReloadContract:
 
         Source file removed before reload -> ConfigNotFoundError.
         """
-        path = Path(_write_yaml(tmp_path / "r.yaml", "version: '0.15.0'\n"))
+        path = Path(_write_yaml(tmp_path / "r.yaml", _REQUIRED_HEADER))
         config = Config.load(str(path))
         path.unlink()
         with pytest.raises(ConfigNotFoundError) as exc:
@@ -593,7 +602,7 @@ class TestReloadContract:
         Source file becomes invalid YAML before reload -> ConfigError
         (code CONFIG_INVALID, the SDK type for the spec's ConfigInvalidError).
         """
-        path = Path(_write_yaml(tmp_path / "ri.yaml", "version: '0.15.0'\n"))
+        path = Path(_write_yaml(tmp_path / "ri.yaml", _REQUIRED_HEADER))
         config = Config.load(str(path))
         path.write_text("bad: [unterminated\n", encoding="utf-8")
         with pytest.raises(ConfigError) as exc:
@@ -602,7 +611,7 @@ class TestReloadContract:
 
     def test_property_async_false(self, tmp_path: Path) -> None:
         """config_bus.reload.property.async"""
-        path = _write_yaml(tmp_path / "ra.yaml", "version: '0.15.0'\n")
+        path = _write_yaml(tmp_path / "ra.yaml", _REQUIRED_HEADER)
         config = Config.load(path)
         result = config.reload()
         assert result is None
@@ -613,7 +622,7 @@ class TestReloadContract:
 
         Two reloads with unchanged files produce identical state.
         """
-        path = _write_yaml(tmp_path / "rid.yaml", "executor:\n  default_timeout: 2222\n")
+        path = _write_yaml(tmp_path / "rid.yaml", _REQUIRED_HEADER + "executor:\n  default_timeout: 2222\n")
         config = Config.load(path)
         config.reload()
         first = config.data
@@ -627,11 +636,11 @@ class TestReloadContract:
         reload re-reads the YAML: a post-load edit becomes visible only after
         reload(), proving the filesystem re-read side effect and its ordering.
         """
-        path = Path(_write_yaml(tmp_path / "rc.yaml", "executor:\n  default_timeout: 1\n"))
+        path = Path(_write_yaml(tmp_path / "rc.yaml", _REQUIRED_HEADER + "executor:\n  default_timeout: 1\n"))
         config = Config.load(str(path))
         assert config.get("executor.default_timeout") == 1
         # Edit on disk; pre-reload state must be unchanged.
-        path.write_text("executor:\n  default_timeout: 999\n", encoding="utf-8")
+        path.write_text(_REQUIRED_HEADER + "executor:\n  default_timeout: 999\n", encoding="utf-8")
         assert config.get("executor.default_timeout") == 1
         # After reload the new value is visible.
         config.reload()

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonschemaError
+from pydantic import BaseModel
 
 from apcore.schema.types import SchemaValidationErrorDetail, SchemaValidationResult
 
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _URI_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://")
+
+# Depth cap for the format walks. `generate_model` stores the caller's dict by
+# reference, so a self-referencing schema reaches these functions directly and
+# would otherwise recurse until the interpreter's own limit. A `format` deeper
+# than this goes unreported, which is acceptable for a SHOULD-level annotation.
+_MAX_WALK_DEPTH = 64
 
 
 def _is_datetime(v: str) -> bool:
@@ -146,7 +153,9 @@ def warn_format_violations(data: Any, model: Any) -> None:
     if not isinstance(source_schema, dict):
         return
 
-    declares_format = getattr(model, "__apcore_declares_format__", None)
+    # Read the cache off this class only: `getattr` walks the MRO, so a subclass
+    # would inherit a parent's False and skip its own formats forever.
+    declares_format = model.__dict__.get("__apcore_declares_format__") if isinstance(model, type) else None
     if declares_format is None:
         declares_format = _declares_format(source_schema)
         try:
@@ -156,17 +165,37 @@ def warn_format_violations(data: Any, model: Any) -> None:
     if not declares_format:
         return
 
+    if isinstance(data, BaseModel):
+        data = data.model_dump(mode="json")
     _check_formats_and_warn(data, source_schema)
 
 
-def _declares_format(node: Any) -> bool:
-    """Return True when *node* carries a `format` keyword anywhere in its tree."""
-    if isinstance(node, dict):
-        if "format" in node:
+# Sub-schema keywords whose value is itself a schema (or a collection of them).
+# The `format` scan follows only these, so a `format` key sitting in data — a
+# `default`, an `examples` entry, or a property literally named "format" — does
+# not count as a declaration.
+_SCHEMA_VALUED_KEYWORDS = ("items", "additionalProperties", "not", "contains", "propertyNames")
+_SCHEMA_MAP_KEYWORDS = ("properties", "patternProperties", "$defs", "definitions")
+_SCHEMA_LIST_KEYWORDS = ("anyOf", "oneOf", "allOf", "prefixItems")
+
+
+def _declares_format(node: Any, _depth: int = 0) -> bool:
+    """Return True when *node* declares a `format` in a schema position."""
+    if _depth > _MAX_WALK_DEPTH or not isinstance(node, dict):
+        return False
+    if "format" in node:
+        return True
+    for keyword in _SCHEMA_VALUED_KEYWORDS:
+        if _declares_format(node.get(keyword), _depth + 1):
             return True
-        return any(_declares_format(value) for value in node.values())
-    if isinstance(node, list):
-        return any(_declares_format(item) for item in node)
+    for keyword in _SCHEMA_MAP_KEYWORDS:
+        section = node.get(keyword)
+        if isinstance(section, dict) and any(_declares_format(v, _depth + 1) for v in section.values()):
+            return True
+    for keyword in _SCHEMA_LIST_KEYWORDS:
+        section = node.get(keyword)
+        if isinstance(section, list) and any(_declares_format(v, _depth + 1) for v in section):
+            return True
     return False
 
 
@@ -196,7 +225,9 @@ def _error_to_detail(error: JsonschemaError) -> SchemaValidationErrorDetail:
     )
 
 
-def _check_formats_and_warn(data: Any, schema: Any, _path: str = "", _seen: set[Any] | None = None) -> None:
+def _check_formats_and_warn(
+    data: Any, schema: Any, _path: str = "", _seen: set[Any] | None = None, _depth: int = 0
+) -> None:
     """Walk the data/schema tree and log warnings for format violations.
 
     Sync finding A-D-032: previously this function only iterated
@@ -212,7 +243,7 @@ def _check_formats_and_warn(data: Any, schema: Any, _path: str = "", _seen: set[
     the value never carried) and every ``allOf`` member. An annotation reached
     through more than one branch is reported once.
     """
-    if not isinstance(schema, dict):
+    if not isinstance(schema, dict) or _depth > _MAX_WALK_DEPTH:
         return
     if _seen is None:
         _seen = set()
@@ -230,7 +261,7 @@ def _check_formats_and_warn(data: Any, schema: Any, _path: str = "", _seen: set[
                 if value is None:
                     continue
                 child_path = f"{_path}/{prop_name}" if _path else f"/{prop_name}"
-                _check_formats_and_warn(value, prop_schema, child_path, _seen)
+                _check_formats_and_warn(value, prop_schema, child_path, _seen, _depth + 1)
 
         additional = schema.get("additionalProperties")
         if isinstance(additional, dict):
@@ -239,14 +270,14 @@ def _check_formats_and_warn(data: Any, schema: Any, _path: str = "", _seen: set[
                 if key in declared or value is None:
                     continue
                 child_path = f"{_path}/{key}" if _path else f"/{key}"
-                _check_formats_and_warn(value, additional, child_path, _seen)
+                _check_formats_and_warn(value, additional, child_path, _seen, _depth + 1)
 
     # Array: walk each element against the schema's `items` declaration.
     if isinstance(data, list):
         items_schema = schema.get("items")
         if isinstance(items_schema, dict):
             for idx, value in enumerate(data):
-                _check_formats_and_warn(value, items_schema, f"{_path}[{idx}]", _seen)
+                _check_formats_and_warn(value, items_schema, f"{_path}[{idx}]", _seen, _depth + 1)
 
     # Combinators: a union branch annotates the data only when the data satisfies it.
     for keyword in ("anyOf", "oneOf"):
@@ -254,13 +285,13 @@ def _check_formats_and_warn(data: Any, schema: Any, _path: str = "", _seen: set[
         if isinstance(branches, list):
             for branch in branches:
                 if isinstance(branch, dict) and Draft202012Validator(branch).is_valid(data):
-                    _check_formats_and_warn(data, branch, _path, _seen)
+                    _check_formats_and_warn(data, branch, _path, _seen, _depth + 1)
 
     members = schema.get("allOf")
     if isinstance(members, list):
         for member in members:
             if isinstance(member, dict):
-                _check_formats_and_warn(data, member, _path, _seen)
+                _check_formats_and_warn(data, member, _path, _seen, _depth + 1)
 
 
 def _warn_if_format_violated(data: Any, schema: dict[str, Any], path: str, seen: set[Any]) -> None:

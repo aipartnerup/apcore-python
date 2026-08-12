@@ -17,6 +17,8 @@ Covers all 10 test cases defined in the canonical conformance fixture at:
 
 from __future__ import annotations
 
+import sys
+
 import io
 import json
 import time
@@ -33,6 +35,7 @@ from apcore.observability.error_history import (
 from apcore.observability.metrics import MetricsCollector
 from apcore.observability.store import InMemoryObservabilityStore
 from apcore.observability.tracing import BatchSpanProcessor, InMemoryExporter, Span
+from conformance.canonical_fixtures import case_ids
 
 
 # ---------------------------------------------------------------------------
@@ -480,3 +483,49 @@ class TestPrometheusFormatIncludesRequiredMetrics:
         exporter = PrometheusExporter(collector=collector)
         output = exporter.export()
         assert "apcore_module_calls_total" in output
+
+
+# ---------------------------------------------------------------------------
+# Fixture coverage guard
+# ---------------------------------------------------------------------------
+
+
+class TestFixtureCoverage:
+    """Every case in the canonical fixture has a driver class in this file.
+
+    The assertions above are hand-written rather than generated from the
+    fixture. That is fine, but the fixture used to be named only in the module
+    docstring, so a case added on the spec side left no trace here. This guard
+    closes that gap: a new canonical case fails until someone writes the class.
+    """
+
+    FIXTURE = "observability_hardening.json"
+
+    #: canonical case id -> the class in this module that asserts it.
+    COVERED: dict[str, str] = {
+        "pluggable_store_default_inmemory": "TestPluggableStoreDefaultInMemory",
+        "batch_processor_buffers_spans": "TestBatchProcessorBuffersSpans",
+        "batch_processor_drops_on_full_queue": "TestBatchProcessorDropsOnFullQueue",
+        "error_history_evicts_oldest_first": "TestErrorHistoryEvictsOldestFirst",
+        "error_fingerprint_dedup_same_error": "TestErrorFingerprintDedupSameError",
+        "error_fingerprint_normalization": "TestErrorFingerprintNormalization",
+        "fingerprint_different_errors_no_collision": "TestFingerprintDifferentErrorsNoCollision",
+        "redaction_field_pattern_match": "TestRedactionFieldPatternMatch",
+        "redaction_value_pattern_match": "TestRedactionValuePatternMatch",
+        "prometheus_format_includes_required_metrics": "TestPrometheusFormatIncludesRequiredMetrics",
+    }
+
+    def test_every_canonical_case_is_claimed(self) -> None:
+        canonical = set(case_ids(self.FIXTURE))
+        claimed = set(self.COVERED)
+        assert canonical - claimed == set(), (
+            f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
+        )
+        assert claimed - canonical == set(), (
+            f"this file claims case(s) {self.FIXTURE} no longer defines"
+        )
+
+    def test_every_claimed_class_exists(self) -> None:
+        module = sys.modules[__name__]
+        missing = [cls for cls in self.COVERED.values() if not hasattr(module, cls)]
+        assert missing == [], f"claimed driver class(es) not defined: {missing}"

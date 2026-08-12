@@ -6,6 +6,8 @@ Covers all 10 cases in:
 
 from __future__ import annotations
 
+import sys
+
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,6 +17,7 @@ import pytest
 
 from apcore.events.circuit_breaker import CircuitBreakerWrapper, CircuitState
 from apcore.events.emitter import ApCoreEvent, EventEmitter
+from conformance.canonical_fixtures import case_ids
 
 
 # ---------------------------------------------------------------------------
@@ -548,3 +551,49 @@ class TestEventNamingCanonical:
 
     def test_circuit_closed_event_has_canonical_name(self) -> None:
         assert self._PATTERN.match("apcore.subscriber.circuit_closed")
+
+
+# ---------------------------------------------------------------------------
+# Fixture coverage guard
+# ---------------------------------------------------------------------------
+
+
+class TestFixtureCoverage:
+    """Every case in the canonical fixture has a driver class in this file.
+
+    The assertions above are hand-written rather than generated from the
+    fixture. That is fine, but the fixture used to be named only in the module
+    docstring, so a case added on the spec side left no trace here. This guard
+    closes that gap: a new canonical case fails until someone writes the class.
+    """
+
+    FIXTURE = "event_management_hardening.json"
+
+    #: canonical case id -> the class in this module that asserts it.
+    COVERED: dict[str, str] = {
+        "subscriber_factory_registered_type": "TestSubscriberFactoryRegisteredType",
+        "builtin_stdout_type": "TestBuiltinStdoutType",
+        "builtin_file_type": "TestBuiltinFileType",
+        "builtin_filter_passes_matching": "TestBuiltinFilterPassesMatching",
+        "builtin_filter_discards_nonmatching": "TestBuiltinFilterDiscardsNonmatching",
+        "circuit_open_after_threshold": "TestCircuitOpenAfterThreshold",
+        "circuit_discards_in_open_state": "TestCircuitDiscardsInOpenState",
+        "circuit_half_open_after_window": "TestCircuitHalfOpenAfterWindow",
+        "circuit_closes_on_success": "TestCircuitClosesOnSuccess",
+        "event_naming_canonical": "TestEventNamingCanonical",
+    }
+
+    def test_every_canonical_case_is_claimed(self) -> None:
+        canonical = set(case_ids(self.FIXTURE))
+        claimed = set(self.COVERED)
+        assert canonical - claimed == set(), (
+            f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
+        )
+        assert claimed - canonical == set(), (
+            f"this file claims case(s) {self.FIXTURE} no longer defines"
+        )
+
+    def test_every_claimed_class_exists(self) -> None:
+        module = sys.modules[__name__]
+        missing = [cls for cls in self.COVERED.values() if not hasattr(module, cls)]
+        assert missing == [], f"claimed driver class(es) not defined: {missing}"

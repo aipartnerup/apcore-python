@@ -1,5 +1,11 @@
 """Conformance tests for Pipeline Hardening (Issue #33, core-executor.md §Pipeline Hardening).
 
+Drives the canonical ``apcore/conformance/fixtures/pipeline_hardening.json``.
+Each case needs its own pipeline wiring, so the assertions are hand-written
+rather than generated from the fixture; ``TestFixtureCoverage`` at the bottom
+holds the two in step, so a case added on the spec side fails here instead of
+going unnoticed.
+
 Exercises five fixture cases:
   fail_fast_on_step_error        — §1.1 fail-fast error wrapping
   continue_on_ignored_error      — §1.1 ignore_errors: true continues
@@ -10,6 +16,7 @@ Exercises five fixture cases:
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import pytest
@@ -24,6 +31,7 @@ from apcore.pipeline import (
     PipelineStepNotFoundError,
     StepResult,
 )
+from conformance.canonical_fixtures import case_ids
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -263,6 +271,19 @@ class TestRunUntilStopsEarly:
 
     @pytest.mark.asyncio
     async def test_run_until_state_has_correct_outputs(self) -> None:
+        """A ``run_until`` predicate DOES see the step it is judging in ``state.outputs``.
+
+        This is the deliberate exception to the rule that ``state.outputs``
+        holds exactly the steps completed *before* ``state.step_name``
+        (middleware-system.md § "What ``state.outputs`` contains"). That rule
+        governs the three ``StepMiddleware`` hooks, which observe a step from
+        inside its own execution; ``run_until`` is evaluated *after* the step
+        completes and exists precisely to decide "have we produced what we
+        came for yet?" — a question it cannot answer without the step that
+        just ran. The engine therefore snapshots ``step_outputs`` between the
+        ``after_step`` hook and this predicate; do not "fix" the assertions
+        below to match the middleware rule.
+        """
         observed_states: list[PipelineState] = []
 
         class _OutputStep(BaseStep):
@@ -432,3 +453,47 @@ class TestStepLookupIsNotLinear:
 
         with pytest.raises(StepNotFoundError):
             await engine.run(strategy, ctx)
+
+
+# ---------------------------------------------------------------------------
+# Fixture coverage guard
+# ---------------------------------------------------------------------------
+
+
+class TestFixtureCoverage:
+    """Every case in the canonical fixture has a driver class in this file.
+
+    The assertions above are hand-written rather than generated from the fixture
+    (each case needs its own pipeline wiring, which does not reduce to a
+    schema-in / verdict-out loop). That is fine, but it used to mean the fixture
+    was named only in a module docstring while a vendored copy sat unread in
+    ``tests/conformance/fixtures/`` — so a case added on the spec side left no
+    trace here at all. This guard closes that gap: a new canonical case fails
+    until someone writes the class for it.
+    """
+
+    FIXTURE = "pipeline_hardening.json"
+
+    #: canonical case id → the class in this module that asserts it.
+    COVERED: dict[str, str] = {
+        "fail_fast_on_step_error": "TestFailFastOnStepError",
+        "continue_on_ignored_error": "TestContinueOnIgnoredError",
+        "replace_semantic_no_duplicate": "TestReplaceSemanticNoDuplicate",
+        "run_until_stops_early": "TestRunUntilStopsEarly",
+        "step_lookup_is_not_linear": "TestStepLookupIsNotLinear",
+    }
+
+    def test_every_canonical_case_is_claimed(self) -> None:
+        canonical = set(case_ids(self.FIXTURE))
+        claimed = set(self.COVERED)
+        assert canonical - claimed == set(), (
+            f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
+        )
+        assert claimed - canonical == set(), (
+            f"this file claims case(s) {self.FIXTURE} no longer defines"
+        )
+
+    def test_every_claimed_class_exists(self) -> None:
+        module = sys.modules[__name__]
+        missing = [cls for cls in self.COVERED.values() if not hasattr(module, cls)]
+        assert missing == [], f"claimed driver class(es) not defined: {missing}"

@@ -76,16 +76,45 @@ class TestToStrictSchema:
         result = to_strict_schema(schema)
         assert result["properties"]["name"]["type"] == ["string", "null"]
 
-    def test_ref_field_wrapped_in_oneof(self) -> None:
+    def test_ref_field_wrapped_in_anyof(self) -> None:
         schema: dict[str, Any] = {
             "type": "object",
             "properties": {"address": {"$ref": "#/definitions/Address"}},
         }
         result = to_strict_schema(schema)
         prop = result["properties"]["address"]
-        assert "oneOf" in prop
-        assert {"$ref": "#/definitions/Address"} in prop["oneOf"]
-        assert {"type": "null"} in prop["oneOf"]
+        assert "anyOf" in prop
+        assert {"$ref": "#/definitions/Address"} in prop["anyOf"]
+        assert {"type": "null"} in prop["anyOf"]
+
+    def test_optional_ref_uses_anyof_not_oneof(self) -> None:
+        """The synthesized nullable wrapper is `anyOf`, never `oneOf`.
+
+        Strict mode exists to feed OpenAI structured outputs, which accepts only
+        `anyOf` as the nullable-union spelling.
+        """
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {"address": {"$ref": "#/definitions/Address"}},
+        }
+        result = to_strict_schema(schema)
+        prop = result["properties"]["address"]
+        assert "oneOf" not in prop
+        assert prop == {"anyOf": [{"$ref": "#/definitions/Address"}, {"type": "null"}]}
+
+    def test_optional_authored_oneof_preserved_inside_wrapper(self) -> None:
+        """An author-written `oneOf` keeps its exclusivity; only the wrapper is `anyOf`."""
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {
+                "value": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+            },
+        }
+        result = to_strict_schema(schema)
+        prop = result["properties"]["value"]
+        assert list(prop.keys()) == ["anyOf"]
+        assert prop["anyOf"][0] == {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+        assert prop["anyOf"][1] == {"type": "null"}
 
     def test_nested_objects_recursively_converted(self) -> None:
         schema: dict[str, Any] = {
@@ -164,6 +193,73 @@ class TestToStrictSchema:
         }
         result = to_strict_schema(schema)
         assert result["required"] == ["apple", "mango", "zebra"]
+
+    def test_object_with_properties_but_no_type_keyword_is_hardened(self) -> None:
+        """`properties` alone already makes a node an object schema (A23).
+
+        Requiring a `type` keyword let ``{"properties": {...}}`` through with
+        neither ``additionalProperties: false`` nor a ``required`` list —
+        exactly what OpenAI structured outputs rejects under ``strict: true``.
+        """
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {"nested": {"properties": {"q": {"type": "integer"}}}},
+            "required": ["nested"],
+        }
+        result = to_strict_schema(schema)
+        nested = result["properties"]["nested"]
+        assert nested["additionalProperties"] is False
+        assert nested["required"] == ["q"]
+        assert nested["properties"]["q"]["type"] == ["integer", "null"]
+
+    def test_root_without_type_keyword_is_hardened(self) -> None:
+        result = to_strict_schema({"properties": {"x": {"type": "string"}}})
+        assert result["additionalProperties"] is False
+        assert result["required"] == ["x"]
+
+    def test_object_type_union_form_is_hardened(self) -> None:
+        """`type: ["object", "null"]` still declares an object schema."""
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {
+                "inner": {"type": ["object", "null"], "properties": {"k": {"type": "string"}}}
+            },
+            "required": ["inner"],
+        }
+        result = to_strict_schema(schema)
+        inner = result["properties"]["inner"]
+        assert inner["additionalProperties"] is False
+        assert inner["required"] == ["k"]
+
+    def test_non_object_type_with_properties_is_left_alone(self) -> None:
+        """R2 inertness: `properties` next to a non-object `type` asserts nothing."""
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {"s": {"type": "string", "properties": {"nope": {"type": "string"}}}},
+            "required": ["s"],
+        }
+        result = to_strict_schema(schema)
+        assert "additionalProperties" not in result["properties"]["s"]
+
+    def test_prefix_items_entries_are_hardened(self) -> None:
+        """Draft 2020-12 tuple form — an object at a tuple position must harden too."""
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {
+                "tup": {
+                    "type": "array",
+                    "prefixItems": [
+                        {"type": "object", "properties": {"z": {"type": "string"}}},
+                        {"type": "string"},
+                    ],
+                }
+            },
+            "required": ["tup"],
+        }
+        result = to_strict_schema(schema)
+        first = result["properties"]["tup"]["prefixItems"][0]
+        assert first["additionalProperties"] is False
+        assert first["required"] == ["z"]
 
 
 # === _apply_llm_descriptions() ===

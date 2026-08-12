@@ -1314,14 +1314,21 @@ class Executor:
         except ExecutionCancelledError:
             raise
         except Exception as exc:
+            # D-19: "the trace variant MUST share identical error-recovery
+            # semantics with the underlying call()". ``call_async`` unwraps
+            # ``PipelineStepError`` to its typed cause before entering recovery
+            # (§1.1 makes the wrapper the *engine*-level contract, not the
+            # executor's). Passing the raw wrapper made one step failure surface
+            # as PIPELINE_STEP_ERROR here and as, say, MODULE_NOT_FOUND through
+            # ``call()`` — to on_error middleware and to the caller alike.
+            # apcore-typescript and apcore-rust both unwrap first.
+            # ``_recover_from_call_error`` peels the MiddlewareChainError layer
+            # and re-checks cancellation (D-20) itself.
+            underlying = exc
+            if isinstance(exc, PipelineStepError):
+                underlying = exc.cause if isinstance(exc.cause, Exception) else exc
             # If a middleware ``on_error`` recovers, return the recovery dict.
-            # The full pipeline trace was held inside ``engine.run`` and is not
-            # accessible here, so callers receive a sentinel trace marking the
-            # strategy and module — sufficient for routing/observability but
-            # without per-step detail. Callers needing the partial trace
-            # should use ``call_async`` (which discards the trace) or attach
-            # a tracing middleware.
-            recovery = await self._recover_from_call_error(exc, pipe_ctx, module_id)
+            recovery = await self._recover_from_call_error(underlying, pipe_ctx, module_id)
             if isinstance(recovery, RetrySignal):
                 # call_with_trace is a one-shot introspection API: retries
                 # would require re-running the engine but we also need a
@@ -1333,7 +1340,17 @@ class Executor:
                     module_id,
                 )
                 raise exc
-            return recovery, PipelineTrace(module_id=module_id, strategy_name=effective_strategy.name)
+            # The trace the engine actually built during the failing run, not a
+            # fresh empty stub. ``PipelineEngine.run`` publishes it onto the
+            # context as it goes, so the recovery path can hand back the real
+            # record — every step that ran, and the one that failed. Parity with
+            # apcore-typescript (`pipelineCtx.trace`) and apcore-rust
+            # (`pipeline_ctx.trace.clone()`). The fallback covers a failure
+            # raised before the engine got as far as publishing.
+            trace = pipe_ctx.trace
+            if trace is None:
+                trace = PipelineTrace(module_id=module_id, strategy_name=effective_strategy.name)
+            return recovery, trace
 
     def _effective_strategy(
         self,

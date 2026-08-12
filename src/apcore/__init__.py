@@ -119,6 +119,7 @@ from apcore.errors import (
     IdTooLongError,
     InternalError,
     InvalidInputError,
+    InvalidParentIdError,
     InvalidSegmentError,
     ModuleDisabledError,
     ModuleIdConflictError,
@@ -148,6 +149,8 @@ from apcore.policy import ExecutionPolicy, PolicyDecision, PolicyRule
 
 # Middleware
 from apcore.middleware import (
+    APCORE_KEY_PREFIX,
+    EXT_KEY_PREFIX,
     AfterMiddleware,
     BeforeMiddleware,
     CircuitBreakerMiddleware,
@@ -157,10 +160,12 @@ from apcore.middleware import (
     Middleware,
     MiddlewareChainError,
     MiddlewareManager,
+    NamespaceCheck,
     PlatformNotifyMiddleware,
     RetryConfig,
     RetryMiddleware,
     RetrySignal,
+    validate_context_key,
 )
 
 # Decorators
@@ -693,6 +698,7 @@ __all__ = [
     "IdTooLongError",
     "InternalError",
     "InvalidInputError",
+    "InvalidParentIdError",
     "InvalidSegmentError",
     "ModuleDisabledError",
     "ModuleExecuteError",
@@ -728,6 +734,10 @@ __all__ = [
     "AfterMiddleware",
     "LoggingMiddleware",
     "MiddlewareChainError",
+    "NamespaceCheck",
+    "validate_context_key",
+    "APCORE_KEY_PREFIX",
+    "EXT_KEY_PREFIX",
     "RetryConfig",
     "RetryMiddleware",
     "ErrorHistoryMiddleware",
