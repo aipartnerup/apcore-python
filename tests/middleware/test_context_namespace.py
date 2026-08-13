@@ -21,7 +21,6 @@ from apcore.middleware import (
     EXT_KEY_PREFIX,
     NamespaceCheck,
     enforce_context_key,
-    namespace_keys,
     validate_context_key,
 )
 
@@ -31,9 +30,9 @@ class TestValidateContextKey:
         ("writer", "key", "valid"),
         [
             ("framework", "_apcore.mw.logging.start_time", True),
-            ("framework", "_apcore.mw.tracing.span_id", True),
+            ("framework", "_apcore.mw.tracing.spans", True),
             ("user", "ext.my_company.request_id", True),
-            ("user", "_apcore.mw.tracing.span_id", False),
+            ("user", "_apcore.mw.tracing.spans", False),
             ("framework", "ext.user_payload", False),
         ],
     )
@@ -55,16 +54,21 @@ class TestValidateContextKey:
         assert validate_context_key("user", APCORE_KEY_PREFIX).valid is False
         assert validate_context_key("framework", EXT_KEY_PREFIX).valid is False
 
-    def test_canonical_key_table_matches_the_spec(self) -> None:
-        assert namespace_keys.LOGGING_START_TIME == "_apcore.mw.logging.start_time"
-        assert namespace_keys.TRACING_SPAN_ID == "_apcore.mw.tracing.span_id"
-        assert namespace_keys.CIRCUIT_STATE == "_apcore.mw.circuit.state"
+    # `test_canonical_key_table_matches_the_spec` was deleted, not adjusted: it
+    # asserted each `namespace_keys` constant against a literal copy of its own
+    # value, for a container this package no longer defines. `namespace_keys`
+    # was a hand-maintained mirror of `apcore.context_keys` with no readers, and
+    # it had already drifted — it declared a tracing span-id key that nothing
+    # writes, while the canonical registry declares the
+    # `_apcore.mw.tracing.spans` stack that `observability/tracing.py` actually
+    # maintains. The surviving key names are pinned in
+    # `tests/test_context_keys.py`, against the one registry that is left.
 
 
 class TestEnforceContextKey:
     def test_violation_logs_a_warning_and_returns_the_check(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING, logger="apcore.middleware.context_namespace"):
-            check = enforce_context_key("user", "_apcore.mw.tracing.span_id")
+            check = enforce_context_key("user", "_apcore.mw.tracing.spans")
         assert check == NamespaceCheck(valid=False, warning=True)
         assert any("_apcore." in rec.getMessage() for rec in caplog.records)
 

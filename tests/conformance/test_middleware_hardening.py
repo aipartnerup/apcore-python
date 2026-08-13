@@ -5,10 +5,16 @@ this fixture; apcore-python covered it only by hand under `tests/middleware/`
 and `tests/observability/`, which cannot notice a new fixture case. This is the
 fixture-driven version.
 
-Nine of the ten cases are driven for real. The tenth (`tracing_span_created`)
-describes the OpenTelemetry-shaped `TracingMiddleware` of middleware-system.md
-§1.3, which apcore-python does not ship at all; it is a strict xfail naming the
-gap.
+All nine cases are driven for real. A tenth, `tracing_span_created`, used to be
+a strict xfail here: it described the second, OpenTelemetry-shaped
+`TracingMiddleware` of middleware-system.md §1.3, which apcore-python never
+shipped. §1.3 has since been withdrawn — `TracingMiddleware` is specified once,
+in observability.md § "Tracing Architecture", with protocol-spec.md §12
+normative for the span — and the case was removed from the fixture, so the gap
+the xfail recorded is withdrawn rather than owed. The surviving contract (span
+name `apcore.module.execute`, module_id/method/caller_id attributes, the
+`_apcore.mw.tracing.spans` stack with `parent_span_id` linking) is covered by
+`tests/observability/test_tracing.py`.
 """
 
 from __future__ import annotations
@@ -27,24 +33,6 @@ from .canonical_fixtures import load_fixture
 
 FIXTURE = load_fixture("middleware_hardening.json")
 CASES: dict[str, dict[str, Any]] = {tc["id"]: tc for tc in FIXTURE["test_cases"]}
-
-_TRACING_XFAIL = (
-    "NOT-IMPLEMENTED: apcore-python ships no OpenTelemetry-shaped TracingMiddleware. "
-    "middleware-system.md §1.3 and this fixture describe a SECOND, separate middleware from the "
-    "one in observability.md: span name == module_id, apcore.trace_id / apcore.caller_id / "
-    "apcore.module_id attributes, span id in _apcore.mw.tracing.span_id, no-op without the OTel "
-    "SDK. apcore-typescript ships it as src/middleware/tracing.ts::TracingMiddleware and "
-    "apcore-rust as src/middleware/otel_tracing.rs::TracingMiddleware (re-exported as "
-    "apcore::OtelTracingMiddleware to avoid the name clash). Python has no apcore.middleware "
-    "equivalent.\n\n"
-    "NOT the gap: apcore-python's observability TracingMiddleware "
-    "(src/apcore/observability/tracing.py:185). Its 'apcore.module.execute' span name, bare "
-    "module_id/method/caller_id attributes and _apcore.mw.tracing.spans STACK are byte-for-byte "
-    "what observability.md §'Tracing Architecture' specifies, what protocol-spec.md:6401 and "
-    "conformance.md T08-007 name, and what apcore-typescript's own "
-    "src/observability/tracing.ts:194-218 does. Reshaping it to satisfy this fixture would "
-    "CREATE a divergence, not remove one."
-)
 
 
 class _CapturingEmitter:
@@ -266,36 +254,8 @@ def test_circuit_breaker_closes_on_success() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tracing (cases 8-9)
+# Tracing (case 8)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.xfail(strict=True, reason=_TRACING_XFAIL)
-def test_tracing_span_created() -> None:
-    from apcore.observability.tracing import InMemoryExporter, TracingMiddleware
-
-    case = CASES["tracing_span_created"]
-    expected = case["expected"]
-
-    middleware = TracingMiddleware(exporter=InMemoryExporter())
-    ctx = _context(case["input"]["caller_id"], trace_id=case["input"]["trace_id"])
-
-    middleware.before(case["input"]["module_id"], {}, ctx)
-
-    spans = ctx.data.get("_apcore.mw.tracing.spans") or []
-    assert spans, f"[{case['id']}] before() must create a span"
-    span = spans[-1]
-    assert span.name == expected["span_name"], (
-        f"[{case['id']}] span name: got {span.name!r}, expected {expected['span_name']!r}"
-    )
-    for attribute, value in expected["span_attributes"].items():
-        assert span.attributes.get(attribute) == value, (
-            f"[{case['id']}] span attribute {attribute}: got {span.attributes.get(attribute)!r}, "
-            f"expected {value!r}"
-        )
-    assert ctx.data.get(expected["context_key"]) == span.span_id, (
-        f"[{case['id']}] the span id must be stored under {expected['context_key']!r}"
-    )
 
 
 def test_tracing_noop_without_otel() -> None:
@@ -349,7 +309,7 @@ def test_tracing_noop_without_otel() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Async handler detection (case 10)
+# Async handler detection (case 9)
 # ---------------------------------------------------------------------------
 
 
@@ -420,7 +380,6 @@ def test_every_fixture_case_has_a_driver() -> None:
         "circuit_breaker_short_circuits_open",
         "circuit_breaker_half_open_probe",
         "circuit_breaker_closes_on_success",
-        "tracing_span_created",
         "tracing_noop_without_otel",
         "async_detection_coroutine_function",
     }

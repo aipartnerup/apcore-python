@@ -9,7 +9,6 @@ from apcore.middleware.context_namespace import (
     ContextWriter,
     NamespaceCheck,
     enforce_context_key,
-    namespace_keys,
     validate_context_key,
 )
 from apcore.middleware.error_history_middleware import ErrorHistoryMiddleware
@@ -36,7 +35,6 @@ __all__ = [
     "EXT_KEY_PREFIX",
     "ContextWriter",
     "NamespaceCheck",
-    "namespace_keys",
     "validate_context_key",
     "enforce_context_key",
 ]

@@ -9,7 +9,10 @@ Two reserved prefixes partition ``Context.data``:
 
 ``_apcore.*``
     Owned by framework middleware — e.g. ``_apcore.mw.logging.start_time``,
-    ``_apcore.mw.tracing.span_id``, ``_apcore.mw.circuit.state``.
+    ``_apcore.mw.tracing.spans``, ``_apcore.mw.circuit.state``. The canonical
+    list of framework-owned keys is :mod:`apcore.context_keys`; this module
+    validates the *prefix* rules and deliberately keeps no second copy of that
+    list.
 ``ext.*``
     Owned by user-defined middleware — e.g. ``ext.my_company.request_id``.
 
@@ -34,7 +37,6 @@ __all__ = [
     "EXT_KEY_PREFIX",
     "ContextWriter",
     "NamespaceCheck",
-    "namespace_keys",
     "validate_context_key",
     "enforce_context_key",
 ]
@@ -48,21 +50,6 @@ EXT_KEY_PREFIX = "ext."
 
 #: The party performing a ``context.data`` write.
 ContextWriter = Literal["framework", "user"]
-
-
-class namespace_keys:  # noqa: N801 - namespace container, mirrors Rust's `mod namespace_keys`
-    """Canonical framework-owned ``context.data`` keys (informational).
-
-    Mirrors apcore-rust ``middleware::context_namespace::namespace_keys`` and the
-    table in ``middleware-system.md`` §1.1.
-    """
-
-    #: ``LoggingMiddleware.before()`` writes the call start time (epoch seconds).
-    LOGGING_START_TIME = "_apcore.mw.logging.start_time"
-    #: ``TracingMiddleware.before()`` writes the active span ID for the call.
-    TRACING_SPAN_ID = "_apcore.mw.tracing.span_id"
-    #: ``CircuitBreakerMiddleware`` writes the current circuit state for the call.
-    CIRCUIT_STATE = "_apcore.mw.circuit.state"
 
 
 @dataclass(frozen=True)

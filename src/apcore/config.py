@@ -172,6 +172,57 @@ _DEFAULTS: dict[str, Any] = {
     },
 }
 
+#: Framework sections of the ``apcore`` namespace, mapped to the keys each one
+#: declares (PROTOCOL_SPEC §9.14 ``reject_unknown_framework_keys``).
+#:
+#: Every section in ``schemas/apcore-config.schema.json`` is
+#: ``additionalProperties: false``; this table is the projection of that
+#: closedness the runtime can consult, since the schema files ship with the
+#: spec repo rather than with this package. It is *derived*, not authored:
+#: ``tests/conformance/test_config_key_governance.py`` rebuilds it from the
+#: canonical schema — resolving ``$ref`` and the ``oneOf`` branches
+#: ``ExtensionsConfig`` splits ``root``/``roots`` across — and fails on any
+#: difference, so a section added to the schema breaks a test here instead of
+#: going silently unenforced. Regenerate rather than hand-edit.
+#:
+#: ``sys_modules`` unions in ``schemas/sys-modules.schema.json``: §9.15.3
+#: registers it as a namespace and declares its subsections there, while
+#: ``SysModulesConfig`` in apcore-config.schema.json stops at ``enabled``.
+#: Taking the narrower of the two would reject ``sys_modules.usage`` — a key
+#: the canonical surface declares — for anyone who opts into strict.
+#:
+#: The check is one level deep, matching §9.14 step 2 ("each key present in
+#: ``apcore_data[section]``"), so only each section's direct child names are
+#: needed here.
+_FRAMEWORK_SECTION_KEYS: dict[str, frozenset[str]] = {
+    "acl": frozenset({"audit", "default_effect", "root"}),
+    "bindings": frozenset({"dir", "pattern"}),
+    "executor": frozenset({"default_timeout", "global_timeout", "max_call_depth", "max_module_repeat"}),
+    "extensions": frozenset(
+        {
+            "auto_discover",
+            "follow_symlinks",
+            "ignore_patterns",
+            "lazy_load",
+            "max_depth",
+            "namespace",
+            "root",
+            "roots",
+        }
+    ),
+    "id_map": frozenset({"auto_detect", "overrides"}),
+    "logging": frozenset({"format", "level"}),
+    "middleware": frozenset({"disabled"}),
+    "obs": frozenset({"redaction"}),
+    "observability": frozenset({"metrics", "tracing"}),
+    "pipeline": frozenset({"configure", "remove", "steps"}),
+    "project": frozenset({"name", "version"}),
+    "schema": frozenset({"max_ref_depth", "root", "strategy"}),
+    "stream": frozenset({"max_merge_depth"}),
+    "sys_modules": frozenset({"control", "enabled", "error_history", "events", "health", "manifest", "usage"}),
+    "validation": frozenset({"binding", "pipeline"}),
+}
+
 # =============================================================================
 # Namespace registry (global, class-level, thread-safe)
 # =============================================================================
@@ -514,6 +565,48 @@ def _validate_namespace_schema(
             message=f"Namespace {namespace!r} failed schema validation: {exc.message}",
             details={"namespace": namespace, "path": list(exc.absolute_path)},
         ) from exc
+
+
+def _meta_strict(config_data: dict[str, Any]) -> bool:
+    """Read ``_config.strict`` (PROTOCOL_SPEC §9.6.3), defaulting to False.
+
+    ``_config`` sits at the top level of the document in both modes: in legacy
+    mode the document *is* the ``apcore`` namespace, so the meta section is its
+    sibling either way.
+    """
+    meta = config_data.get("_config")
+    if not isinstance(meta, dict):
+        return False
+    return bool(meta.get("strict", False))
+
+
+def _collect_unknown_framework_keys(apcore_data: dict[str, Any], prefix: str = "") -> list[str]:
+    """PROTOCOL_SPEC §9.14 ``reject_unknown_framework_keys`` steps 2–3.
+
+    Returns one message per key that a framework section carries and
+    ``apcore-config.schema.json`` does not declare — **every** offending key,
+    never just the first. An operator who opted into strict deserves to see the
+    whole problem in one restart rather than one typo per restart.
+
+    Callers run this only when ``_config.strict`` is true. Without it the keys
+    are retained and readable through ``get()``: this SDK stores the parsed
+    document as an untyped dict, so nothing is dropped at parse time, and
+    §9.14 requires exactly that of every implementation.
+
+    ``allow_unknown`` deliberately plays no part here — §9.6.3 defines it for
+    unknown top-level *namespaces*, and stretching one field across two
+    granularities would make its meaning depend on where it is read.
+    """
+    errors: list[str] = []
+    for section in sorted(_FRAMEWORK_SECTION_KEYS):
+        section_data = apcore_data.get(section)
+        if not isinstance(section_data, dict):
+            continue
+        declared = _FRAMEWORK_SECTION_KEYS[section]
+        for key in sorted(section_data):
+            if key not in declared:
+                errors.append(f"Unknown key '{prefix}{section}.{key}' (strict mode enabled)")
+    return errors
 
 
 def discover_config_file() -> str | None:
@@ -1157,6 +1250,14 @@ class Config:
         if schema_strategy == "yaml_only" and schema_root and not Path(str(schema_root)).exists():
             errors.append(f"schema.strategy='yaml_only' but schema.root '{schema_root}' does not exist")
 
+        # 4. §9.14 reject_unknown_framework_keys — step 1 runs it in LEGACY mode
+        #    too, where the whole document *is* the ``apcore`` namespace. The
+        #    messages join ``errors`` rather than raising on their own so a
+        #    document with both a missing required field and a stray key reports
+        #    both; §9.14 step 3 only requires that every offending key be named.
+        if _meta_strict(self._data):
+            errors.extend(_collect_unknown_framework_keys(self._data))
+
         if errors:
             raise ConfigError(
                 message=f"Configuration validation failed ({len(errors)} error(s)):\n"
@@ -1167,13 +1268,16 @@ class Config:
     def _validate_namespace_mode(self) -> None:
         """Run A12-NS validation for namespace mode (§9.14).
 
-        1. Run original A12 on ``data["apcore"]``.
+        1. Run original A12 on ``data["apcore"]``, then
+           ``reject_unknown_framework_keys`` over the same subtree.
         2. For each other top-level key: if registered and has a schema, validate.
         3. In strict mode (``_config.strict=True``): raise on unknown namespaces.
         """
         apcore_data = self._data.get("apcore", {})
         if not isinstance(apcore_data, dict):
             apcore_data = {}
+
+        strict = _meta_strict(self._data)
 
         # C-4: In namespace mode the "apcore:" key is metadata (e.g. version),
         # not a standalone config.  Run only CONSTRAINTS — not REQUIRED_FIELDS —
@@ -1184,6 +1288,11 @@ class Config:
             value = _get_nested(apcore_data, field)
             if value is not None and not check_fn(value):
                 errors.append(f"Invalid value for 'apcore.{field}': {err_msg} (got {value!r})")
+        # §9.14 step 2: the sub-algorithm runs against the apcore namespace's
+        # own subtree here, not the whole document — a sibling namespace's keys
+        # are governed by its registered schema, not by apcore-config.schema.json.
+        if strict:
+            errors.extend(_collect_unknown_framework_keys(apcore_data, prefix="apcore."))
         if errors:
             raise ConfigError(
                 message=f"Configuration validation failed ({len(errors)} error(s)):\n"
@@ -1193,11 +1302,6 @@ class Config:
 
         with _GLOBAL_NS_REGISTRY_LOCK:
             registry_snapshot = dict(_GLOBAL_NS_REGISTRY)
-
-        strict = False
-        config_meta = self._data.get("_config", {})
-        if isinstance(config_meta, dict):
-            strict = bool(config_meta.get("strict", False))
 
         for key, value in self._data.items():
             if key in ("apcore", "_config"):
