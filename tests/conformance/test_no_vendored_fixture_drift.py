@@ -1,7 +1,7 @@
 """Guard: no vendored fixture copies exist, and no driver reads one.
 
 apcore-typescript and apcore-rust read the canonical fixture in the spec repo
-(via ``$APCORE_SPEC_REPO`` or a sibling checkout). apcore-python used to keep
+(via ``$CONFORMANCE_SPEC_REPO`` or a sibling checkout). apcore-python used to keep
 private copies under ``tests/conformance/fixtures/`` and resolve them with
 ``Path(__file__).parent / "fixtures"``, so a fixture that gained a case on the
 spec side updated the other two SDKs silently and left Python asserting the old

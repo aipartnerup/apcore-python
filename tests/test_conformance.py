@@ -7,19 +7,20 @@ Rust) consume the same fixtures to ensure cross-language consistency.
 Fixture source: apcore/conformance/fixtures/*.json (single source of truth).
 
 Fixture discovery order:
-  1. $APCORE_SPEC_REPO env var (explicit override)
+  1. $CONFORMANCE_SPEC_REPO env var (explicit override)
   2. Sibling ../apcore/ directory (standard workspace layout & CI)
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from conformance.canonical_fixtures import spec_repo_env
 
 from apcore.acl import ACL, ACLRule
 from apcore.config import (
@@ -48,24 +49,26 @@ from apcore.version import VersionIncompatibleError, negotiate_version
 # Fixture discovery — find the canonical apcore protocol spec repo
 # ---------------------------------------------------------------------------
 
-_APCORE_REPO_ENV = "APCORE_SPEC_REPO"
+_APCORE_REPO_ENV = "CONFORMANCE_SPEC_REPO"
 
 
 def _find_apcore_fixtures() -> Path:
     """Locate the canonical conformance fixtures directory.
 
     Search order:
-    1. $APCORE_SPEC_REPO environment variable
+    1. $CONFORMANCE_SPEC_REPO environment variable (with the legacy
+       $APCORE_SPEC_REPO fallback owned by ``conformance.canonical_fixtures``)
     2. Sibling directory: ../apcore/ relative to the apcore-python repo root
     """
     # 1. Environment variable override
-    env_path = os.environ.get(_APCORE_REPO_ENV)
-    if env_path:
-        fixtures = Path(env_path) / "conformance" / "fixtures"
+    env = spec_repo_env()
+    if env:
+        name, value = env
+        fixtures = Path(value) / "conformance" / "fixtures"
         if fixtures.is_dir():
             return fixtures
         pytest.fail(
-            f"${_APCORE_REPO_ENV}={env_path} does not contain conformance/fixtures/. "
+            f"${name}={value} does not contain conformance/fixtures/. "
             f"Ensure the apcore protocol spec repo is at that path."
         )
 

@@ -3,7 +3,7 @@
 Every conformance driver in this package resolves its fixture through here.
 
 Why not a vendored copy: apcore-typescript and apcore-rust both read the
-canonical file directly (via ``$APCORE_SPEC_REPO`` or a sibling checkout), so a
+canonical file directly (via ``$CONFORMANCE_SPEC_REPO`` or a sibling checkout), so a
 spec-side edit reaches them on the next test run. apcore-python used to keep
 private copies under ``tests/conformance/fixtures/``, which meant a fixture that
 gained a case in the spec repo silently left Python asserting the old snapshot —
@@ -13,7 +13,7 @@ open-coded this resolver; the other four read the vendored copy.
 Search order (identical to ``tests/test_conformance.py``):
 
 1. ``$APCORE_FIXTURES`` — a fixtures directory, used by CI matrix jobs.
-2. ``$APCORE_SPEC_REPO`` — the spec repo root.
+2. ``$CONFORMANCE_SPEC_REPO`` — the spec repo root.
 3. ``../apcore/`` beside this repo — the standard workspace and CI layout.
 """
 
@@ -27,10 +27,33 @@ from typing import Any
 
 import pytest
 
-__all__ = ["fixtures_dir", "fixture_path", "load_fixture", "case_ids"]
+__all__ = ["fixtures_dir", "fixture_path", "load_fixture", "case_ids", "spec_repo_env"]
 
 _FIXTURES_ENV = "APCORE_FIXTURES"
-_SPEC_REPO_ENV = "APCORE_SPEC_REPO"
+_SPEC_REPO_ENV = "CONFORMANCE_SPEC_REPO"
+
+# Transitional fallback (apcore#86). The spec-repo locator used to be
+# ``APCORE_SPEC_REPO``, but PROTOCOL_SPEC §9.2 makes *every* ``APCORE_*``
+# variable a config override: the suffix is lowercased and split into a dot
+# path, so ``APCORE_SPEC_REPO=/path`` injected ``spec.repo`` into the declared
+# config document that §9.1's required-field check runs against. The locator is
+# test infrastructure, not configuration, so it moved out of the claimed
+# prefix. Reading the old name keeps a developer who still exports it working.
+# REMOVE once all three SDK CI workflows are on CONFORMANCE_SPEC_REPO.
+_LEGACY_SPEC_REPO_ENV = "APCORE_SPEC_REPO"
+
+
+def spec_repo_env() -> tuple[str, str] | None:
+    """Return ``(variable_name, value)`` for the spec-repo override, if set.
+
+    The name is returned alongside the value so failure messages can name the
+    variable the developer actually set rather than the one they did not.
+    """
+    for name in (_SPEC_REPO_ENV, _LEGACY_SPEC_REPO_ENV):
+        value = os.environ.get(name)
+        if value:
+            return name, value
+    return None
 
 
 @lru_cache(maxsize=1)
@@ -43,13 +66,14 @@ def fixtures_dir() -> Path:
             return candidate
         pytest.fail(f"${_FIXTURES_ENV}={env_fixtures} is not a directory.")
 
-    env_repo = os.environ.get(_SPEC_REPO_ENV)
+    env_repo = spec_repo_env()
     if env_repo:
-        candidate = Path(env_repo) / "conformance" / "fixtures"
+        name, value = env_repo
+        candidate = Path(value) / "conformance" / "fixtures"
         if candidate.is_dir():
             return candidate
         pytest.fail(
-            f"${_SPEC_REPO_ENV}={env_repo} does not contain conformance/fixtures/. "
+            f"${name}={value} does not contain conformance/fixtures/. "
             f"Ensure the apcore protocol spec repo is at that path."
         )
 

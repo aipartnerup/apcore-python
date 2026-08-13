@@ -11,6 +11,7 @@ from apcore.config import Config
 from apcore.errors import SysModuleRegistrationError
 from apcore.events.circuit_breaker import CircuitBreakerWrapper
 from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
+from apcore.events.retry import EventRetryConfig
 from apcore.events.subscribers import (
     A2ASubscriber,
     FileSubscriber,
@@ -76,13 +77,41 @@ class SysModulesContext(TypedDict, total=False):
 _subscriber_factories: dict[str, Callable[[dict[str, Any]], EventSubscriber]] = {}
 
 
-def _default_webhook_factory(cfg: dict[str, Any]) -> EventSubscriber:
-    from apcore.events.retry import EventRetryConfig
+def _parse_retry_config(cfg: dict[str, Any]) -> EventRetryConfig | None:
+    """Build an :class:`EventRetryConfig` from a subscriber's nested ``retry:`` block.
 
-    retry_cfg: EventRetryConfig | None = None
-    # Legacy: retry_count in config maps to EventRetryConfig.max_attempts + 1
-    # (retry_count was retries after first attempt; max_attempts is total attempts).
-    if "retry_count" in cfg:
+    Implements the per-subscriber retry policy documented in
+    ``docs/features/event-system.md`` §"Per-Subscriber Retry Policy" (apcore#85).
+    The block is optional and may be partial — omitted keys fall back to the
+    spec defaults (``max_attempts=3``, ``initial_backoff_ms=100``,
+    ``max_backoff_ms=30000``, ``backoff_multiplier=2.0``).
+
+    Args:
+        cfg: Raw subscriber config dict from ``sys_modules.events.subscribers``.
+
+    Returns:
+        The parsed policy, or ``None`` when no ``retry:`` block is present, so
+        the subscriber falls back to its own default.
+    """
+    nested = cfg.get("retry")
+    if not isinstance(nested, dict):
+        return None
+    default = EventRetryConfig()
+    return EventRetryConfig(
+        max_attempts=int(nested.get("max_attempts", default.max_attempts)),
+        initial_backoff_ms=int(nested.get("initial_backoff_ms", default.initial_backoff_ms)),
+        max_backoff_ms=int(nested.get("max_backoff_ms", default.max_backoff_ms)),
+        backoff_multiplier=float(nested.get("backoff_multiplier", default.backoff_multiplier)),
+    )
+
+
+def _default_webhook_factory(cfg: dict[str, Any]) -> EventSubscriber:
+    retry_cfg = _parse_retry_config(cfg)
+    # Deprecated: flat retry_count is the legacy webhook-only shorthand. It maps
+    # to EventRetryConfig.max_attempts + 1 (retry_count counted retries *after*
+    # the first attempt; max_attempts counts total attempts). The nested retry:
+    # block wins when both are present (apcore#85).
+    if retry_cfg is None and "retry_count" in cfg:
         retry_cfg = EventRetryConfig(max_attempts=int(cfg["retry_count"]) + 1)
     return WebhookSubscriber(
         url=cfg["url"],
@@ -97,6 +126,7 @@ def _default_a2a_factory(cfg: dict[str, Any]) -> EventSubscriber:
         platform_url=cfg["platform_url"],
         auth=cfg.get("auth"),
         timeout_ms=cfg.get("timeout_ms", 5000),
+        retry=_parse_retry_config(cfg),
     )
 
 
@@ -106,6 +136,7 @@ def _default_file_factory(cfg: dict[str, Any]) -> EventSubscriber:
         append=cfg.get("append", True),
         output_format=cfg.get("format", "json"),
         rotate_bytes=cfg.get("rotate_bytes"),
+        retry=_parse_retry_config(cfg),
     )
 
 
@@ -113,6 +144,7 @@ def _default_stdout_factory(cfg: dict[str, Any]) -> EventSubscriber:
     return StdoutSubscriber(
         output_format=cfg.get("format", "text"),
         level_filter=cfg.get("level_filter"),
+        retry=_parse_retry_config(cfg),
     )
 
 
@@ -123,6 +155,7 @@ def _default_filter_factory(cfg: dict[str, Any]) -> EventSubscriber:
         delegate=delegate,
         include_events=cfg.get("include_events"),
         exclude_events=cfg.get("exclude_events"),
+        retry=_parse_retry_config(cfg),
     )
 
 
