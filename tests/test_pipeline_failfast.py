@@ -94,6 +94,46 @@ class TestPipelineConfigFailFast:
             build_strategy_from_config(cfg, registry=self._stub_registry())
         assert "completely_unknown_field" in str(excinfo.value)
 
+    @pytest.mark.parametrize("field, value", [("description", "rewritten"), ("removable", False)])
+    def test_configure_rejects_step_attributes_outside_the_declared_four(self, field: str, value: object) -> None:
+        """A field can be a real attribute of the step and still not be configurable.
+
+        This case did not exist while the gate was ``hasattr(step, key)``, and
+        the case above could not have caught the gap: ``completely_unknown_field``
+        is an attribute of no step, so it was rejected by accident of the
+        attribute lookup rather than by a closed field set. ``description`` and
+        ``removable`` ARE attributes of every ``BaseStep``, so the old gate
+        accepted and applied them.
+
+        ``pipeline.configure`` accepts exactly the four behavioural modifiers of
+        DECLARATIVE_CONFIG_SPEC.md §4.2 — ``match_modules``, ``ignore_errors``,
+        ``pure``, ``timeout_ms``. Anything else an operator writes here is
+        either structural (belongs on the ``pipeline.steps`` entry) or a
+        property of the step implementation, and accepting it made a working
+        apcore-python config non-portable: apcore-typescript raises on these
+        keys and apcore-rust drops them (aiperceivable/apcore#89).
+        """
+        from apcore.builtin_steps import build_standard_strategy
+        from apcore.pipeline_config import build_strategy_from_config
+
+        strategy = build_standard_strategy(registry=self._stub_registry())
+        target = strategy.steps[0]
+        assert hasattr(target, field), (
+            f"this test is only meaningful while '{field}' is a real step attribute — "
+            f"it is what separates a closed field set from hasattr()"
+        )
+
+        cfg = {"configure": {target.name: {field: value}}}
+        with pytest.raises(ConfigurationError) as excinfo:
+            build_strategy_from_config(cfg, registry=self._stub_registry())
+        message = str(excinfo.value)
+        assert field in message, f"the message must name the rejected key; got: {message}"
+        for valid in ("match_modules", "ignore_errors", "pure", "timeout_ms"):
+            assert valid in message, (
+                f"the message must list the four valid fields so an operator can correct the "
+                f"config without opening the spec; '{valid}' missing from: {message}"
+            )
+
     def test_step_without_anchor_raises_configuration_error(self) -> None:
         from apcore.pipeline_config import build_strategy_from_config
 

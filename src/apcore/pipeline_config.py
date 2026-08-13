@@ -16,6 +16,97 @@ _logger = logging.getLogger(__name__)
 # Global step type registry: name → factory (class or callable)
 _step_type_registry: dict[str, type[BaseStep] | Callable[[dict[str, Any]], BaseStep]] = {}
 
+# ---------------------------------------------------------------------------
+# `pipeline.configure` — a CLOSED field set
+# ---------------------------------------------------------------------------
+
+#: Exactly the four behavioural modifiers of DECLARATIVE_CONFIG_SPEC.md §4.2 and
+#: ``schemas/apcore-config.schema.json`` ``$defs/ConfigurableStepFields``: the §4.3
+#: step-entry fields that still mean something applied to a step that already exists.
+#:
+#: This gate used to be ``hasattr(step, key)`` — any attribute the concrete step
+#: class happened to declare. That accepted ``description``, every attribute of any
+#: custom step, and — the reason it had to change — ``requires`` / ``provides``.
+#: The spec's own former example (``features/middleware-system.md``) moved
+#: ``input_validation`` from ``requires=('module',)`` to ``requires=('context',)``,
+#: deleting the dependency ``module_lookup`` satisfies; construction then validates
+#: cleanly and the ``PipelineDependencyError`` MUST can never fire for that step.
+#: An open-ended gate also made a working config non-portable: keys accepted here
+#: are rejected by apcore-typescript and dropped by apcore-rust
+#: (aiperceivable/apcore#89).
+_CONFIGURABLE_STEP_FIELDS: tuple[str, ...] = (
+    "match_modules",
+    "ignore_errors",
+    "pure",
+    "timeout_ms",
+)
+
+_CAPABILITY_CONTRACT_HINT = (
+    "a step's requires/provides capability contract is declared by the step implementation "
+    "(the BaseStep constructor arguments of the step class), never by configuration; "
+    "configuration able to rewrite it would disable the PipelineDependencyError check"
+)
+_STRUCTURAL_HINT = (
+    "this field is structural and belongs to the 'pipeline.steps' entry that inserts the step, "
+    "not to 'pipeline.configure', which only overrides fields of a step that already exists"
+)
+
+#: Step fields an operator plausibly reaches for under ``configure:`` that are not
+#: configurable, each with where it actually lives. Rejecting a key is only half the
+#: message an operator needs; the other half is what to do instead.
+_NON_CONFIGURABLE_STEP_FIELDS: dict[str, str] = {
+    "requires": _CAPABILITY_CONTRACT_HINT,
+    "provides": _CAPABILITY_CONTRACT_HINT,
+    "name": _STRUCTURAL_HINT,
+    "type": _STRUCTURAL_HINT,
+    "handler": _STRUCTURAL_HINT,
+    "after": _STRUCTURAL_HINT,
+    "before": _STRUCTURAL_HINT,
+    "config": (
+        "'config' is constructor arguments for the step factory and belongs to the "
+        "'pipeline.steps' entry that constructs the step"
+    ),
+}
+
+
+#: The ten fields ``$defs/PipelineStep`` declares for a ``pipeline.steps`` entry
+#: (DECLARATIVE_CONFIG_SPEC.md §4.3). That definition has been
+#: ``additionalProperties: false`` since it was written and nothing enforced it:
+#: ``_resolve_step`` read the ten it knew and ignored the rest, so
+#: ``{"name": "x", "type": "noop", "after": "execute", "tiemout_ms": 5000}`` built
+#: successfully with ``timeout_ms == 0`` — the operator's timeout silently absent.
+#: Same failure mode as the old ``configure:`` gate, one key over.
+_STEP_ENTRY_FIELDS: tuple[str, ...] = (
+    "name",
+    "type",
+    "handler",
+    "config",
+    "match_modules",
+    "ignore_errors",
+    "pure",
+    "timeout_ms",
+    "after",
+    "before",
+)
+
+
+def _unknown_step_entry_field_message(step_name: str, key: str) -> str:
+    """Build the ``PIPELINE_CONFIGURATION_ERROR`` message for a rejected steps-entry key."""
+    return (
+        f"Step '{step_name or '<unnamed>'}': '{key}' is not a step entry field. "
+        f"'pipeline.steps' entries accept exactly: {', '.join(_STEP_ENTRY_FIELDS)}."
+    )
+
+
+def _unconfigurable_field_message(step_name: str, key: str) -> str:
+    """Build the ``PIPELINE_CONFIGURATION_ERROR`` message for a rejected key."""
+    hint = _NON_CONFIGURABLE_STEP_FIELDS.get(key)
+    detail = f" ({hint})" if hint else ""
+    return (
+        f"Cannot configure step '{step_name}': '{key}' is not a configurable field{detail}. "
+        f"'pipeline.configure' accepts exactly: {', '.join(_CONFIGURABLE_STEP_FIELDS)}."
+    )
+
 
 def register_step_type(
     name: str,
@@ -154,7 +245,9 @@ def build_strategy_from_config(
 
     Starts with ``build_standard_strategy()``, then applies:
       1. ``remove`` — remove named steps
-      2. ``configure`` — update existing step fields
+      2. ``configure`` — override the four configurable fields of existing steps
+         (``match_modules``, ``ignore_errors``, ``pure``, ``timeout_ms``); any other
+         key raises ``ConfigurationError`` / ``PIPELINE_CONFIGURATION_ERROR``
       3. ``steps`` — resolve and insert custom steps
 
     Args:
@@ -190,12 +283,22 @@ def build_strategy_from_config(
         if target is None:
             raise ConfigurationError(f"Cannot configure step '{step_name}': step not found in strategy")
         for key, value in overrides.items():
-            if not hasattr(target, key):
-                raise ConfigurationError(f"Cannot configure step '{step_name}': unknown field '{key}'")
+            # The accepted set is the declared four, NOT whatever the concrete step
+            # object happens to expose — see _CONFIGURABLE_STEP_FIELDS.
+            if key not in _CONFIGURABLE_STEP_FIELDS:
+                raise ConfigurationError(_unconfigurable_field_message(step_name, key))
             setattr(target, key, value)
 
     # (3) Resolve and insert custom steps — fail-fast (Issue #33 §1.2)
     for step_def in pipeline_config.get("steps", []):
+        # `$defs/PipelineStep` is additionalProperties:false — enforce it before
+        # anything is constructed, so a typo is a startup error rather than a
+        # field that quietly never took effect.
+        for key in step_def:
+            if key not in _STEP_ENTRY_FIELDS:
+                raise ConfigurationError(
+                    _unknown_step_entry_field_message(step_def.get("name", ""), key)
+                )
         after = step_def.get("after")
         before = step_def.get("before")
         if not after and not before:
