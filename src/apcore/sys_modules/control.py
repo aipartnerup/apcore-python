@@ -605,7 +605,32 @@ class ReloadModule:
         return module
 
     def _reregister_module(self, module_id: str, module: Any) -> None:
-        """Re-register a module instance after reload."""
+        """Re-register a module instance after reload — unless it is already registered.
+
+        Issue #33 — ``_rediscover_module`` calls ``Registry.discover()``, and
+        discovery *registers* what it finds. On the real filesystem path
+        ``module`` is therefore already published under ``module_id`` by the
+        time it is handed here, and an unconditional ``register_internal``
+        raised ``InvalidInputError(DUPLICATE_MODULE_ID)`` on *every* reload:
+        loudly from ``_execute_single``, silently from ``_reload_one``, whose
+        caller ``_execute_bulk`` logs the failure and still returns
+        ``success: True`` with an empty ``reloaded_modules``.
+
+        Publishing is therefore conditional on the registry not already holding
+        this exact instance:
+
+        * Same object already registered -> discovery published it; the reload
+          is complete. Its entry is also the higher-fidelity one (version-
+          tracked in ``_versioned_modules`` with merged metadata), which
+          ``register_internal`` would have downgraded to a sys/internal entry
+          that ``get(id, version_hint=...)`` cannot resolve (D11-001).
+        * Nothing registered (programmatic reload, or a test that stubs
+          discovery) -> ``register_internal`` publishes as before.
+        * A *different* object registered under the id -> a genuine duplicate;
+          ``register_internal`` still raises.
+        """
+        if self._registry.get(module_id) is module:
+            return
         self._registry.register_internal(module_id, module)
 
     def _emit_module_reloaded(

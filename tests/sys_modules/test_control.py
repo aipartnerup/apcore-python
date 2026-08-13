@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -505,6 +507,158 @@ class TestReloadModuleDurationTracking:
             )
 
         assert result["reload_duration_ms"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: reload_module over the real discovery path (Issue #33)
+# ---------------------------------------------------------------------------
+
+
+_DISCOVERABLE_MODULE_SRC = """\
+from pydantic import BaseModel
+
+
+class InputModel(BaseModel):
+    value: str
+
+
+class OutputModel(BaseModel):
+    result: str
+
+
+class GreeterModule:
+    input_schema = InputModel
+    output_schema = OutputModel
+    description = "Greeter module backing the unstubbed reload round-trip"
+    version = "{version}"
+
+    def execute(self, inputs, context=None):
+        return {{"result": inputs["value"]}}
+"""
+
+
+def _discoverable_registry(tmp_path: Path, version: str = "1.0.0") -> tuple[Registry, Path]:
+    """Write a real module file to disk and register it through real discovery.
+
+    No seam is stubbed: the returned registry holds ``greeter`` exactly as an
+    application's would, so a reload against it walks ``Registry.discover()``
+    and the real entry-point importer.
+    """
+    ext = tmp_path / "extensions"
+    ext.mkdir(exist_ok=True)
+    source = ext / "greeter.py"
+    source.write_text(_DISCOVERABLE_MODULE_SRC.format(version=version))
+    registry = Registry(extensions_dir=str(ext))
+    assert registry.discover() == 1
+    return registry, source
+
+
+class TestReloadModuleRealDiscoveryPath:
+    """Issue #33 — reload a filesystem-backed module with nothing patched.
+
+    Every other reload test stubs ``_rediscover_module`` or
+    ``_reregister_module``, so the one sequence an application actually runs
+    was never executed: ``discover()`` registers the module, and
+    ``_reregister_module`` was then asked to register it a second time. That
+    raised ``InvalidInputError(DUPLICATE_MODULE_ID)`` on every reload — loudly
+    for a single reload, silently for a bulk one, where ``_execute_bulk``
+    logged the failure and still reported ``success: True``.
+
+    Restoring the unconditional ``register_internal`` in
+    ``_reregister_module`` turns all three tests below red.
+    """
+
+    def test_single_reload_over_real_discovery(self, tmp_path: Path) -> None:
+        registry, source = _discoverable_registry(tmp_path)
+        original = registry.get("greeter")
+        mod = _make_reload_module(registry=registry)
+
+        # Rewrite the file so a successful reload is observable as a version
+        # change picked up from disk, not merely as the absence of an error.
+        # The mtime bump is required, not cosmetic: CPython invalidates a
+        # cached __pycache__ .pyc on (source mtime, source size), and a
+        # "1.0.0" -> "2.0.0" edit inside the same wall-clock second changes
+        # neither — the loader would replay stale bytecode and the assertion
+        # below would fail for a reason that has nothing to do with reload.
+        source.write_text(_DISCOVERABLE_MODULE_SRC.format(version="2.0.0"))
+        future = time.time() + 10
+        os.utime(source, (future, future))
+
+        result = mod.execute({"module_id": "greeter", "reason": "issue-33"}, context=None)
+
+        assert result["success"] is True
+        assert result["previous_version"] == "1.0.0"
+        assert result["new_version"] == "2.0.0"
+        assert registry.has("greeter")
+        assert registry.get("greeter") is not original
+
+    def test_reload_leaves_module_version_tracked(self, tmp_path: Path) -> None:
+        """The reloaded entry must stay the discovery-grade one, not a sys entry.
+
+        ``register_internal`` deliberately skips ``_versioned_modules``
+        (D11-001), so re-publishing a discovered module through it would
+        downgrade the entry and make ``get(id, version_hint=...)`` raise
+        ``ModuleNotFoundError``. Reload must not silently change a module's
+        registration class.
+        """
+        registry, _ = _discoverable_registry(tmp_path)
+        mod = _make_reload_module(registry=registry)
+
+        mod.execute({"module_id": "greeter", "reason": "issue-33"}, context=None)
+
+        assert registry.get("greeter", version_hint="1.0.0") is not None
+
+    def test_bulk_reload_over_real_discovery(self, tmp_path: Path) -> None:
+        """``_execute_bulk`` swallows per-module failures, so assert the ids.
+
+        ``success`` is ``True`` either way; only ``reloaded_modules``
+        distinguishes a reload that happened from one that raised inside the
+        loop and was logged away.
+        """
+        registry, _ = _discoverable_registry(tmp_path)
+        mod = _make_reload_module(registry=registry)
+
+        result = mod.execute({"path_filter": "greeter*", "reason": "issue-33"}, context=None)
+
+        assert result["success"] is True
+        assert result["reloaded_modules"] == ["greeter"]
+        assert registry.has("greeter")
+
+    def test_repeated_reloads_stay_green(self, tmp_path: Path) -> None:
+        """A reload must be repeatable — the failure was on every reload, not the first."""
+        registry, _ = _discoverable_registry(tmp_path)
+        mod = _make_reload_module(registry=registry)
+
+        for _ in range(3):
+            result = mod.execute({"module_id": "greeter", "reason": "issue-33"}, context=None)
+            assert result["success"] is True
+        assert registry.has("greeter")
+
+    def test_reload_through_the_registered_sys_module(self, tmp_path: Path) -> None:
+        """The same round-trip through the wired-up `system.control.reload_module`.
+
+        The tests above construct `ReloadModule` the way
+        `sys_modules.registration.register_control_modules` does, which is the
+        object an application invokes. This one takes the caller's route all the
+        way: a real `APCore` with sys modules enabled, dispatching by module id
+        through the executor pipeline, so the registration wiring is covered too.
+        """
+        from apcore.client import APCore
+
+        registry, _ = _discoverable_registry(tmp_path)
+        client = APCore(
+            config=Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}}),
+            registry=registry,
+        )
+
+        result = client.call(
+            "system.control.reload_module",
+            {"module_id": "greeter", "reason": "issue-33"},
+        )
+
+        assert result["success"] is True
+        assert result["module_id"] == "greeter"
+        assert registry.has("greeter")
 
 
 # ---------------------------------------------------------------------------

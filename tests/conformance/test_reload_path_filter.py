@@ -12,6 +12,13 @@ the registry's discovery paths, which a fixture cannot supply. The stub is the
 seam already used by ``tests/test_suspend_resume.py`` and it records the ids it
 was asked to re-discover, so the *selection* logic — the whole point of the
 fixture — is asserted on real code, not on a mock's return value.
+
+What the stub necessarily cannot see is what happens *after* re-discovery: real
+discovery registers what it finds, and for a while nothing in the suite ran that
+sequence unstubbed, which hid apcore-python#33 (a `DUPLICATE_MODULE_ID` on every
+filesystem-backed reload). The unstubbed round-trip now lives in
+``tests/sys_modules/test_control.py::TestReloadModuleRealDiscoveryPath``; keep it
+in mind before widening the stub here.
 """
 
 from __future__ import annotations

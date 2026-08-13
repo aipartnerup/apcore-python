@@ -336,16 +336,37 @@ class TestUnknownFrameworkKeys:
         assert config.get("sys_modules.usage.enabled") is True
 
 
-def _resolve_ref(node: Any, doc: dict[str, Any]) -> Any:
-    """Follow local ``$ref`` pointers within *doc*."""
+def _resolve_ref(node: Any, doc: dict[str, Any], schemas_dir: Path | None = None) -> Any:
+    """Follow ``$ref`` pointers within *doc*, and across files when *schemas_dir* is given.
+
+    Local-only resolution is no longer sufficient: `apcore-config.schema.json`
+    delegates `sys_modules` to the sibling `sys-modules.schema.json` — which
+    owns that namespace under protocol-spec §9.15.3 — instead of restating its
+    keys. A resolver that stops at a non-`#/` `$ref` returns the ref node
+    itself, a node carrying neither `properties` nor `additionalProperties`,
+    which reads as "declares nothing, and is open". Both readings are wrong:
+    the target declares seven keys and is `additionalProperties: false`.
+
+    *schemas_dir* is opt-in so callers that only ever see local refs keep the
+    previous behaviour unchanged.
+    """
     seen = 0
-    while isinstance(node, dict) and isinstance(node.get("$ref"), str) and node["$ref"].startswith("#/"):
-        target: Any = doc
-        for part in node["$ref"].lstrip("#/").split("/"):
-            target = target[part]
+    current = doc
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        ref: str = node["$ref"]
+        file_part, _, pointer = ref.partition("#")
+        if file_part:
+            if schemas_dir is None:
+                break
+            current = json.loads((schemas_dir / file_part).read_text())
+            node = current
+        target: Any = current
+        for part in pointer.lstrip("/").split("/"):
+            if part:
+                target = target[part]
         node = target
         seen += 1
-        assert seen <= 16, f"$ref cycle at {node}"
+        assert seen <= 16, f"$ref cycle at {ref}"
     return node
 
 
@@ -405,7 +426,7 @@ def test_every_section_the_schema_closes_is_enforced() -> None:
     config_schema = json.loads((schemas / "apcore-config.schema.json").read_text())
     open_sections = []
     for section in _FRAMEWORK_SECTION_KEYS:
-        node = _resolve_ref(config_schema["properties"][section], config_schema)
+        node = _resolve_ref(config_schema["properties"][section], config_schema, schemas_dir=schemas)
         closed = node.get("additionalProperties") is False or node.get("unevaluatedProperties") is False
         if not closed:
             open_sections.append(section)
