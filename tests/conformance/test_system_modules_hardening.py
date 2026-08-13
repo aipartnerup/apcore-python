@@ -6,7 +6,7 @@ are hand-written rather than generated from the fixture; ``TestFixtureCoverage``
 at the bottom holds the two in step, so a case added on the spec side fails here
 instead of going unnoticed.
 
-Covers all 10 test cases defined in the canonical conformance fixture:
+Covers all 11 test cases defined in the canonical conformance fixture:
 
   1.  overrides_persisted_on_update
   2.  overrides_loaded_on_startup
@@ -18,6 +18,7 @@ Covers all 10 test cases defined in the canonical conformance fixture:
   8.  startup_fail_on_error_true_raises
   9.  startup_fail_on_error_false_continues
   10. rust_register_returns_result  (language=rust — skipped for Python)
+  11. reload_order_is_topological_not_alphabetical
 """
 
 from __future__ import annotations
@@ -559,7 +560,9 @@ class TestReloadWithPathFilter:
         The fixture's module set declares no dependencies, so the only order it
         can pin is the deterministic one (alphabetical, which Kahn's sort emits
         for a dependency-free set). The dependency-bearing half of this contract
-        is pinned separately below — and currently fails, see that test.
+        is now a canonical case of its own —
+        ``reload_order_is_topological_not_alphabetical``, driven by
+        :class:`TestReloadOrderIsTopologicalNotAlphabetical` below.
         """
         case = _case("reload_with_path_filter")
         expected = case["expected"]
@@ -887,6 +890,152 @@ class TestRustRegisterReturnsResult:
 
 
 # ---------------------------------------------------------------------------
+# 11. reload_order_is_topological_not_alphabetical
+# ---------------------------------------------------------------------------
+
+
+class TestReloadOrderIsTopologicalNotAlphabetical:
+    """Case: reload_order_is_topological_not_alphabetical
+
+    The discriminating half of ``reload_order: "topological"``. Everything the
+    case needs — the module ids, the edge between them, and the order the two
+    disagree on — comes out of the fixture; the driver hand-writes none of it.
+
+    Two rules from the fixture's ``driver_contract`` shape the assertions:
+
+    ``ordering_needs_a_disagreeing_graph``
+        The observation is the sequence of registry mutations the reload
+        actually performed (``safe_unregister`` / ``register_internal``), not
+        ``result["reloaded_modules"]``. That field is built by appending inside
+        the same loop, so reading it back would assert a relabelling of the
+        report rather than the order the work happened in.
+
+    ``dependencies_must_survive_registration``
+        The edge is declared through :meth:`Registry.register` — the path an
+        application uses — and read back through
+        :meth:`Registry.get_module_metadata`, the post-registration accessor
+        ``ReloadModule._topo_sort_modules`` itself reads. Handing the graph
+        straight to the sort would pass against the merge bug this case exists
+        to catch (``merge_module_metadata`` used to drop ``dependencies``,
+        leaving discovery-time ordering working and reload ordering degenerate).
+    """
+
+    CASE = "reload_order_is_topological_not_alphabetical"
+
+    @staticmethod
+    def _dummy() -> Any:
+        dummy = MagicMock()
+        dummy.input_schema = {"type": "object", "properties": {}}
+        dummy.output_schema = {"type": "object", "properties": {}}
+        dummy.version = "1.0.0"
+        dummy.dependencies = []
+        return dummy
+
+    def _register_from_setup(self) -> tuple[Registry, dict[str, Any]]:
+        """Register the fixture's modules through the public application path."""
+        setup = _case(self.CASE)["setup"]
+        declared: dict[str, list[str]] = setup.get("declared_dependencies", {})
+        registry = Registry()
+        modules: dict[str, Any] = {}
+        for module_id in setup["registered_modules"]:
+            module = self._dummy()
+            modules[module_id] = module
+            deps = declared.get(module_id, [])
+            registry.register(
+                module_id,
+                module,
+                metadata={"dependencies": [{"module_id": dep} for dep in deps]} if deps else None,
+            )
+        return registry, modules
+
+    def test_declared_dependencies_survive_registration(self) -> None:
+        """`declared_dependencies` must be readable back off the registry.
+
+        The accessor, not the input: an implementation that drops the edge
+        during the metadata merge still sorts correctly at discovery time, so
+        only the post-registration view can tell the two apart.
+        """
+        from apcore.registry.metadata import parse_dependencies
+
+        setup = _case(self.CASE)["setup"]
+        declared: dict[str, list[str]] = setup["declared_dependencies"]
+        registry, _ = self._register_from_setup()
+
+        for module_id, deps in declared.items():
+            stored = registry.get_module_metadata(module_id).get("dependencies", [])
+            assert [d.module_id for d in parse_dependencies(stored)] == deps, (
+                f"{module_id} declared dependencies {deps} through Registry.register, but "
+                f"get_module_metadata() reports {stored!r} — the merge dropped them"
+            )
+
+    def test_the_two_candidate_orders_really_disagree(self) -> None:
+        """`alphabetical_order_would_be` / `orders_differ` — the case discriminates.
+
+        A graph whose topological order coincides with the alphabet proves
+        nothing, which is the state ``reload_with_path_filter`` is in. Pin the
+        fixture's claim against a real sort so that editing the module ids into
+        agreement fails here instead of quietly disarming the case below.
+        """
+        case = _case(self.CASE)
+        expected = case["expected"]
+        alphabetical = expected["alphabetical_order_would_be"]
+
+        assert sorted(case["setup"]["registered_modules"]) == alphabetical, (
+            "alphabetical_order_would_be must be the plain sort of the registered modules"
+        )
+        assert (expected["reload_order_observed"] != alphabetical) is expected["orders_differ"], (
+            "orders_differ must describe whether the topological and alphabetical orders disagree"
+        )
+
+    def test_reload_order_observed_is_topological(self, monkeypatch: Any) -> None:
+        """`reload_order_observed` — the registry mutations, in order.
+
+        Reverting ``_topo_sort_modules`` to ``sorted(module_ids)`` reverses both
+        recorded sequences and fails on the first assertion below.
+        """
+        case = _case(self.CASE)
+        expected = case["expected"]
+        registry, modules = self._register_from_setup()
+        mod = _make_reload_module(registry)
+
+        unregistered: list[str] = []
+        reregistered: list[str] = []
+        real_safe_unregister = registry.safe_unregister
+        real_register_internal = registry.register_internal
+
+        def recording_safe_unregister(module_id: str, *args: Any, **kwargs: Any) -> Any:
+            unregistered.append(module_id)
+            return real_safe_unregister(module_id, *args, **kwargs)
+
+        def recording_register_internal(module_id: str, module: Any, *args: Any, **kwargs: Any) -> Any:
+            reregistered.append(module_id)
+            return real_register_internal(module_id, module, *args, **kwargs)
+
+        monkeypatch.setattr(registry, "safe_unregister", recording_safe_unregister)
+        monkeypatch.setattr(registry, "register_internal", recording_register_internal)
+
+        # Re-discovery of an unchanged source tree hands back the same module.
+        # Only rediscovery is stubbed — the unregister and re-register both run
+        # against the real registry, which is what is being observed.
+        with patch.object(mod, "_rediscover_module", side_effect=lambda mid: modules[mid]):
+            result = mod.execute(dict(case["action"]["input"]), _make_context())
+
+        assert result["success"] is expected["call_success"]
+        observed = expected["reload_order_observed"]
+        assert unregistered == observed, (
+            f"modules were unregistered in {unregistered!r}; the declared dependency graph "
+            f"requires {observed!r}"
+        )
+        assert reregistered == observed, (
+            f"modules were re-registered in {reregistered!r}, expected {observed!r}"
+        )
+        if expected["orders_differ"]:
+            assert unregistered != expected["alphabetical_order_would_be"], (
+                "reload order collapsed to the alphabetical order — the dependency graph was ignored"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Fixture coverage guard
 # ---------------------------------------------------------------------------
 
@@ -917,6 +1066,9 @@ class TestFixtureCoverage:
         "startup_fail_on_error_false_continues": "TestStartupFailOnErrorFalseContinues",
         # language=rust — asserted here only as a documented cross-language note.
         "rust_register_returns_result": "TestRustRegisterReturnsResult",
+        "reload_order_is_topological_not_alphabetical": (
+            "TestReloadOrderIsTopologicalNotAlphabetical"
+        ),
     }
 
     def test_every_canonical_case_is_claimed(self) -> None:
