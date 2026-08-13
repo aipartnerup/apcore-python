@@ -90,20 +90,36 @@ _STEP_ENTRY_FIELDS: tuple[str, ...] = (
 )
 
 
-def _unknown_step_entry_field_message(step_name: str, key: str) -> str:
-    """Build the ``PIPELINE_CONFIGURATION_ERROR`` message for a rejected steps-entry key."""
+def _unknown_step_entry_field_message(step_name: str, keys: list[str]) -> str:
+    """Build the ``PIPELINE_CONFIGURATION_ERROR`` message for rejected steps-entry keys."""
+    noun = "field" if len(keys) == 1 else "fields"
+    named = ", ".join(f"'{k}'" for k in keys)
     return (
-        f"Step '{step_name or '<unnamed>'}': '{key}' is not a step entry field. "
+        f"Step '{step_name or '<unnamed>'}': {len(keys)} {noun} not valid here: {named}. "
         f"'pipeline.steps' entries accept exactly: {', '.join(_STEP_ENTRY_FIELDS)}."
     )
 
 
-def _unconfigurable_field_message(step_name: str, key: str) -> str:
-    """Build the ``PIPELINE_CONFIGURATION_ERROR`` message for a rejected key."""
-    hint = _NON_CONFIGURABLE_STEP_FIELDS.get(key)
-    detail = f" ({hint})" if hint else ""
+def _unconfigurable_field_message(step_name: str, keys: list[str]) -> str:
+    """Build the ``PIPELINE_CONFIGURATION_ERROR`` message for rejected keys.
+
+    Names EVERY offending key, not the first. One restart shows the whole
+    problem instead of one restart per typo — the precedent this package already
+    set for the ``_config.strict`` framework-key check. It also keeps the
+    conformance assertion portable: stopping at the first makes the message
+    depend on mapping iteration order, and that differs by language
+    (``serde_json::Map`` is sorted, Python dicts and JS objects are insertion
+    ordered), so a fixture naming one key would pass here and fail on Rust for
+    no behavioural reason.
+    """
+    parts = []
+    for key in keys:
+        hint = _NON_CONFIGURABLE_STEP_FIELDS.get(key)
+        parts.append(f"'{key}'" + (f" ({hint})" if hint else ""))
+    noun = "field" if len(keys) == 1 else "fields"
     return (
-        f"Cannot configure step '{step_name}': '{key}' is not a configurable field{detail}. "
+        f"Cannot configure step '{step_name}': {len(keys)} {noun} not configurable: "
+        f"{'; '.join(parts)}. "
         f"'pipeline.configure' accepts exactly: {', '.join(_CONFIGURABLE_STEP_FIELDS)}."
     )
 
@@ -282,11 +298,13 @@ def build_strategy_from_config(
         target = next((s for s in strategy.steps if s.name == step_name), None)
         if target is None:
             raise ConfigurationError(f"Cannot configure step '{step_name}': step not found in strategy")
+        # The accepted set is the declared four, NOT whatever the concrete step
+        # object happens to expose — see _CONFIGURABLE_STEP_FIELDS. Collect every
+        # offending key before raising, so one restart shows the whole problem.
+        unknown = [k for k in overrides if k not in _CONFIGURABLE_STEP_FIELDS]
+        if unknown:
+            raise ConfigurationError(_unconfigurable_field_message(step_name, unknown))
         for key, value in overrides.items():
-            # The accepted set is the declared four, NOT whatever the concrete step
-            # object happens to expose — see _CONFIGURABLE_STEP_FIELDS.
-            if key not in _CONFIGURABLE_STEP_FIELDS:
-                raise ConfigurationError(_unconfigurable_field_message(step_name, key))
             setattr(target, key, value)
 
     # (3) Resolve and insert custom steps — fail-fast (Issue #33 §1.2)
@@ -294,11 +312,11 @@ def build_strategy_from_config(
         # `$defs/PipelineStep` is additionalProperties:false — enforce it before
         # anything is constructed, so a typo is a startup error rather than a
         # field that quietly never took effect.
-        for key in step_def:
-            if key not in _STEP_ENTRY_FIELDS:
-                raise ConfigurationError(
-                    _unknown_step_entry_field_message(step_def.get("name", ""), key)
-                )
+        unknown_entry_keys = [k for k in step_def if k not in _STEP_ENTRY_FIELDS]
+        if unknown_entry_keys:
+            raise ConfigurationError(
+                _unknown_step_entry_field_message(step_def.get("name", ""), unknown_entry_keys)
+            )
         after = step_def.get("after")
         before = step_def.get("before")
         if not after and not before:
