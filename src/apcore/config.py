@@ -195,6 +195,11 @@ _DEFAULTS: dict[str, Any] = {
 #: ``apcore_data[section]``"), so only each section's direct child names are
 #: needed here.
 _FRAMEWORK_SECTION_KEYS: dict[str, frozenset[str]] = {
+    # Config Bus meta-configuration (§9.6.3). Declared at the schema root, which
+    # is additionalProperties: false — without it a legacy apcore.yaml enabling
+    # strict mode would fail its own canonical schema, and `_config.strcit` is
+    # exactly the typo one least wants silently ignored.
+    "_config": frozenset({"allow_unknown", "strict"}),
     "acl": frozenset({"audit", "default_effect", "root"}),
     "bindings": frozenset({"dir", "pattern"}),
     "executor": frozenset({"default_timeout", "global_timeout", "max_call_depth", "max_module_repeat"}),
