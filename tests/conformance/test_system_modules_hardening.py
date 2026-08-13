@@ -576,18 +576,11 @@ class TestReloadWithPathFilter:
         # observation. Passing it again as a fourth argument was a slip.
         _RELOAD_ORDER_CHECKERS[expected["reload_order"]](reload_order, matched, {})
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "SDK gap: registry.get_module_metadata() never carries 'dependencies'. "
-            "merge_module_metadata() (registry/metadata.py) builds the stored metadata "
-            "from a fixed key list that omits it, so ReloadModule._topo_sort_modules "
-            "(sys_modules/control.py) always sees an empty dependency list and bulk "
-            "reload degrades to alphabetical order. `reload_order: \"topological\"` in "
-            "system_modules_hardening.json is therefore unimplemented for any module "
-            "set where alphabetical != topological."
-        ),
-    )
+    # Was a strict xfail: `merge_module_metadata` omitted `dependencies` from
+    # the stored metadata, so `_topo_sort_modules` topologically sorted an
+    # always-empty graph and bulk reload degenerated to alphabetical. The
+    # merge now carries it; the marker turned into an XPASS the moment it did,
+    # which is how a strict xfail announces its own removal.
     def test_declared_dependency_reloads_before_its_dependent(self) -> None:
         """A declared dependency MUST be reloaded before the module that needs it."""
         modules = ["executor.alpha", "executor.zulu"]

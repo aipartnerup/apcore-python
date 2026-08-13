@@ -110,6 +110,7 @@ def merge_module_metadata(module: Any, meta: dict[str, Any]) -> dict[str, Any]:
     code_examples = getattr(module, "examples", [])
     code_metadata = getattr(module, "metadata", {})
     code_docs = getattr(module, "documentation", None)
+    code_deps = getattr(module, "dependencies", [])
 
     yaml_metadata = meta.get("metadata", {})
     merged_metadata = {**(code_metadata or {}), **(yaml_metadata or {})}
@@ -136,6 +137,18 @@ def merge_module_metadata(module: Any, meta: dict[str, Any]) -> dict[str, Any]:
         "examples": merge_examples(meta.get("examples"), safe_code_examples),
         "metadata": merged_metadata if isinstance(merged_metadata, dict) else {},
         "documentation": meta.get("documentation") or (code_docs if isinstance(code_docs, str) else None),
+        # `dependencies` was absent from this dict, so it survived discovery
+        # (Registry reads it off raw_metadata before merging) and was then lost
+        # before storage — leaving `get_module_metadata()` unable to see it.
+        # Load-order topological sorting therefore worked while RELOAD-order
+        # sorting silently degenerated: ReloadModule._topo_sort_modules read
+        # `meta.get("dependencies", [])` and always got an empty list, so it
+        # topologically sorted an empty graph. See apcore-typescript#35.
+        "dependencies": (
+            meta.get("dependencies")
+            if meta.get("dependencies") is not None
+            else (code_deps if isinstance(code_deps, list) else [])
+        ),
     }
 
 
