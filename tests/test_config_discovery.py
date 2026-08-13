@@ -147,3 +147,77 @@ class TestConfigLoad:
         self._make_valid_yaml(config_file)
         config = Config.load(str(config_file))
         assert config.get("project.name") == "test"
+
+
+class TestConfigFileEnvVarIsNotAnOverride:
+    """apcore#88: ``$APCORE_CONFIG_FILE`` selects the document, it is not in it.
+
+    §9.2 turns every ``APCORE_*`` variable into a configuration override, so the
+    file selector used to lower to the dot-path ``config.file`` and land in the
+    *declared* document — the view §9.1's required-field check runs against.
+    ``config.file`` is declared by no schema
+    (``conformance/fixtures/config_key_governance.json``).
+
+    These tests assert the **exact** declared key set, not merely that
+    ``config.file`` is gone: absence alone would also hold for an
+    implementation that dropped a key the file really does declare.
+    """
+
+    @staticmethod
+    def _flatten(data: dict[str, object], prefix: str = "") -> set[str]:
+        paths: set[str] = set()
+        for key, value in data.items():
+            path = f"{prefix}{key}"
+            if isinstance(value, dict) and value:
+                paths |= TestConfigFileEnvVarIsNotAnOverride._flatten(value, f"{path}.")
+            else:
+                paths.add(path)
+        return paths
+
+    @staticmethod
+    def _clear_apcore_env(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Remove every ``APCORE_*`` variable a developer's shell may carry."""
+        import os
+
+        for name in list(os.environ):
+            if name.startswith("APCORE_"):
+                monkeypatch.delenv(name, raising=False)
+
+    def test_legacy_mode_declares_exactly_the_file_keys(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._clear_apcore_env(monkeypatch)
+        config_file = tmp_path / "custom.yaml"
+        config_file.write_text("version: '1.0.0'\nproject:\n  name: demo\n")
+        monkeypatch.setenv("APCORE_CONFIG_FILE", str(config_file))
+
+        config = Config.load(str(config_file))
+
+        assert self._flatten(config._declared) == {"version", "project.name"}
+
+    def test_namespace_mode_declares_exactly_the_file_keys(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._clear_apcore_env(monkeypatch)
+        config_file = tmp_path / "ns.yaml"
+        config_file.write_text("apcore:\n  version: '1.0.0'\n  project:\n    name: demo\n")
+        monkeypatch.setenv("APCORE_CONFIG_FILE", str(config_file))
+
+        config = Config.load(str(config_file))
+
+        assert self._flatten(config._declared) == {"apcore.version", "apcore.project.name"}
+
+    def test_real_overrides_still_reach_the_declared_document(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The exemption is one variable wide — ``bindings.dir`` is a declared
+        key, so ``APCORE_BINDINGS_DIR`` is §9.2 working as designed."""
+        self._clear_apcore_env(monkeypatch)
+        config_file = tmp_path / "custom.yaml"
+        config_file.write_text("version: '1.0.0'\nproject:\n  name: demo\n")
+        monkeypatch.setenv("APCORE_CONFIG_FILE", str(config_file))
+        monkeypatch.setenv("APCORE_BINDINGS_DIR", "./generated")
+
+        config = Config.load(str(config_file))
+
+        assert self._flatten(config._declared) == {"version", "project.name", "bindings.dir"}

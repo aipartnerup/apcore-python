@@ -11,9 +11,12 @@ from typing import Any
 import pytest
 
 import apcore.events.emitter as emitter_module
+from apcore.events import create_subscriber_from_config
 from apcore.events.emitter import ApCoreEvent, EventEmitter, _DLQ_EVENT_TYPE
 from apcore.events.retry import EventRetryConfig
-from conformance.canonical_fixtures import load_fixture
+from conformance.canonical_fixtures import case_ids, load_fixture
+
+FIXTURE = "event_delivery_semantics.json"
 
 
 class _SleepRecorder:
@@ -58,7 +61,7 @@ class _BrokenStdout:
 
 def _load_fixture() -> dict:
     """Load the canonical fixture from the apcore spec repo."""
-    return load_fixture("event_delivery_semantics.json")
+    return load_fixture(FIXTURE)
 
 
 def _make_event(name: str, payload: dict) -> ApCoreEvent:
@@ -312,3 +315,149 @@ def test_fixture_subscriber_id_generated_when_omitted(
     pattern = expected["subscriber_ids_pattern"]
     for subscriber_id in dlq_ids:
         assert re.match(pattern, subscriber_id), f"{subscriber_id!r} doesn't match {pattern}"
+
+
+# ---------------------------------------------------------------------------
+# apcore#85 — the declared ``retry:`` block must reach the delivery policy
+# ---------------------------------------------------------------------------
+
+_RETRY_FIELDS = ("max_attempts", "initial_backoff_ms", "max_backoff_ms", "backoff_multiplier")
+
+# The connection fields each built-in type needs to instantiate at all. The
+# fixture declares only ``type`` and ``retry`` — everything below is inert
+# plumbing, chosen so the factory gets far enough to parse the retry block.
+# Nothing here is ever delivered to: the assertion is on the resolved policy,
+
+
+def _resolved_delivery_policy(subscriber: Any) -> EventRetryConfig:
+    """Return the policy the emitter's delivery loop would apply to *subscriber*.
+
+    Deliberately not ``subscriber.retry`` and deliberately not the config dict:
+    the contract is about what the DELIVERY PATH resolves. ``_deliver_with_retry``
+    reads the policy through ``_get_retry_config``, so that is the function that
+    has to be asserted — a field a factory writes but delivery never consults
+    would otherwise read as green (which is exactly how apcore-rust's
+    ``retry_count`` survived).
+    """
+    return emitter_module._get_retry_config(subscriber)
+
+
+def _subscriber_from_declared_config(entry: dict[str, Any]) -> Any:
+    """Instantiate a subscriber through the public config factory.
+
+    Goes through ``create_subscriber_from_config`` rather than a constructor so
+    the thing under test is the config-parsing path an application's
+    ``sys_modules.events.subscribers`` block actually takes.
+    """
+    # The fixture carries every field a type requires to construct, so the entry
+    # goes to the factory verbatim — see its `a_case_must_carry_its_own_inputs`
+    # contract. This driver used to hold its own table of `url` / `path` /
+    # `delegate_type` values; three drivers each inventing one is not a
+    # cross-language contract, it is three private guesses.
+    return create_subscriber_from_config(dict(entry))
+
+
+def test_fixture_declared_retry_policy_is_read_for_every_subscriber_type(fixture_data: dict) -> None:
+    """Case: declared_retry_policy_is_read_for_every_subscriber_type."""
+    case = next(
+        c for c in fixture_data["test_cases"] if c["id"] == "declared_retry_policy_is_read_for_every_subscriber_type"
+    )
+    expected = case["expected"]
+    per_type = expected["resolved_policy_per_type"]
+
+    # The fixture's own precondition, asserted rather than trusted. A declared
+    # value that happens to equal the shipped default passes whether or not the
+    # config was ever read — the reason this defect survived in three SDKs at
+    # once. If a future fixture edit softens one of these back to a default,
+    # this fails here instead of silently going vacuous.
+    default = EventRetryConfig()
+    assert expected["every_field_differs_from_the_default"] is True, (
+        "the fixture no longer claims its policy differs from the default on every field; "
+        "a default-valued field cannot distinguish 'config was read' from 'config was ignored'"
+    )
+    for type_name, policy in per_type.items():
+        for field in _RETRY_FIELDS:
+            assert policy[field] != getattr(default, field), (
+                f"resolved_policy_per_type[{type_name}].{field} == the shipped default "
+                f"({getattr(default, field)!r}) — that assertion cannot fail on an unread config"
+            )
+
+    # Every built-in type or the case is half done: `webhook` parsed a
+    # different flat spelling while file/stdout/filter had no field at all, so
+    # a webhook-only assertion was green in every SDK.
+    declared = [entry["type"] for entry in case["subscribers"]]
+    assert sorted(declared) == sorted(per_type), (
+        f"fixture declares subscribers {sorted(declared)} but expects policies for "
+        f"{sorted(per_type)} — every declared type must have an expectation"
+    )
+
+    for entry in case["subscribers"]:
+        subscriber_type = entry["type"]
+        resolved = _resolved_delivery_policy(_subscriber_from_declared_config(entry))
+        actual = {field: getattr(resolved, field) for field in _RETRY_FIELDS}
+        want = {field: per_type[subscriber_type][field] for field in _RETRY_FIELDS}
+        assert actual == want, (
+            f"{subscriber_type}: the emitter would deliver with {actual!r}, but the subscriber "
+            f"declared {entry['retry']!r} — the config never reached the delivery policy"
+        )
+
+
+def test_fixture_nested_retry_block_wins_over_legacy_retry_count(fixture_data: dict) -> None:
+    """Case: nested_retry_block_wins_over_legacy_retry_count."""
+    case = next(c for c in fixture_data["test_cases"] if c["id"] == "nested_retry_block_wins_over_legacy_retry_count")
+    expected = case["expected"]
+
+    # Picked structurally, not by index: which entry is which is the point of
+    # the case, so reading it off list order would assert nothing.
+    both = next(e for e in case["subscribers"] if "retry" in e and "retry_count" in e)
+    legacy_only = next(e for e in case["subscribers"] if "retry" not in e and "retry_count" in e)
+
+    nested = _resolved_delivery_policy(_subscriber_from_declared_config(both))
+    assert nested.max_attempts == expected["nested_wins"]["max_attempts"], (
+        f"both spellings present: delivery resolved max_attempts={nested.max_attempts}, "
+        f"but the nested block declared {both['retry']['max_attempts']} and MUST win"
+    )
+    # The nested block wins whole, not only on the one field the flat spelling
+    # can express — otherwise `retry_count` would silently reset the backoff.
+    for field in _RETRY_FIELDS:
+        assert getattr(nested, field) == both["retry"][field], f"nested block lost its {field}"
+
+    legacy = _resolved_delivery_policy(_subscriber_from_declared_config(legacy_only))
+    assert legacy.max_attempts == expected["legacy_alone_still_translates"]["max_attempts"], (
+        f"retry_count={legacy_only['retry_count']} MUST translate to "
+        f"max_attempts={legacy_only['retry_count'] + 1}, got {legacy.max_attempts}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Case-inventory guard
+# ---------------------------------------------------------------------------
+
+# Maps every canonical case id to the test function that drives it. A case
+# added to the fixture with no driver here fails the guard below instead of
+# quietly widening the gap between the spec and this SDK.
+COVERED: dict[str, str] = {
+    "retry_succeeds_before_exhaustion": "test_fixture_retry_succeeds_before_exhaustion",
+    "permanent_failure_emits_dlq_event": "test_fixture_permanent_failure_emits_dlq_event",
+    "dlq_event_subscriber_failure_is_not_retried": "test_fixture_dlq_event_subscriber_failure_not_retried",
+    "subscriber_id_sdk_generated_when_omitted": "test_fixture_subscriber_id_generated_when_omitted",
+    "declared_retry_policy_is_read_for_every_subscriber_type": (
+        "test_fixture_declared_retry_policy_is_read_for_every_subscriber_type"
+    ),
+    "nested_retry_block_wins_over_legacy_retry_count": (
+        "test_fixture_nested_retry_block_wins_over_legacy_retry_count"
+    ),
+}
+
+
+def test_every_canonical_case_is_driven() -> None:
+    canonical = set(case_ids(FIXTURE))
+    claimed = set(COVERED)
+    assert canonical - claimed == set(), f"canonical fixture {FIXTURE} gained case(s) with no driver here"
+    assert claimed - canonical == set(), f"this file claims case(s) {FIXTURE} no longer defines"
+
+
+def test_every_claimed_driver_exists() -> None:
+    module = sys.modules[__name__]
+    missing = [name for name in COVERED.values() if not hasattr(module, name)]
+    assert missing == [], f"claimed driver function(s) not defined: {missing}"

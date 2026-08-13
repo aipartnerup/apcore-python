@@ -12,7 +12,7 @@ open-coded this resolver; the other four read the vendored copy.
 
 Search order (identical to ``tests/test_conformance.py``):
 
-1. ``$APCORE_FIXTURES`` — a fixtures directory, used by CI matrix jobs.
+1. ``$CONFORMANCE_FIXTURES`` — a fixtures directory, used by CI matrix jobs.
 2. ``$CONFORMANCE_SPEC_REPO`` — the spec repo root.
 3. ``../apcore/`` beside this repo — the standard workspace and CI layout.
 """
@@ -29,8 +29,15 @@ import pytest
 
 __all__ = ["fixtures_dir", "fixture_path", "load_fixture", "case_ids", "spec_repo_env"]
 
-_FIXTURES_ENV = "APCORE_FIXTURES"
+_FIXTURES_ENV = "CONFORMANCE_FIXTURES"
 _SPEC_REPO_ENV = "CONFORMANCE_SPEC_REPO"
+
+# Transitional fallback (apcore#88), the exact twin of the one below: the
+# fixtures-directory locator used to be ``APCORE_FIXTURES``, which §9.2 lowers
+# to the config key ``fixtures`` — declared by no schema. Same reasoning, same
+# transitional read of the old name.
+# REMOVE once all three SDK CI workflows are on CONFORMANCE_FIXTURES.
+_LEGACY_FIXTURES_ENV = "APCORE_FIXTURES"
 
 # Transitional fallback (apcore#86). The spec-repo locator used to be
 # ``APCORE_SPEC_REPO``, but PROTOCOL_SPEC §9.2 makes *every* ``APCORE_*``
@@ -41,6 +48,19 @@ _SPEC_REPO_ENV = "CONFORMANCE_SPEC_REPO"
 # prefix. Reading the old name keeps a developer who still exports it working.
 # REMOVE once all three SDK CI workflows are on CONFORMANCE_SPEC_REPO.
 _LEGACY_SPEC_REPO_ENV = "APCORE_SPEC_REPO"
+
+
+def _fixtures_env() -> tuple[str, str] | None:
+    """Return ``(variable_name, value)`` for the fixtures-directory override.
+
+    Same shape and same reason as :func:`spec_repo_env`: the name travels with
+    the value so a failure message names the variable that was actually set.
+    """
+    for name in (_FIXTURES_ENV, _LEGACY_FIXTURES_ENV):
+        value = os.environ.get(name)
+        if value:
+            return name, value
+    return None
 
 
 def spec_repo_env() -> tuple[str, str] | None:
@@ -59,12 +79,13 @@ def spec_repo_env() -> tuple[str, str] | None:
 @lru_cache(maxsize=1)
 def fixtures_dir() -> Path:
     """Return the canonical ``conformance/fixtures`` directory."""
-    env_fixtures = os.environ.get(_FIXTURES_ENV)
+    env_fixtures = _fixtures_env()
     if env_fixtures:
-        candidate = Path(env_fixtures)
+        name, value = env_fixtures
+        candidate = Path(value)
         if candidate.is_dir():
             return candidate
-        pytest.fail(f"${_FIXTURES_ENV}={env_fixtures} is not a directory.")
+        pytest.fail(f"${name}={value} is not a directory.")
 
     env_repo = spec_repo_env()
     if env_repo:

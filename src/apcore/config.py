@@ -36,6 +36,17 @@ _logger = logging.getLogger(__name__)
 #: Environment variable prefix for overrides.
 _ENV_PREFIX = "APCORE_"
 
+#: Environment variable naming the configuration file to load (§9.14 discovery).
+#:
+#: apcore#88: this variable is an *argument to* ``Config.load()`` — it selects
+#: which document is read — and only happens to share the ``APCORE_`` prefix
+#: that §9.2 turns into configuration overrides. Left in the override map its
+#: suffix becomes the dot-path ``config.file``, a key no schema declares
+#: (checked against ``conformance/fixtures/config_key_governance.json``), which
+#: then sits inside the *declared* document the §9.1 required-field check runs
+#: against. ``discover_config_file()`` consumes it; the override pass drops it.
+_ENV_CONFIG_FILE = "APCORE_CONFIG_FILE"
+
 #: Required configuration fields (dot-paths).
 #:
 #: PROTOCOL_SPEC §9.1: a key is required *only* when it has no canonical
@@ -315,6 +326,11 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
 
         # 2. Standard APCORE_ prefix.
         if not env_key.startswith(_ENV_PREFIX):
+            continue
+        # apcore#88: the file selector is consumed by discover_config_file();
+        # it is an argument to load(), not a value the document declares.
+        # Kept here it would inject the phantom key ``config.file``.
+        if env_key == _ENV_CONFIG_FILE:
             continue
         suffix = env_key[len(_ENV_PREFIX) :]
         if not suffix:
@@ -615,8 +631,12 @@ def _collect_unknown_framework_keys(apcore_data: dict[str, Any], prefix: str = "
 
 
 def discover_config_file() -> str | None:
-    """Search for a config file in the standard discovery order (§9.14)."""
-    env_path = os.environ.get("APCORE_CONFIG_FILE")
+    """Search for a config file in the standard discovery order (§9.14).
+
+    ``$APCORE_CONFIG_FILE`` is *consumed* here: ``_apply_env_overrides`` skips
+    it so it never becomes the ``config.file`` override (apcore#88).
+    """
+    env_path = os.environ.get(_ENV_CONFIG_FILE)
     if env_path:
         return env_path
 
