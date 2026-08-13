@@ -47,11 +47,66 @@ from apcore.sys_modules.control import (
 )
 from apcore.sys_modules.registration import register_sys_modules
 
-from conformance.canonical_fixtures import case_ids
+from conformance.canonical_fixtures import case_ids, load_fixture
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+FIXTURE = "system_modules_hardening.json"
+
+#: canonical case id -> case body. The assertions below stay hand-written (each
+#: case needs its own registry / config / filesystem wiring), but the values
+#: they compare against come from here — an ``expected`` key that no assertion
+#: reads is not a contract, it only looks like one in the fixture.
+_CASES: dict[str, Any] = {case["id"]: case for case in load_fixture(FIXTURE)["test_cases"]}
+
+
+def _case(case_id: str) -> dict[str, Any]:
+    return _CASES[case_id]
+
+
+def _assert_topological_order(
+    order: list[str],
+    matched: list[str],
+    declared_dependencies: dict[str, list[str]],
+) -> None:
+    """Assert *order* is a valid topological order of *matched* under the deps.
+
+    Used by the ``reload_order: "topological"`` contract. Kept as a helper so
+    the fixture's dependency-free module set and the dependency-bearing case
+    below are judged by the same rule.
+    """
+    assert sorted(order) == sorted(matched), (
+        f"every matched module must be reloaded exactly once: got {order!r}, expected {matched!r}"
+    )
+    for dependent, deps in declared_dependencies.items():
+        for dep in deps:
+            assert order.index(dep) < order.index(dependent), (
+                f"{dependent} declares a dependency on {dep}, which must reload first; order was {order!r}"
+            )
+    if not declared_dependencies:
+        # With no edges, Kahn's sort over a deterministic (sorted) queue has
+        # exactly one valid output.
+        assert order == sorted(matched), f"dependency-free reload must be deterministic; got {order!r}"
+
+
+#: ``reload_order`` value -> the checker that enforces it. Dispatching through
+#: this map means an unknown contract value from the spec side raises KeyError
+#: here instead of quietly asserting nothing.
+_RELOAD_ORDER_CHECKERS = {"topological": _assert_topological_order}
+
+
+def _dotted_to_nested(flat: dict[str, Any]) -> dict[str, Any]:
+    """Expand {"executor.default_timeout": 30000} into nested YAML form."""
+    nested: dict[str, Any] = {}
+    for dotted, value in flat.items():
+        cursor = nested
+        parts = dotted.split(".")
+        for part in parts[:-1]:
+            cursor = cursor.setdefault(part, {})
+        cursor[parts[-1]] = value
+    return nested
 
 
 def _make_config(**overrides: Any) -> Config:
@@ -119,24 +174,20 @@ class TestOverridesPersistOnUpdate:
 
     def test_update_config_writes_overrides_file(self, tmp_path: Path) -> None:
         """update_config with overrides_path writes the change to the YAML file."""
+        case = _case("overrides_persisted_on_update")
+        expected = case["expected"]
         overrides_path = str(tmp_path / "overrides.yaml")
         config = _make_config()
         mod = _make_update_config_module(config, overrides_path=overrides_path)
 
-        result = mod.execute(
-            {
-                "key": "executor.default_timeout",
-                "value": 60000,
-                "reason": "increase timeout for tests",
-            },
-            _make_context(),
-        )
+        result = mod.execute(dict(case["action"]["input"]), _make_context())
 
-        assert result["success"] is True
-        assert os.path.exists(overrides_path)
+        assert result["success"] is expected["call_success"]
+        assert os.path.exists(overrides_path) is expected["overrides_file_written"]
         with open(overrides_path) as f:
             written = yaml.safe_load(f)
-        assert written["executor.default_timeout"] == 60000
+        for key, value in expected["overrides_file_contains"].items():
+            assert written.get(key) == value, f"overrides file missing {key}={value!r}; got {written!r}"
 
     def test_overrides_file_accumulates_multiple_keys(self, tmp_path: Path) -> None:
         """Multiple update_config calls accumulate keys in the overrides file."""
@@ -180,40 +231,72 @@ class TestOverridesLoadedOnStartup:
 
     def test_overrides_applied_after_base_config(self, tmp_path: Path) -> None:
         """When overrides.yaml exists at startup, its values override base config."""
-        overrides_file = tmp_path / "overrides.yaml"
-        overrides_file.write_text("executor.default_timeout: 60000\n")
+        case = _case("overrides_loaded_on_startup")
+        setup, expected = case["setup"], case["expected"]
+        resolved = expected["resolved_value"]
 
-        config = _make_config()
+        overrides_file = tmp_path / "overrides.yaml"
+        overrides_file.write_text(yaml.safe_dump(setup["overrides_file_content"]))
+
+        config = _make_config(**{})
+        for key, value in setup["base_config"].items():
+            config.set(key, value)
         config.set("sys_modules.enabled", True)
         config.set("sys_modules.control.overrides_path", str(overrides_file))
 
-        assert config.get("executor.default_timeout") == 30000
+        assert config.get(resolved["key"]) == setup["base_config"][resolved["key"]]
 
         executor = MagicMock()
         registry = Registry()
         register_sys_modules(registry=registry, executor=executor, config=config)
 
-        assert config.get("executor.default_timeout") == 60000
+        assert config.get(resolved["key"]) == resolved["value"], (
+            f"{resolved['key']} must resolve to the override value after startup"
+        )
 
     def test_base_config_file_is_not_modified(self, tmp_path: Path) -> None:
-        """The in-memory config is changed but the base config YAML file is untouched."""
-        overrides_file = tmp_path / "overrides.yaml"
-        overrides_file.write_text("executor.default_timeout: 60000\n")
+        """`base_not_modified`: applying overrides MUST NOT write back to the base config.
 
-        config = _make_config()
+        Corrected: this test used to load config from defaults and then assert
+        that the *overrides* file still held the value it had just been written
+        with — which is true no matter what the base config does, so it could
+        not fail on the behaviour it claimed to cover. It now loads a real base
+        config file and asserts that file is byte-identical afterwards.
+        """
+        case = _case("overrides_loaded_on_startup")
+        setup, expected = case["setup"], case["expected"]
+        resolved = expected["resolved_value"]
+
+        base_file = tmp_path / "apcore.yaml"
+        # `version` / `project.name` are required by the canonical config schema;
+        # the fixture's base_config carries only the key under test.
+        base_document = {"version": "1.0", "project": {"name": "conformance-base"}}
+        base_document.update(_dotted_to_nested(setup["base_config"]))
+        base_file.write_text(yaml.safe_dump(base_document))
+        base_before = base_file.read_bytes()
+
+        overrides_file = tmp_path / "overrides.yaml"
+        overrides_file.write_text(yaml.safe_dump(setup["overrides_file_content"]))
+
+        config = Config.load(str(base_file))
         config.set("sys_modules.enabled", True)
         config.set("sys_modules.control.overrides_path", str(overrides_file))
-
-        original_timeout = config.get("executor.default_timeout")
-        assert original_timeout == 30000
+        assert config.get(resolved["key"]) == setup["base_config"][resolved["key"]]
 
         executor = MagicMock()
         registry = Registry()
         register_sys_modules(registry=registry, executor=executor, config=config)
 
-        # The overrides file itself is unchanged
-        loaded = yaml.safe_load(overrides_file.read_text())
-        assert loaded["executor.default_timeout"] == 60000
+        # In-memory value moved to the override...
+        assert config.get(resolved["key"]) == resolved["value"]
+        # ...while the base config on disk is untouched.
+        base_not_modified = base_file.read_bytes() == base_before
+        assert base_not_modified is expected["base_not_modified"], (
+            f"base config file was rewritten during startup: {base_file.read_text()!r}"
+        )
+        assert yaml.safe_load(base_file.read_text())["executor"]["default_timeout"] == (
+            setup["base_config"][resolved["key"]]
+        )
 
     def test_missing_overrides_file_does_not_error(self, tmp_path: Path) -> None:
         """When the overrides file does not exist, startup continues without error."""
@@ -238,58 +321,56 @@ class TestAuditEntryRecordsActor:
 
     def test_update_config_records_audit_entry_with_actor(self) -> None:
         """update_config call produces an audit entry with actor_id from context.identity."""
+        case = _case("audit_entry_records_actor")
+        action, expected = case["action"], case["expected"]
+        identity = action["context_identity"]
+
         audit_store = InMemoryAuditStore()
         config = _make_config()
         mod = _make_update_config_module(config, audit_store=audit_store)
-        context = _make_context(identity_id="user-abc-123", identity_type="user")
+        context = _make_context(identity_id=identity["id"], identity_type=identity["type"])
 
-        mod.execute(
-            {
-                "key": "executor.default_timeout",
-                "value": 45000,
-                "reason": "audit trail test",
-            },
-            context,
-        )
+        mod.execute(dict(action["input"]), context)
 
         entries = audit_store.query()
-        assert len(entries) == 1
+        assert len(entries) == expected["audit_entries_count"]
         entry = entries[0]
-        assert entry.action == "update_config"
-        assert entry.target_module_id == "system.control.update_config"
-        assert entry.actor_id == "user-abc-123"
-        assert entry.actor_type == "user"
+        audit_entry = expected["audit_entry"]
+        assert entry.action == audit_entry["action"]
+        assert entry.target_module_id == audit_entry["target_module_id"]
+        assert entry.actor_id == audit_entry["actor_id"]
+        assert entry.actor_type == audit_entry["actor_type"]
 
     def test_audit_entry_has_timestamp(self) -> None:
         """Audit entry timestamp is an ISO 8601 string."""
+        case = _case("audit_entry_records_actor")
+        expected = case["expected"]
         audit_store = InMemoryAuditStore()
         config = _make_config()
         mod = _make_update_config_module(config, audit_store=audit_store)
 
-        mod.execute(
-            {"key": "executor.default_timeout", "value": 45000, "reason": "ts test"},
-            _make_context(),
-        )
+        mod.execute(dict(case["action"]["input"]), _make_context())
 
         entry = audit_store.query()[0]
-        assert entry.timestamp
-        assert "T" in entry.timestamp  # ISO 8601 format
+        timestamp_present = bool(entry.timestamp) and "T" in entry.timestamp  # ISO 8601
+        assert timestamp_present is expected["timestamp_present"], (
+            f"audit entry timestamp {entry.timestamp!r} is not a present ISO 8601 value"
+        )
 
     def test_audit_entry_has_trace_id(self) -> None:
         """Audit entry contains the trace_id from context."""
+        case = _case("audit_entry_records_actor")
+        expected = case["expected"]
         audit_store = InMemoryAuditStore()
         config = _make_config()
         mod = _make_update_config_module(config, audit_store=audit_store)
         context = _make_context()
         context.trace_id = "abc123"
 
-        mod.execute(
-            {"key": "executor.default_timeout", "value": 45000, "reason": "tid test"},
-            context,
-        )
+        mod.execute(dict(case["action"]["input"]), context)
 
         entry = audit_store.query()[0]
-        assert entry.trace_id == "abc123"
+        assert (entry.trace_id == "abc123") is expected["trace_id_present"]
 
 
 # ---------------------------------------------------------------------------
@@ -302,37 +383,38 @@ class TestAuditEntryRecordsChange:
 
     def test_toggle_feature_records_before_after_change(self) -> None:
         """toggle_feature produces an audit entry with before/after change values."""
+        case = _case("audit_entry_records_change")
+        setup, action, expected = case["setup"], case["action"], case["expected"]
+        identity = action["context_identity"]
+        initial = setup["initial_module_state"]
+
         audit_store = InMemoryAuditStore()
         registry = Registry()
         toggle_state = ToggleState()
+        if not initial["enabled"]:
+            toggle_state.disable(initial["module_id"])
 
         # Register a dummy module so toggle can find it
         dummy = MagicMock()
         dummy.input_schema = {"type": "object", "properties": {}}
         dummy.output_schema = {"type": "object", "properties": {}}
-        registry.register_internal("risky.module", dummy)
+        registry.register_internal(initial["module_id"], dummy)
 
         mod = _make_toggle_module(registry, toggle_state=toggle_state, audit_store=audit_store)
-        context = _make_context(identity_id="svc-deploy-agent", identity_type="service")
+        context = _make_context(identity_id=identity["id"], identity_type=identity["type"])
 
-        mod.execute(
-            {
-                "module_id": "risky.module",
-                "enabled": False,
-                "reason": "maintenance window",
-            },
-            context,
-        )
+        mod.execute(dict(action["input"]), context)
 
         entries = audit_store.query()
-        assert len(entries) == 1
+        assert len(entries) == expected["audit_entries_count"]
         entry = entries[0]
-        assert entry.action == "toggle_feature"
-        assert entry.target_module_id == "risky.module"
-        assert entry.actor_id == "svc-deploy-agent"
-        assert entry.actor_type == "service"
-        assert entry.change["before"] is True
-        assert entry.change["after"] is False
+        audit_entry = expected["audit_entry"]
+        assert entry.action == audit_entry["action"]
+        assert entry.target_module_id == audit_entry["target_module_id"]
+        assert entry.actor_id == audit_entry["actor_id"]
+        assert entry.actor_type == audit_entry["actor_type"]
+        assert entry.change["before"] is audit_entry["change"]["before"]
+        assert entry.change["after"] is audit_entry["change"]["after"]
 
     def test_toggle_feature_enable_records_before_false(self) -> None:
         """Enabling a previously disabled module records before=False, after=True."""
@@ -363,52 +445,50 @@ class TestAuditEntryRecordsChange:
 # ---------------------------------------------------------------------------
 
 
+def _collector_from_usage_setup(setup: dict[str, Any]) -> UsageCollector:
+    """Replay the fixture's ``usage_collector_data`` into a real UsageCollector."""
+    collector = UsageCollector()
+    for entry in setup["usage_collector_data"]:
+        breakdown = entry["status_breakdown"]
+        for _ in range(breakdown["success"]):
+            collector.record(entry["module_id"], "caller", 10.0, success=True)
+        for _ in range(breakdown["error"]):
+            collector.record(entry["module_id"], "caller", 45.0, success=False)
+    return collector
+
+
 class TestPrometheusUsageExportsCallsTotal:
     """Case: prometheus_usage_exports_calls_total"""
 
-    def test_export_contains_calls_total_success(self) -> None:
-        """export_prometheus includes apcore_usage_calls_total with status=success."""
-        collector = UsageCollector()
-        for _ in range(5):
-            collector.record("math.add", "caller", 10.0, success=True)
+    @pytest.mark.parametrize(
+        "metric_line",
+        _case("prometheus_usage_exports_calls_total")["expected"]["metrics_endpoint_contains"],
+    )
+    def test_metrics_endpoint_contains(self, metric_line: str) -> None:
+        """Every metric line the fixture names is present in export_prometheus().
+
+        Parametrized off ``metrics_endpoint_contains`` rather than transcribed:
+        a metric added on the spec side then fails here instead of silently
+        going unchecked.
+        """
+        case = _case("prometheus_usage_exports_calls_total")
+        collector = _collector_from_usage_setup(case["setup"])
 
         output = collector.export_prometheus()
-        assert 'apcore_usage_calls_total{module_id="math.add",status="success"}' in output
-
-    def test_export_contains_calls_total_error(self) -> None:
-        """export_prometheus includes apcore_usage_calls_total with status=error."""
-        collector = UsageCollector()
-        collector.record("math.add", "caller", 10.0, success=False)
-
-        output = collector.export_prometheus()
-        assert 'apcore_usage_calls_total{module_id="math.add",status="error"}' in output
-
-    def test_export_contains_error_rate(self) -> None:
-        """export_prometheus includes apcore_usage_error_rate metric."""
-        collector = UsageCollector()
-        collector.record("math.add", "caller", 10.0, success=True)
-
-        output = collector.export_prometheus()
-        assert 'apcore_usage_error_rate{module_id="math.add"}' in output
-
-    def test_export_contains_p99_latency(self) -> None:
-        """export_prometheus includes apcore_usage_p99_latency_ms metric."""
-        collector = UsageCollector()
-        collector.record("math.add", "caller", 45.0, success=True)
-
-        output = collector.export_prometheus()
-        assert 'apcore_usage_p99_latency_ms{module_id="math.add"}' in output
+        assert metric_line in output, f"/metrics output is missing {metric_line!r}"
 
     def test_export_completes_within_timeout(self) -> None:
-        """export_prometheus completes within 1000ms export_timeout_ms budget."""
-        collector = UsageCollector()
-        for _ in range(100):
-            collector.record("math.add", "caller", 10.0, success=True)
+        """export_prometheus completes within the fixture's export_timeout_ms budget."""
+        case = _case("prometheus_usage_exports_calls_total")
+        expected = case["expected"]
+        collector = _collector_from_usage_setup(case["setup"])
 
         start = time.monotonic()
         collector.export_prometheus()
         elapsed_ms = (time.monotonic() - start) * 1000.0
-        assert elapsed_ms < 1000.0
+        assert elapsed_ms < expected["export_within_timeout_ms"], (
+            f"export_prometheus took {elapsed_ms:.1f}ms, budget is {expected['export_within_timeout_ms']}ms"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -419,88 +499,107 @@ class TestPrometheusUsageExportsCallsTotal:
 class TestReloadWithPathFilter:
     """Case: reload_with_path_filter"""
 
-    def _make_registry_with_modules(self, module_ids: list[str]) -> Registry:
+    def _make_registry_with_modules(
+        self, module_ids: list[str], dependencies: dict[str, list[str]] | None = None
+    ) -> Registry:
         """Create a registry with dummy modules registered."""
+        dependencies = dependencies or {}
         registry = Registry()
         for mid in module_ids:
             dummy = MagicMock()
             dummy.input_schema = {"type": "object", "properties": {}}
             dummy.output_schema = {"type": "object", "properties": {}}
             dummy.version = "1.0.0"
-            registry.register_internal(mid, dummy)
+            deps = dependencies.get(mid)
+            if deps:
+                registry.register(
+                    mid,
+                    dummy,
+                    metadata={"dependencies": [{"module_id": dep} for dep in deps]},
+                )
+            else:
+                registry.register_internal(mid, dummy)
         return registry
 
     def test_path_filter_reloads_matching_modules(self) -> None:
         """path_filter 'executor.*' reloads all matching modules."""
-        all_modules = [
-            "executor.email.send",
-            "executor.math.add",
-            "executor.pdf.render",
-            "orchestrator.main",
-        ]
-        registry = self._make_registry_with_modules(all_modules)
+        case = _case("reload_with_path_filter")
+        expected = case["expected"]
+        registry = self._make_registry_with_modules(case["setup"]["registered_modules"])
         mod = _make_reload_module(registry)
 
         with patch.object(mod, "_reload_one"):
-            result = mod.execute(
-                {
-                    "path_filter": "executor.*",
-                    "reload_dependents": False,
-                    "reason": "bulk reload after deploy",
-                },
-                _make_context(),
-            )
+            result = mod.execute(dict(case["action"]["input"]), _make_context())
 
-        assert result["success"] is True
+        assert result["success"] is expected["call_success"]
         reloaded = result["reloaded_modules"]
-        assert sorted(reloaded) == [
-            "executor.email.send",
-            "executor.math.add",
-            "executor.pdf.render",
-        ]
-        assert "orchestrator.main" not in reloaded
+        assert sorted(reloaded) == sorted(expected["reloaded_modules"])
+        for module_id in expected["not_reloaded"]:
+            assert module_id not in reloaded, f"{module_id} must not match {case['action']['input']['path_filter']!r}"
 
     def test_path_filter_excludes_non_matching(self) -> None:
-        """orchestrator.main is not reloaded when path_filter is 'executor.*'."""
-        all_modules = [
-            "executor.email.send",
-            "executor.math.add",
-            "orchestrator.main",
-        ]
-        registry = self._make_registry_with_modules(all_modules)
+        """Modules outside the path_filter are not reloaded."""
+        case = _case("reload_with_path_filter")
+        expected = case["expected"]
+        registry = self._make_registry_with_modules(case["setup"]["registered_modules"])
         mod = _make_reload_module(registry)
 
         with patch.object(mod, "_reload_one"):
             result = mod.execute(
-                {"path_filter": "executor.*", "reason": "deploy"},
+                {"path_filter": case["action"]["input"]["path_filter"], "reason": "deploy"},
                 _make_context(),
             )
 
-        assert "orchestrator.main" not in result["reloaded_modules"]
+        for module_id in expected["not_reloaded"]:
+            assert module_id not in result["reloaded_modules"]
 
     def test_path_filter_reload_order_is_topological(self) -> None:
-        """Modules are reloaded in topological order (sorted when no deps)."""
-        all_modules = [
-            "executor.pdf.render",
-            "executor.math.add",
-            "executor.email.send",
-        ]
-        registry = self._make_registry_with_modules(all_modules)
+        """`reload_order: "topological"` — reload order is a valid topological order.
+
+        The fixture's module set declares no dependencies, so the only order it
+        can pin is the deterministic one (alphabetical, which Kahn's sort emits
+        for a dependency-free set). The dependency-bearing half of this contract
+        is pinned separately below — and currently fails, see that test.
+        """
+        case = _case("reload_with_path_filter")
+        expected = case["expected"]
+        matched = expected["reloaded_modules"]
+        registry = self._make_registry_with_modules(case["setup"]["registered_modules"])
         mod = _make_reload_module(registry)
 
         reload_order: list[str] = []
 
-        def capture_reload(mid: str) -> None:
-            reload_order.append(mid)
+        with patch.object(mod, "_reload_one", side_effect=reload_order.append):
+            mod.execute(dict(case["action"]["input"]), _make_context())
 
-        with patch.object(mod, "_reload_one", side_effect=capture_reload):
-            mod.execute(
-                {"path_filter": "executor.*", "reason": "topo test"},
-                _make_context(),
-            )
+        # The contract value is the dispatch key; the checker takes only the
+        # observation. Passing it again as a fourth argument was a slip.
+        _RELOAD_ORDER_CHECKERS[expected["reload_order"]](reload_order, matched, {})
 
-        # Without dependencies all modules are sorted alphabetically
-        assert reload_order == sorted(all_modules)
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "SDK gap: registry.get_module_metadata() never carries 'dependencies'. "
+            "merge_module_metadata() (registry/metadata.py) builds the stored metadata "
+            "from a fixed key list that omits it, so ReloadModule._topo_sort_modules "
+            "(sys_modules/control.py) always sees an empty dependency list and bulk "
+            "reload degrades to alphabetical order. `reload_order: \"topological\"` in "
+            "system_modules_hardening.json is therefore unimplemented for any module "
+            "set where alphabetical != topological."
+        ),
+    )
+    def test_declared_dependency_reloads_before_its_dependent(self) -> None:
+        """A declared dependency MUST be reloaded before the module that needs it."""
+        modules = ["executor.alpha", "executor.zulu"]
+        declared = {"executor.alpha": ["executor.zulu"]}
+        registry = self._make_registry_with_modules(modules, dependencies=declared)
+        mod = _make_reload_module(registry)
+
+        reload_order: list[str] = []
+        with patch.object(mod, "_reload_one", side_effect=reload_order.append):
+            mod.execute({"path_filter": "executor.*", "reason": "topo test"}, _make_context())
+
+        _assert_topological_order(reload_order, modules, declared_dependencies=declared)
 
 
 # ---------------------------------------------------------------------------
@@ -581,22 +680,20 @@ class TestReloadModuleIdAndFilterConflict:
 
     def test_both_module_id_and_path_filter_raises(self) -> None:
         """Providing both module_id and path_filter raises MODULE_RELOAD_CONFLICT."""
+        case = _case("reload_module_id_and_filter_conflict")
+        expected = case["expected"]
         registry = Registry()
         mod = _make_reload_module(registry)
 
+        call_success = False
         with pytest.raises(ModuleReloadConflictError) as exc_info:
-            mod.execute(
-                {
-                    "module_id": "executor.email.send",
-                    "path_filter": "executor.*",
-                    "reason": "conflict test",
-                },
-                _make_context(),
-            )
+            mod.execute(dict(case["action"]["input"]), _make_context())
+            call_success = True
 
+        assert call_success is expected["call_success"]
         error = exc_info.value
-        assert error.code == "MODULE_RELOAD_CONFLICT"
-        assert "mutually exclusive" in error.message.lower()
+        assert error.code == expected["error_code"]
+        assert expected["error_message_contains"] in error.message.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +706,8 @@ class TestStartupFailOnErrorTrueRaises:
 
     def test_fail_on_error_true_raises_immediately(self) -> None:
         """When fail_on_error=True and a module fails, register_sys_modules raises."""
+        case = _case("startup_fail_on_error_true_raises")
+        failure, expected = case["setup"]["simulated_failure"], case["expected"]
         config = _make_config()
         config.set("sys_modules.enabled", True)
         executor = MagicMock()
@@ -617,25 +716,31 @@ class TestStartupFailOnErrorTrueRaises:
         original_register = registry.register_internal
 
         def failing_register(module_id: str, module: Any) -> None:
-            if module_id == "system.health.summary":
-                raise ValueError("schema validation error")
+            if module_id == failure["module_id"]:
+                raise ValueError(failure["error"])
             original_register(module_id, module)
 
+        raised: SysModuleRegistrationError | None = None
         with patch.object(registry, "register_internal", side_effect=failing_register):
-            with pytest.raises(SysModuleRegistrationError) as exc_info:
+            try:
                 register_sys_modules(
                     registry=registry,
                     executor=executor,
                     config=config,
-                    fail_on_error=True,
+                    fail_on_error=case["action"]["params"]["fail_on_error"],
                 )
+            except SysModuleRegistrationError as exc:
+                raised = exc
 
-        error = exc_info.value
-        assert error.code == "SYS_MODULE_REGISTRATION_FAILED"
-        assert "system.health.summary" in error.message
+        assert (raised is not None) is expected["raises"]
+        assert raised is not None
+        assert raised.code == expected["error_code"]
+        assert expected["error_includes_module_id"] in raised.message
 
     def test_fail_on_error_true_error_includes_module_id(self) -> None:
         """SysModuleRegistrationError includes the failed module's ID."""
+        case = _case("startup_fail_on_error_true_raises")
+        failure, expected = case["setup"]["simulated_failure"], case["expected"]
         config = _make_config()
         config.set("sys_modules.enabled", True)
         executor = MagicMock()
@@ -644,7 +749,7 @@ class TestStartupFailOnErrorTrueRaises:
         original_register = registry.register_internal
 
         def failing_register(module_id: str, module: Any) -> None:
-            if module_id == "system.health.summary":
+            if module_id == failure["module_id"]:
                 raise RuntimeError("registration failed")
             original_register(module_id, module)
 
@@ -654,10 +759,10 @@ class TestStartupFailOnErrorTrueRaises:
                     registry=registry,
                     executor=executor,
                     config=config,
-                    fail_on_error=True,
+                    fail_on_error=case["action"]["params"]["fail_on_error"],
                 )
 
-        assert "system.health.summary" in exc_info.value.details.get("module_id", "")
+        assert exc_info.value.details.get("module_id", "") == expected["error_includes_module_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +775,8 @@ class TestStartupFailOnErrorFalseContinues:
 
     def test_fail_on_error_false_does_not_raise(self, caplog: Any) -> None:
         """When fail_on_error=False and a module fails, register_sys_modules does not raise."""
+        case = _case("startup_fail_on_error_false_continues")
+        failure, expected = case["setup"]["simulated_failure"], case["expected"]
         config = _make_config()
         config.set("sys_modules.enabled", True)
         executor = MagicMock()
@@ -678,24 +785,31 @@ class TestStartupFailOnErrorFalseContinues:
         original_register = registry.register_internal
 
         def failing_register(module_id: str, module: Any) -> None:
-            if module_id == "system.health.summary":
-                raise ValueError("schema validation error")
+            if module_id == failure["module_id"]:
+                raise ValueError(failure["error"])
             original_register(module_id, module)
 
+        raised = False
         with patch.object(registry, "register_internal", side_effect=failing_register):
             with caplog.at_level(logging.ERROR):
-                result = register_sys_modules(
-                    registry=registry,
-                    executor=executor,
-                    config=config,
-                    fail_on_error=False,
-                )
+                try:
+                    result = register_sys_modules(
+                        registry=registry,
+                        executor=executor,
+                        config=config,
+                        fail_on_error=case["action"]["params"]["fail_on_error"],
+                    )
+                except SysModuleRegistrationError:
+                    raised = True
 
+        assert raised is expected["raises"]
         # Should return normally
         assert isinstance(result, dict)
 
     def test_fail_on_error_false_logs_at_error_level(self, caplog: Any) -> None:
-        """When fail_on_error=False, failure is logged at ERROR level."""
+        """When fail_on_error=False, failure is logged at the fixture's level."""
+        case = _case("startup_fail_on_error_false_continues")
+        failure, expected = case["setup"]["simulated_failure"], case["expected"]
         config = _make_config()
         config.set("sys_modules.enabled", True)
         executor = MagicMock()
@@ -704,24 +818,30 @@ class TestStartupFailOnErrorFalseContinues:
         original_register = registry.register_internal
 
         def failing_register(module_id: str, module: Any) -> None:
-            if module_id == "system.health.summary":
-                raise ValueError("schema validation error")
+            if module_id == failure["module_id"]:
+                raise ValueError(failure["error"])
             original_register(module_id, module)
 
+        level = getattr(logging, expected["log_level_on_failure"])
         with patch.object(registry, "register_internal", side_effect=failing_register):
-            with caplog.at_level(logging.ERROR, logger="apcore.sys_modules.registration"):
+            with caplog.at_level(level, logger="apcore.sys_modules.registration"):
                 register_sys_modules(
                     registry=registry,
                     executor=executor,
                     config=config,
-                    fail_on_error=False,
+                    fail_on_error=case["action"]["params"]["fail_on_error"],
                 )
 
-        error_msgs = [r.message for r in caplog.records if r.levelno == logging.ERROR]
-        assert any("system.health.summary" in m for m in error_msgs)
+        at_level = [r.message for r in caplog.records if r.levelno == level]
+        assert any(failure["module_id"] in m for m in at_level), (
+            f"no {expected['log_level_on_failure']} record naming {failure['module_id']!r}; "
+            f"saw {[(r.levelname, r.message) for r in caplog.records]!r}"
+        )
 
     def test_fail_on_error_false_remaining_modules_registered(self) -> None:
         """When fail_on_error=False, modules after the failing one are still registered."""
+        case = _case("startup_fail_on_error_false_continues")
+        failure, expected = case["setup"]["simulated_failure"], case["expected"]
         config = _make_config()
         config.set("sys_modules.enabled", True)
         executor = MagicMock()
@@ -731,8 +851,8 @@ class TestStartupFailOnErrorFalseContinues:
         registered: list[str] = []
 
         def tracking_register(module_id: str, module: Any) -> None:
-            if module_id == "system.health.summary":
-                raise ValueError("schema validation error")
+            if module_id == failure["module_id"]:
+                raise ValueError(failure["error"])
             original_register(module_id, module)
             registered.append(module_id)
 
@@ -741,11 +861,15 @@ class TestStartupFailOnErrorFalseContinues:
                 registry=registry,
                 executor=executor,
                 config=config,
-                fail_on_error=False,
+                fail_on_error=case["action"]["params"]["fail_on_error"],
             )
 
-        # Other modules should still be registered despite the first failure
-        assert any("system.health.module" in mid for mid in registered)
+        # Other modules are still registered despite the failure, and the failed
+        # one is not.
+        remaining_modules_registered = bool(registered) and failure["module_id"] not in registered
+        assert remaining_modules_registered is expected["remaining_modules_registered"], (
+            f"modules registered after the simulated failure: {registered!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +879,14 @@ class TestStartupFailOnErrorFalseContinues:
 
 @pytest.mark.skip(reason="language=rust — not applicable to Python implementation")
 class TestRustRegisterReturnsResult:
-    """Case: rust_register_returns_result — Rust-specific, skipped for Python."""
+    """Case: rust_register_returns_result — Rust-specific, skipped for Python.
+
+    The case carries ``"language": "rust"`` and its ``expected`` keys —
+    ``return_type``, ``ok_variant``, ``err_variant``, ``panics``,
+    ``returns_option`` — describe the shape of a Rust ``Result<(),
+    SysModuleError>``. They belong to the apcore-rust driver; Python has no
+    equivalent to assert and MUST NOT invent one.
+    """
 
     def test_rust_returns_result_type(self) -> None:
         """Rust register_sys_modules returns Result<(), SysModuleError>."""

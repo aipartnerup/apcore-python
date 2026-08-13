@@ -181,8 +181,13 @@ def test_circuit_breaker_short_circuits_open() -> None:
         breaker.before(module_id, {}, ctx)
         module_reached = True
 
-    assert type(excinfo.value).__name__ == case["expected"]["error"], (
-        f"[{case['id']}] expected {case['expected']['error']}, got {type(excinfo.value).__name__}"
+    # The WIRE CODE, not the class name. This asserted
+    # `type(...).__name__ == "CircuitBreakerOpenError"`, a Python/TypeScript
+    # class apcore-rust cannot have — Rust models these as ErrorCode variants —
+    # so the case was unsatisfiable there by construction (apcore#81).
+    assert excinfo.value.code == case["expected"]["error_code"], (
+        f"[{case['id']}] expected error_code {case['expected']['error_code']}, "
+        f"got {excinfo.value.code}"
     )
     assert module_reached is case["expected"]["module_reached"], (
         f"[{case['id']}] the module must not be reached while the circuit is OPEN"

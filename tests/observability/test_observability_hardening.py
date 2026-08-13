@@ -22,6 +22,7 @@ import sys
 import io
 import json
 import time
+from typing import Any
 
 
 from apcore.context import Context
@@ -35,7 +36,17 @@ from apcore.observability.error_history import (
 from apcore.observability.metrics import MetricsCollector
 from apcore.observability.store import InMemoryObservabilityStore
 from apcore.observability.tracing import BatchSpanProcessor, InMemoryExporter, Span
-from conformance.canonical_fixtures import case_ids
+from conformance.canonical_fixtures import case_ids, load_fixture
+
+FIXTURE = "observability_hardening.json"
+
+#: canonical case id -> case body. Hand-written assertions, fixture-sourced
+#: values: an `expected` key no assertion reads is not a contract.
+_CASES: dict[str, Any] = {case["id"]: case for case in load_fixture(FIXTURE)["test_cases"]}
+
+
+def _case(case_id: str) -> dict[str, Any]:
+    return _CASES[case_id]
 
 
 # ---------------------------------------------------------------------------
@@ -78,20 +89,28 @@ class TestBatchProcessorBuffersSpans:
 
     def test_spans_enqueued_not_exported_immediately(self) -> None:
         """Spans submitted to BatchSpanProcessor are enqueued; not exported immediately."""
+        case = _case("batch_processor_buffers_spans")
+        params, expected = case["input"], case["expected"]
         exporter = InMemoryExporter()
         processor = BatchSpanProcessor(
             exporter=exporter,
             max_queue_size=2048,
-            schedule_delay_ms=60_000,  # very long — background flush won't fire during test
+            # At least the fixture's delay, and long enough that the background
+            # flush cannot fire mid-test — so "exported immediately" means it.
+            schedule_delay_ms=max(params["schedule_delay_ms"], 60_000),
         )
         try:
-            for _ in range(3):
+            for _ in range(params["spans_submitted"]):
                 span = Span(trace_id="t1", name="test", start_time=time.time())
                 processor.on_span_end(span)
 
-            assert exporter.get_spans() == [], "No spans should be exported before flush"
-            assert processor.queue_size == 3
-            assert processor.spans_dropped == 0
+            exported_immediately = len(exporter.get_spans())
+            assert exported_immediately == expected["spans_exported_immediately"], (
+                f"BatchSpanProcessor exported {exported_immediately} span(s) before any flush; "
+                f"the fixture requires {expected['spans_exported_immediately']}"
+            )
+            assert processor.queue_size == expected["queue_size"]
+            assert processor.spans_dropped == expected["spans_dropped"]
         finally:
             processor.shutdown()
 

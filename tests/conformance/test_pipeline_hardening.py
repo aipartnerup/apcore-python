@@ -31,11 +31,22 @@ from apcore.pipeline import (
     PipelineStepNotFoundError,
     StepResult,
 )
-from conformance.canonical_fixtures import case_ids
+from conformance.canonical_fixtures import case_ids, load_fixture
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+FIXTURE = "pipeline_hardening.json"
+
+#: canonical case id -> case body, so hand-written assertions still take their
+#: values from the fixture rather than from a transcription of it.
+_CASES: dict[str, Any] = {case["id"]: case for case in load_fixture(FIXTURE)["test_cases"]}
+
+
+def _case(case_id: str) -> dict[str, Any]:
+    return _CASES[case_id]
+
 
 
 class _ContinueStep(BaseStep):
@@ -241,6 +252,10 @@ class TestRunUntilStopsEarly:
 
     @pytest.mark.asyncio
     async def test_run_until_stops_after_module_lookup(self) -> None:
+        case = _case("run_until_stops_early")
+        expected = case["expected"]
+        stop_after = case["input"]["run_until_after"]
+
         steps_run: list[str] = []
 
         class _TrackingStep(BaseStep):
@@ -248,25 +263,24 @@ class TestRunUntilStopsEarly:
                 steps_run.append(self.name)
                 return StepResult(action="continue")
 
-        steps = [
-            _TrackingStep("context_creation"),
-            _TrackingStep("module_lookup"),
-            _TrackingStep("execute"),
-            _TrackingStep("return_result"),
-        ]
+        step_names = ["context_creation", "module_lookup", "execute", "return_result"]
+        steps = [_TrackingStep(name) for name in step_names]
         strategy = ExecutionStrategy("test", steps)
         ctx = PipelineContext(module_id="m", inputs={}, context=None)
         engine = PipelineEngine()
 
         def stop_after_module_lookup(state: PipelineState) -> bool:
-            return state.step_name == "module_lookup"
+            return state.step_name == stop_after
 
         _, trace = await engine.run(strategy, ctx, run_until=stop_after_module_lookup)
 
-        assert "context_creation" in steps_run
-        assert "module_lookup" in steps_run
-        assert "execute" not in steps_run
-        assert "return_result" not in steps_run
+        # `steps_after_skipped`: every step positioned after the halting one
+        # must not have run. Derived from the strategy's own step list, so
+        # extending the pipeline cannot quietly narrow what this checks.
+        after_halt = step_names[step_names.index(expected["last_step_executed"]) + 1 :]
+        steps_after_skipped = not any(name in steps_run for name in after_halt)
+        assert steps_after_skipped is expected["steps_after_skipped"], f"ran {steps_run!r}"
+        assert steps_run[-1] == expected["last_step_executed"]
         assert trace.success is True
 
     @pytest.mark.asyncio

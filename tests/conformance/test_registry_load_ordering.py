@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from apcore.errors import InvalidInputError
+from apcore.errors import InvalidInputError, ModuleError
 from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.registry import Registry
 from conformance.canonical_fixtures import load_fixture
@@ -61,7 +61,13 @@ def test_fixture_visibility_after_successful_on_load(fixture_data: dict) -> None
     # During on_load, module was NOT visible
     if not expected["concurrent_check_visible"]:
         assert concurrent_list_result == [False]
-        assert concurrent_get_result == [None]
+        # Bound to the fixture rather than to a local literal. The key used to
+        # read `concurrent_check_get_raises: "MODULE_NOT_FOUND"`, a behaviour no
+        # SDK implements — Registry.get() returns the empty value for an id that
+        # is not visible, per features/registry-system.md "On success (not
+        # found)". The fixture now says `concurrent_check_get_returns: null`,
+        # which is the observable thing, so the assertion can be real.
+        assert concurrent_get_result == [expected["concurrent_check_get_returns"]]
 
     if expected.get("on_load_observed_data"):
         for key, val in expected["on_load_observed_data"].items():
@@ -94,14 +100,27 @@ def test_fixture_callback_failure_blocks_visibility(fixture_data: dict) -> None:
         def on_load(self) -> None:
             raise ConnectionError(error_cfg["message"])
 
-    with pytest.raises(ConnectionError, match=error_cfg["message"]):
+    raised: BaseException | None = None
+    try:
         reg.register(mod_id, _FailingModule())
+    except BaseException as exc:  # noqa: BLE001 - the type is the thing under test
+        raised = exc
 
     emitter.flush(timeout=5.0)
     emitter.shutdown()
 
-    assert mod_id not in reg.list()
-    assert reg.get(mod_id) is None
+    # `registration_raises` names the HOST exception the callback threw, not an
+    # apcore wire code (see the fixture's driver_contract): register() must let
+    # the callback's own exception out unchanged rather than wrapping it in a
+    # ModuleError, which would cost the caller the original type and traceback.
+    unwrapped = type(raised).__name__ == error_cfg["type"] and not isinstance(raised, ModuleError)
+    assert unwrapped, f"expected {expected['registration_raises']}, got {raised!r}"
+    assert str(raised) == error_cfg["message"]
+
+    assert (mod_id in reg.list()) is expected["post_register_list_contains"]
+    # Same correction as above: the key declared a raise that no SDK performs
+    # and is now `post_register_get_returns: null`.
+    assert reg.get(mod_id) == expected["post_register_get_returns"]
 
     if expected.get("load_failed_event_emitted"):
         assert len(load_failed_events) == 1
@@ -148,9 +167,22 @@ def test_fixture_concurrent_same_id_rejects_duplicate(fixture_data: dict) -> Non
     t1.join(timeout=5.0)
     t2.join(timeout=5.0)
 
-    assert results["success"] == 1
+    assert (results["success"] == 1) is expected["one_succeeds"]
     assert len(results["errors"]) == 1
-    assert results["errors"][0].code == expected["raised_error_code"]
+    rejected = results["errors"][0]
+    assert rejected.code == expected["raised_error_code"]
+    # `one_raises` names the error FAMILY by its canonical wire code: the
+    # rejection must come out as the SDK's invalid-input error (whose default
+    # code is GENERAL_INVALID_INPUT) carrying the specific DUPLICATE_MODULE_ID
+    # code above — not, say, a bare RuntimeError or a ModuleIdConflictError.
+    assert isinstance(rejected, InvalidInputError)
+    # The fixture's `one_raises: GENERAL_INVALID_INPUT` is gone. It contradicted
+    # `raised_error_code: DUPLICATE_MODULE_ID` in the same case, and the only way
+    # to satisfy both was to construct an InvalidInputError this case never
+    # raises and read its DEFAULT code — true, but about a different object than
+    # the one under test. apcore-typescript and apcore-rust have no
+    # invalid-input family at all, so the key was a Python implementation detail
+    # promoted to a cross-language expectation.
 
     mod_id = setup["module_a"]["id"]
     if expected["post_register_visible"]:
