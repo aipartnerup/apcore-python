@@ -363,8 +363,7 @@ def test_call_chain(case: dict[str, Any]) -> None:
     result = guard_call_chain(module_id, chain, **kwargs)
     assert result is None, f"[call_chain :: {case_id}] guard_call_chain signals by raising and returns nothing"
     assert chain == case["call_chain"], (
-        f"[call_chain :: {case_id}] guard_call_chain MUST NOT mutate the caller's "
-        f"chain; it became {chain!r}"
+        f"[call_chain :: {case_id}] guard_call_chain MUST NOT mutate the caller's " f"chain; it became {chain!r}"
     )
 
     # Boundary probe: the guard accepted this chain because it is WITHIN the
@@ -427,8 +426,7 @@ def _run_error_code_registrations(
         owned.setdefault(module_id, set()).add(code)
         if observe:
             assert code in registry.all_codes, (
-                f"[error_codes :: {case_id}] {code!r} registered OK but is not queryable "
-                f"through registry.all_codes"
+                f"[error_codes :: {case_id}] {code!r} registered OK but is not queryable " f"through registry.all_codes"
             )
 
     def _unregister(module_id: str) -> None:
@@ -458,9 +456,7 @@ def _run_error_code_registrations(
                     f"Teach the driver, do not skip it."
                 )
     else:
-        pytest.fail(
-            f"[error_codes :: {case_id}] unknown action {action!r}. Teach the driver, do not skip it."
-        )
+        pytest.fail(f"[error_codes :: {case_id}] unknown action {action!r}. Teach the driver, do not skip it.")
 
 
 @pytest.mark.parametrize(
@@ -1066,15 +1062,15 @@ def test_identity_system(case: dict[str, Any]) -> None:
         ctx = Context.create(identity=identity)
         child_ctx = ctx.child(case["child_module_id"])
         assert child_ctx.identity is not None, "child context lost the parent identity entirely"
-        assert child_ctx.identity.id == expected["child_identity_id"], (
-            f"child identity id: {child_ctx.identity.id!r} != {expected['child_identity_id']!r}"
-        )
-        assert child_ctx.identity.type == expected["child_identity_type"], (
-            f"child identity type: {child_ctx.identity.type!r} != {expected['child_identity_type']!r}"
-        )
-        assert list(child_ctx.identity.roles) == expected["child_identity_roles"], (
-            f"child identity roles: {list(child_ctx.identity.roles)!r} != {expected['child_identity_roles']!r}"
-        )
+        assert (
+            child_ctx.identity.id == expected["child_identity_id"]
+        ), f"child identity id: {child_ctx.identity.id!r} != {expected['child_identity_id']!r}"
+        assert (
+            child_ctx.identity.type == expected["child_identity_type"]
+        ), f"child identity type: {child_ctx.identity.type!r} != {expected['child_identity_type']!r}"
+        assert (
+            list(child_ctx.identity.roles) == expected["child_identity_roles"]
+        ), f"child identity roles: {list(child_ctx.identity.roles)!r} != {expected['child_identity_roles']!r}"
         equals_parent = child_ctx.identity == ctx.identity
         assert equals_parent is expected["child_identity_equals_parent"], (
             f"child identity {child_ctx.identity!r} vs parent {ctx.identity!r}: "
@@ -1272,8 +1268,7 @@ def test_approval_gate(case: dict[str, Any]) -> None:
                 )
         else:
             pytest.fail(
-                f"[approval_gate :: {case_id}] unknown outcome {outcome!r}. "
-                f"Teach the driver, do not skip it."
+                f"[approval_gate :: {case_id}] unknown outcome {outcome!r}. " f"Teach the driver, do not skip it."
             )
 
         gate_invoked = handler is not None and handler.called
@@ -1641,9 +1636,10 @@ def test_core_schema_structure() -> None:
     # defaults in defaults.schema.json, so requiring them would reject a
     # document the framework resolves fine; they must stay OUT of `required`.
     s = _load_schema("apcore-config")
-    assert sorted(s["required"]) == ["project", "version"], (
-        f"apcore-config: required must be exactly [version, project], got {s['required']!r}"
-    )
+    assert sorted(s["required"]) == [
+        "project",
+        "version",
+    ], f"apcore-config: required must be exactly [version, project], got {s['required']!r}"
     defaults_props = set(_load_schema("defaults")["properties"])
     for key in s["required"]:
         assert key not in defaults_props, f"apcore-config: required key {key!r} has a canonical default"
@@ -2058,12 +2054,12 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
     elif case_id == "create_with_cancel_token":
         token = _CancelToken()
         ctx = Context.create(cancel_token=token)
-        assert (ctx.cancel_token is not None) is expected["cancel_token_bound"], (
-            "cancel_token MUST be carried on the returned Context without post-hoc assignment"
-        )
-        assert (ctx.cancel_token is token) is expected["cancel_token_matches_input"], (
-            "cancel_token must be the same instance passed in"
-        )
+        assert (ctx.cancel_token is not None) is expected[
+            "cancel_token_bound"
+        ], "cancel_token MUST be carried on the returned Context without post-hoc assignment"
+        assert (ctx.cancel_token is token) is expected[
+            "cancel_token_matches_input"
+        ], "cancel_token must be the same instance passed in"
         assert ctx.executor == expected["executor_at_create_time"], "executor MUST NOT be bound at create() time"
 
     elif case_id == "create_with_global_deadline":
@@ -2150,12 +2146,10 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         except ModuleError as exc:
             raised_code = exc.code
         assert (raised_code is not None) is expected["raises"], (
-            f"cross-executor rebind: raised={raised_code!r}, fixture declares raises="
-            f"{expected['raises']}"
+            f"cross-executor rebind: raised={raised_code!r}, fixture declares raises=" f"{expected['raises']}"
         )
         assert raised_code == expected["error_code"], (
-            f"cross-executor rebind raised {raised_code!r}, fixture declares "
-            f"{expected['error_code']!r}"
+            f"cross-executor rebind raised {raised_code!r}, fixture declares " f"{expected['error_code']!r}"
         )
         # The wire code is the contract; this pins the Python class that carries
         # it so a future refactor cannot quietly move the code onto another type.
@@ -2169,13 +2163,13 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
             ctx.bind_executor(executor)
         target_module_id = case["input"]["create_child_module_id"]
         child = ctx.child(target_module_id)
-        assert (child.executor is ctx.executor) is expected["child_executor_matches_parent"], (
-            f"child.executor {child.executor!r} does not match parent's {ctx.executor!r}"
-        )
+        assert (child.executor is ctx.executor) is expected[
+            "child_executor_matches_parent"
+        ], f"child.executor {child.executor!r} does not match parent's {ctx.executor!r}"
         parent_chain_tip = ctx.call_chain[-1] if ctx.call_chain else None
-        assert (child.caller_id == parent_chain_tip) is expected["child_caller_id_from_parent_chain_tip"], (
-            f"child.caller_id {child.caller_id!r} is not the parent chain tip {parent_chain_tip!r}"
-        )
+        assert (child.caller_id == parent_chain_tip) is expected[
+            "child_caller_id_from_parent_chain_tip"
+        ], f"child.caller_id {child.caller_id!r} is not the parent chain tip {parent_chain_tip!r}"
         appends_target = child.call_chain == [*ctx.call_chain, target_module_id]
         assert appends_target is expected["child_call_chain_appends_target"], f"chain {child.call_chain!r}"
 
@@ -2183,9 +2177,9 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         token = _CancelToken()
         ctx = Context.create(cancel_token=token)
         child = ctx.child(case["input"]["create_child_module_id"])
-        assert (child.cancel_token is not None) is expected["child_cancel_token_bound"], (
-            "child MUST carry a cancel_token so deep modules observe cancellation"
-        )
+        assert (child.cancel_token is not None) is expected[
+            "child_cancel_token_bound"
+        ], "child MUST carry a cancel_token so deep modules observe cancellation"
         same_token = child.cancel_token is ctx.cancel_token and child.cancel_token is token
         assert same_token is expected["child_cancel_token_matches_parent"], f"token {child.cancel_token!r}"
 
@@ -2201,9 +2195,9 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         module_id = case["input"]["call_module"]
         executor = _build_executor_with_echo(module_id)
         executor.call(module_id, {}, context=restored)
-        assert (restored.executor is executor) is expected["executor_bound_on_first_call"], (
-            "the receiving node's Executor MUST bind itself to a deserialized Context"
-        )
+        assert (restored.executor is executor) is expected[
+            "executor_bound_on_first_call"
+        ], "the receiving node's Executor MUST bind itself to a deserialized Context"
 
     elif case_id == "tracestate_carried_inside_traceparent":
         from apcore.trace_context import TraceParent as _TP
@@ -2222,13 +2216,13 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         # carried through to the Context by the SDK's TraceParent plumbing.
         carried = ctx.data.get("_apcore.trace.state")
         tracestate_preserved = carried is not None and [list(pair) for pair in carried] == tp_in["tracestate"]
-        assert tracestate_preserved is expected["tracestate_preserved"], (
-            f"tracestate {carried!r} did not round-trip {tp_in['tracestate']!r}"
-        )
+        assert (
+            tracestate_preserved is expected["tracestate_preserved"]
+        ), f"tracestate {carried!r} did not round-trip {tp_in['tracestate']!r}"
         params = _inspect.signature(Context.create).parameters
-        assert ("tracestate" not in params) is expected["no_separate_tracestate_parameter"], (
-            "tracestate MUST live inside TraceParent — no separate Context.create parameter"
-        )
+        assert ("tracestate" not in params) is expected[
+            "no_separate_tracestate_parameter"
+        ], "tracestate MUST live inside TraceParent — no separate Context.create parameter"
 
     elif case_id == "distributed_cancel_token_post_deserialize_null":
         # Negative invariant: cancel_token MUST NOT serialize. Drive it from a
@@ -2239,17 +2233,16 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         assert local.cancel_token is not None
         wire = local.serialize()
         restored = Context.deserialize(wire)
-        assert restored.cancel_token == expected["cancel_token_after_deserialize"], (
-            "cancel_token MUST be null after deserialization"
-        )
+        assert (
+            restored.cancel_token == expected["cancel_token_after_deserialize"]
+        ), "cancel_token MUST be null after deserialization"
         on_wire = "cancel_token" in wire
         no_token_rode_across = (
-            on_wire is case["input"]["serialized_context_includes_cancel_token_field"]
-            and restored.cancel_token is None
+            on_wire is case["input"]["serialized_context_includes_cancel_token_field"] and restored.cancel_token is None
         )
-        assert no_token_rode_across is expected["no_in_context_token_rides_across_processes"], (
-            f"serialize() must not put cancel_token on the wire; got keys {sorted(wire)!r}"
-        )
+        assert (
+            no_token_rode_across is expected["no_in_context_token_rides_across_processes"]
+        ), f"serialize() must not put cancel_token on the wire; got keys {sorted(wire)!r}"
 
     elif case_id == "distributed_global_deadline_post_deserialize_null":
         # Same shape: start from a context that carries a global_deadline so the
@@ -2258,17 +2251,17 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         assert local.global_deadline is not None
         wire = local.serialize()
         restored = Context.deserialize(wire)
-        assert restored.global_deadline == expected["global_deadline_after_deserialize"], (
-            "global_deadline MUST be null after deserialization"
-        )
+        assert (
+            restored.global_deadline == expected["global_deadline_after_deserialize"]
+        ), "global_deadline MUST be null after deserialization"
         on_wire = "global_deadline" in wire
         no_remote_deadline = (
             on_wire is case["input"]["serialized_context_includes_global_deadline_field"]
             and restored.global_deadline is None
         )
-        assert no_remote_deadline is expected["no_remote_deadline_rides_via_global_deadline_field"], (
-            f"serialize() must not put global_deadline on the wire; got keys {sorted(wire)!r}"
-        )
+        assert (
+            no_remote_deadline is expected["no_remote_deadline_rides_via_global_deadline_field"]
+        ), f"serialize() must not put global_deadline on the wire; got keys {sorted(wire)!r}"
 
     else:
         pytest.fail(f"Unknown context_create fixture case id: {case_id!r}")

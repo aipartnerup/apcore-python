@@ -107,9 +107,9 @@ def test_trace_context_case(case: dict[str, Any]) -> None:
             f"`ErrorCode::InvalidParentId`; a codeless exception here leaves a polyglot caller "
             f"matching on the code with nothing to match."
         )
-        assert repr(bad_parent_id) in str(raised), (
-            f"[{cid}] the rejection message must name the offending parent_id; got: {raised}"
-        )
+        assert repr(bad_parent_id) in str(
+            raised
+        ), f"[{cid}] the rejection message must name the offending parent_id; got: {raised}"
         return
 
     if expected.get("extract_succeeded") is True:
@@ -141,17 +141,17 @@ def test_trace_context_case(case: dict[str, Any]) -> None:
         )
     if "tracestate_dropped_count" in expected:
         dropped = _declared_tracestate_entries(headers) - len(entries)
-        assert dropped == expected["tracestate_dropped_count"], (
-            f"[{cid}] dropped {dropped} tracestate entries, expected {expected['tracestate_dropped_count']}"
-        )
+        assert (
+            dropped == expected["tracestate_dropped_count"]
+        ), f"[{cid}] dropped {dropped} tracestate entries, expected {expected['tracestate_dropped_count']}"
     if "tracestate_first_key" in expected:
-        assert entries and entries[0][0] == expected["tracestate_first_key"], (
-            f"[{cid}] first retained tracestate key mismatch"
-        )
+        assert (
+            entries and entries[0][0] == expected["tracestate_first_key"]
+        ), f"[{cid}] first retained tracestate key mismatch"
     if "tracestate_last_key" in expected:
-        assert entries and entries[-1][0] == expected["tracestate_last_key"], (
-            f"[{cid}] last retained tracestate key mismatch — the cap must drop the TAIL, not the head"
-        )
+        assert (
+            entries and entries[-1][0] == expected["tracestate_last_key"]
+        ), f"[{cid}] last retained tracestate key mismatch — the cap must drop the TAIL, not the head"
 
     inject_keys = {
         "reinjected_tracestate",
@@ -166,9 +166,9 @@ def test_trace_context_case(case: dict[str, Any]) -> None:
     segments = injected["traceparent"].split("-")
 
     if "injected_trace_flags" in expected:
-        assert segments[3] == expected["injected_trace_flags"], (
-            f"[{cid}] injected trace flags: got {segments[3]!r}, expected {expected['injected_trace_flags']!r}"
-        )
+        assert (
+            segments[3] == expected["injected_trace_flags"]
+        ), f"[{cid}] injected trace flags: got {segments[3]!r}, expected {expected['injected_trace_flags']!r}"
     if "injected_traceparent" in expected:
         assert injected["traceparent"] == expected["injected_traceparent"], (
             f"[{cid}] injected traceparent: got {injected['traceparent']!r}, "

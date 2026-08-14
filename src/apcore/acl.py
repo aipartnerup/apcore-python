@@ -177,9 +177,7 @@ class ACL:
                         "unsatisfied. Use async_check() for handlers needing await.",
                         key,
                     )
-                    _handler_error_var.set(
-                        f"{key}: async condition suspended in sync context — use async_check()"
-                    )
+                    _handler_error_var.set(f"{key}: async condition suspended in sync context — use async_check()")
                     return False
             if not result:
                 return False

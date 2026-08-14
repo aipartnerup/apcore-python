@@ -1528,9 +1528,7 @@ class TestDiscoveryValidatesModuleIds:
     """
 
     @staticmethod
-    def _discover_with_id_map(
-        tmp_path: Path, override_id: str, caplog: pytest.LogCaptureFixture
-    ) -> Registry:
+    def _discover_with_id_map(tmp_path: Path, override_id: str, caplog: pytest.LogCaptureFixture) -> Registry:
         ext = tmp_path / "extensions"
         ext.mkdir()
         _write_module_file(ext / "hello.py", "HelloModule", "Hello module")

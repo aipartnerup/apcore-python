@@ -70,9 +70,7 @@ _CONFIG_KEY_MARKERS = ("config", "config_canonical", "legacy_key_by_sdk")
 RULE_CASES: list[dict[str, Any]] = [c for c in CASES if "redaction_config" in c]
 
 #: Cases that pin which Config dot-path the rules are read from.
-CONFIG_KEY_CASES: list[dict[str, Any]] = [
-    c for c in CASES if any(marker in c for marker in _CONFIG_KEY_MARKERS)
-]
+CONFIG_KEY_CASES: list[dict[str, Any]] = [c for c in CASES if any(marker in c for marker in _CONFIG_KEY_MARKERS)]
 
 #: The replacement token the config-key cases expect. None of them sets
 #: ``obs.redaction.replacement``, so ``RedactionConfig.from_config`` uses the
@@ -81,9 +79,7 @@ _REPLACEMENT = "***REDACTED***"
 
 #: ``expected`` entries that describe the deprecation warning rather than a
 #: redacted field, and so must not be compared against the payload.
-_WARNING_EXPECTATIONS = frozenset(
-    {"deprecation_warning_emitted", "deprecation_warning_is_one_shot"}
-)
+_WARNING_EXPECTATIONS = frozenset({"deprecation_warning_emitted", "deprecation_warning_is_one_shot"})
 
 # observability.md: "Implementations MUST NOT redact trace_id, caller_id,
 # module_id, or span_id" (the fixture adds target_id). The exemption used to
@@ -119,11 +115,7 @@ def _expected_fields(case: dict[str, Any]) -> dict[str, Any]:
     field of the redacted payload and are asserted by
     :func:`test_deprecation_warning_expectations`.
     """
-    return {
-        k: v
-        for k, v in case["expected"].items()
-        if not k.startswith("_") and k not in _WARNING_EXPECTATIONS
-    }
+    return {k: v for k, v in case["expected"].items() if not k.startswith("_") and k not in _WARNING_EXPECTATIONS}
 
 
 def _assert_matches(case: dict[str, Any], got: dict[str, Any], via: str) -> None:
@@ -236,11 +228,7 @@ def _legacy_value(case: dict[str, Any]) -> list[str]:
     """
     if "legacy_value" in case:
         return list(case["legacy_value"])
-    return sorted(
-        k
-        for k, v in _expected_fields(case).items()
-        if v == _REPLACEMENT
-    )
+    return sorted(k for k, v in _expected_fields(case).items() if v == _REPLACEMENT)
 
 
 def _skip_if_case_does_not_apply(case: dict[str, Any]) -> None:
@@ -252,9 +240,7 @@ def _skip_if_case_does_not_apply(case: dict[str, Any]) -> None:
     """
     if _legacy_key(case) is not None or _canonical_entries(case):
         return
-    reason = case.get("skip_when_legacy_key_is_null") or (
-        "the fixture states no legacy spelling for this SDK"
-    )
+    reason = case.get("skip_when_legacy_key_is_null") or ("the fixture states no legacy spelling for this SDK")
     pytest.skip(f"[{case['id']}] legacy_key_by_sdk.{SDK} is null — {reason}")
 
 

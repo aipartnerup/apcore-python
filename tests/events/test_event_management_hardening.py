@@ -132,9 +132,7 @@ class TestSubscriberFactoryRegisteredType:
             f"[{case['id']}] fixture declares subscriber_created="
             f"{expected['subscriber_created']}, got {subscriber!r}"
         )
-        factory = dispatch_or_fail(
-            FIXTURE, case["id"], expected["subscriber_type"], factories, "subscriber type"
-        )
+        factory = dispatch_or_fail(FIXTURE, case["id"], expected["subscriber_type"], factories, "subscriber type")
         factory.assert_called_once_with(sub_cfg)
         assert subscriber is subscribers[expected["subscriber_type"]], (
             f"[{case['id']}] the config named type {sub_cfg['type']!r}; the fixture declares "
@@ -167,9 +165,7 @@ def _assert_builtin_subscriber_case(case_id: str) -> None:
     case = _case(case_id)
     params, expected = case["input"], case["expected"]
     sub_cfg: dict[str, Any] = dict(params["subscriber_config"])
-    expected_class = dispatch_or_fail(
-        FIXTURE, case_id, expected["subscriber_type"], classes, "subscriber type"
-    )
+    expected_class = dispatch_or_fail(FIXTURE, case_id, expected["subscriber_type"], classes, "subscriber type")
 
     # No register_subscriber_type call anywhere in this test: the registry is
     # reset to built-ins only, which is what "requires_registration: false"
@@ -184,8 +180,7 @@ def _assert_builtin_subscriber_case(case_id: str) -> None:
 
     subscriber = _create_subscriber(sub_cfg)
     assert (subscriber is not None) is expected["subscriber_created"], (
-        f"[{case_id}] fixture declares subscriber_created="
-        f"{expected['subscriber_created']}, got {subscriber!r}"
+        f"[{case_id}] fixture declares subscriber_created=" f"{expected['subscriber_created']}, got {subscriber!r}"
     )
     assert isinstance(subscriber, expected_class), (
         f"[{case_id}] fixture declares subscriber_type "
@@ -269,9 +264,9 @@ async def _assert_filter_case(case_id: str) -> None:
         f"{delegate.on_event.call_count}x for {event.event_type!r}"
     )
     discarded = not delivery_attempted
-    assert discarded is expected["discarded"], (
-        f"[{case_id}] fixture declares discarded={expected['discarded']}, got {discarded}"
-    )
+    assert (
+        discarded is expected["discarded"]
+    ), f"[{case_id}] fixture declares discarded={expected['discarded']}, got {discarded}"
     if delivery_attempted:
         # Forwarded verbatim: a filter that rebuilds the event is not a filter.
         delegate.on_event.assert_called_once_with(event)
@@ -344,8 +339,7 @@ class TestCircuitOpenAfterThreshold:
             FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
         )
         assert cb.state is expected_state, (
-            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, "
-            f"got {cb.state.value!r}"
+            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, " f"got {cb.state.value!r}"
         )
         assert cb.consecutive_failures == expected["consecutive_failures"], (
             f"[{case['id']}] fixture declares consecutive_failures="
@@ -400,8 +394,7 @@ class TestCircuitDiscardsInOpenState:
             FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
         )
         assert cb.state is expected_state, (
-            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, "
-            f"got {cb.state.value!r}"
+            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, " f"got {cb.state.value!r}"
         )
 
 
@@ -428,9 +421,9 @@ class TestCircuitHalfOpenAfterWindow:
         params, expected = case["input"], case["expected"]
         cfg = params["circuit_breaker_config"]
         elapsed = _elapsed_seconds(params["last_failure_at"], params["current_time"])
-        assert elapsed * 1000 > cfg["recovery_window_ms"], (
-            f"[{case['id']}] the declared current_time must be beyond the recovery window"
-        )
+        assert (
+            elapsed * 1000 > cfg["recovery_window_ms"]
+        ), f"[{case['id']}] the declared current_time must be beyond the recovery window"
 
         observed_states: list[CircuitState] = []
         inner_sub = MagicMock()
@@ -486,8 +479,7 @@ class TestCircuitHalfOpenAfterWindow:
             FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
         )
         assert cb._state is expected_state, (
-            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, "
-            f"got {cb._state.value!r}"
+            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, " f"got {cb._state.value!r}"
         )
 
     def test_recovery_does_not_fire_inside_the_window(self) -> None:
@@ -532,9 +524,7 @@ class TestCircuitClosesOnSuccess:
     async def test_half_open_success_closes_circuit(self) -> None:
         case = _case("circuit_closes_on_success")
         params, expected = case["input"], case["expected"]
-        assert params["delivery_outcome"] == "success", (
-            f"[{case['id']}] this driver models a succeeding delivery"
-        )
+        assert params["delivery_outcome"] == "success", f"[{case['id']}] this driver models a succeeding delivery"
 
         inner_sub = MagicMock()
         inner_sub.on_event = AsyncMock(return_value=None)
@@ -556,8 +546,7 @@ class TestCircuitClosesOnSuccess:
             FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
         )
         assert cb.state is expected_state, (
-            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, "
-            f"got {cb.state.value!r}"
+            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, " f"got {cb.state.value!r}"
         )
         assert cb.consecutive_failures == expected["consecutive_failures"], (
             f"[{case['id']}] fixture declares consecutive_failures="
@@ -748,9 +737,7 @@ async def _emitted_subscriber_event_names() -> list[str]:
 
     failing = MagicMock()
     failing.on_event = AsyncMock(side_effect=RuntimeError("downstream error"))
-    cb = CircuitBreakerWrapper(
-        subscriber=failing, emitter=mock_emitter, open_threshold=1, recovery_window_ms=30000
-    )
+    cb = CircuitBreakerWrapper(subscriber=failing, emitter=mock_emitter, open_threshold=1, recovery_window_ms=30000)
     await cb.on_event(_make_event())  # → OPEN, emits circuit_opened
 
     cb._state = CircuitState.HALF_OPEN
@@ -856,12 +843,8 @@ class TestFixtureCoverage:
     def test_every_canonical_case_is_claimed(self) -> None:
         canonical = set(case_ids(self.FIXTURE))
         claimed = set(self.COVERED)
-        assert canonical - claimed == set(), (
-            f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
-        )
-        assert claimed - canonical == set(), (
-            f"this file claims case(s) {self.FIXTURE} no longer defines"
-        )
+        assert canonical - claimed == set(), f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
+        assert claimed - canonical == set(), f"this file claims case(s) {self.FIXTURE} no longer defines"
 
     def test_every_claimed_class_exists(self) -> None:
         module = sys.modules[__name__]

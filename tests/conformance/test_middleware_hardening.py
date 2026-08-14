@@ -149,9 +149,9 @@ def test_circuit_breaker_opens_at_threshold() -> None:
         f"{case['input']['window_size']} errors above threshold "
         f"{case['input']['open_threshold']}, state must be {case['expected']['circuit_state']}, got {state.value}"
     )
-    assert case["expected"]["event_emitted"] in emitter.event_types, (
-        f"[{case['id']}] expected {case['expected']['event_emitted']!r}, emitted {emitter.event_types}"
-    )
+    assert (
+        case["expected"]["event_emitted"] in emitter.event_types
+    ), f"[{case['id']}] expected {case['expected']['event_emitted']!r}, emitted {emitter.event_types}"
 
 
 def test_circuit_breaker_short_circuits_open() -> None:
@@ -174,12 +174,11 @@ def test_circuit_breaker_short_circuits_open() -> None:
     # class apcore-rust cannot have — Rust models these as ErrorCode variants —
     # so the case was unsatisfiable there by construction (apcore#81).
     assert excinfo.value.code == case["expected"]["error_code"], (
-        f"[{case['id']}] expected error_code {case['expected']['error_code']}, "
-        f"got {excinfo.value.code}"
+        f"[{case['id']}] expected error_code {case['expected']['error_code']}, " f"got {excinfo.value.code}"
     )
-    assert module_reached is case["expected"]["module_reached"], (
-        f"[{case['id']}] the module must not be reached while the circuit is OPEN"
-    )
+    assert (
+        module_reached is case["expected"]["module_reached"]
+    ), f"[{case['id']}] the module must not be reached while the circuit is OPEN"
 
 
 def test_circuit_breaker_half_open_probe() -> None:
@@ -201,9 +200,9 @@ def test_circuit_breaker_half_open_probe() -> None:
         breaker.before(module_id, {}, ctx)
     except CircuitBreakerOpenError:
         probe_allowed = False
-    assert probe_allowed is case["expected"]["probe_call_allowed"], (
-        f"[{case['id']}] HALF_OPEN must admit the first probe"
-    )
+    assert (
+        probe_allowed is case["expected"]["probe_call_allowed"]
+    ), f"[{case['id']}] HALF_OPEN must admit the first probe"
 
     # max_concurrent_probes: COUNT the probes HALF_OPEN actually admits and
     # compare that observation to the fixture. Asserting the fixture's own value
@@ -245,12 +244,12 @@ def test_circuit_breaker_closes_on_success() -> None:
     breaker.before(module_id, {}, ctx)
     breaker.after(module_id, {}, {}, ctx)
 
-    assert breaker.get_state(module_id, caller_id).value == case["expected"]["circuit_state"], (
-        f"[{case['id']}] a successful probe must close the circuit"
-    )
-    assert case["expected"]["event_emitted"] in emitter.event_types, (
-        f"[{case['id']}] expected {case['expected']['event_emitted']!r}, emitted {emitter.event_types}"
-    )
+    assert (
+        breaker.get_state(module_id, caller_id).value == case["expected"]["circuit_state"]
+    ), f"[{case['id']}] a successful probe must close the circuit"
+    assert (
+        case["expected"]["event_emitted"] in emitter.event_types
+    ), f"[{case['id']}] expected {case['expected']['event_emitted']!r}, emitted {emitter.event_types}"
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +273,7 @@ def test_tracing_noop_without_otel() -> None:
     expected = case["expected"]
     # Driver-input precondition (NOT an SDK expectation): this driver models the
     # no-OpenTelemetry environment the case names.
-    assert case["input"]["otel_available"] is False, (
-        f"[{case['id']}] this driver only models otel_available=false"
-    )
+    assert case["input"]["otel_available"] is False, f"[{case['id']}] this driver only models otel_available=false"
 
     otel_before = {name for name in sys.modules if name.startswith("opentelemetry")}
     middleware = TracingMiddleware(exporter=InMemoryExporter())
@@ -289,17 +286,17 @@ def test_tracing_noop_without_otel() -> None:
     except Exception as exc:  # noqa: BLE001 - the fixture asserts nothing is raised
         error = exc
 
-    assert (error is not None) is expected["error_raised"], (
-        f"[{case['id']}] tracing must not raise when OpenTelemetry is absent; got {error!r}"
-    )
+    assert (error is not None) is expected[
+        "error_raised"
+    ], f"[{case['id']}] tracing must not raise when OpenTelemetry is absent; got {error!r}"
     # Bind both remaining expectations to OBSERVATIONS. These used to read
     # `assert expected["execution_continues"] is True` / `... span_created is
     # False`, which restate the fixture and cannot fail on SDK behaviour
     # (apcore-python#32 / aiperceivable/apcore#81).
     execution_continued = error is None
-    assert execution_continued is expected["execution_continues"], (
-        f"[{case['id']}] execution must continue with no OpenTelemetry present; got {error!r}"
-    )
+    assert (
+        execution_continued is expected["execution_continues"]
+    ), f"[{case['id']}] execution must continue with no OpenTelemetry present; got {error!r}"
     otel_after = {name for name in sys.modules if name.startswith("opentelemetry")}
     otel_span_created = bool(otel_after - otel_before)
     assert otel_span_created is expected["span_created"], (
@@ -322,8 +319,7 @@ def _resolve_inspect_method(case: dict[str, Any], name: str) -> Any:
     attr = name.split(".")[-1]
     method = getattr(inspect, attr, None)
     assert callable(method), (
-        f"[{case['id']}] the fixture names detection method {name!r}, which `inspect` "
-        f"does not expose"
+        f"[{case['id']}] the fixture names detection method {name!r}, which `inspect` " f"does not expose"
     )
     return method
 
@@ -334,8 +330,7 @@ def test_async_detection_coroutine_function() -> None:
     # Driver-applicability precondition (NOT an SDK expectation): a case
     # retargeted at another language must not keep silently passing here.
     assert case["input"]["language"] == "python", (
-        f"[{case['id']}] this is the Python driver; case declares "
-        f"language={case['input']['language']!r}"
+        f"[{case['id']}] this is the Python driver; case declares " f"language={case['input']['language']!r}"
     )
     # RESOLVE the detector the fixture names instead of asserting its name
     # against a literal copy of itself — using the value is what makes a fixture
@@ -348,18 +343,16 @@ def test_async_detection_coroutine_function() -> None:
     def sync_handler() -> None:
         return None
 
-    assert detect(async_handler) is expected["is_async"], (
-        f"[{case['id']}] {case['input']['detection_method']} must detect an async def handler"
-    )
-    assert detect(sync_handler) is False, (
-        f"[{case['id']}] {case['input']['detection_method']} must reject a plain def handler"
-    )
+    assert (
+        detect(async_handler) is expected["is_async"]
+    ), f"[{case['id']}] {case['input']['detection_method']} must detect an async def handler"
+    assert (
+        detect(sync_handler) is False
+    ), f"[{case['id']}] {case['input']['detection_method']} must reject a plain def handler"
 
     wrong = expected["incorrect_method_result"]
     detect_wrong = _resolve_inspect_method(case, wrong["method"])
-    assert detect_wrong(async_handler) is wrong["result_on_uncalled_function"], (
-        f"[{case['id']}] {wrong['note']}"
-    )
+    assert detect_wrong(async_handler) is wrong["result_on_uncalled_function"], f"[{case['id']}] {wrong['note']}"
 
     coroutine = async_handler()
     try:

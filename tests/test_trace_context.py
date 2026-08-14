@@ -425,8 +425,8 @@ class TestInjectParentIdOverride:
             TraceContext.inject(ctx, parent_id=bad_parent_id)
         raised = excinfo.value
         assert isinstance(raised, InvalidParentIdError)
-        assert raised.code == ErrorCodes.INVALID_PARENT_ID, (
-            f"the wire code is the cross-SDK contract; got {raised.code!r}"
-        )
+        assert (
+            raised.code == ErrorCodes.INVALID_PARENT_ID
+        ), f"the wire code is the cross-SDK contract; got {raised.code!r}"
         assert raised.details["parent_id"] == bad_parent_id
         assert repr(bad_parent_id) in str(raised)

@@ -217,9 +217,7 @@ class TestApprovalGateSync:
         assert req.tags == ["admin"]
         assert req.context.trace_id is not None
 
-    def test_approval_token_is_consumed_without_mutating_the_callers_dict(
-        self, registry: Registry
-    ) -> None:
+    def test_approval_token_is_consumed_without_mutating_the_callers_dict(self, registry: Registry) -> None:
         """_approval_token drives check_approval and never reaches the module.
 
         PROTOCOL_SPEC §7.4 requires the key to be gone "before passing to

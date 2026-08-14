@@ -101,8 +101,7 @@ def _single_class_cases() -> list[dict[str, Any]]:
 def test_class_name_to_segment(case: dict[str, Any]) -> None:
     got = class_name_to_segment(case["input"]["class_name"])
     assert got == case["expected"]["class_segment"], (
-        f"[{case['id']}] {case['input']['class_name']!r} → {got!r}, "
-        f"expected {case['expected']['class_segment']!r}"
+        f"[{case['id']}] {case['input']['class_name']!r} → {got!r}, " f"expected {case['expected']['class_segment']!r}"
     )
 
 
@@ -116,30 +115,26 @@ def test_multi_class_discovery(case: dict[str, Any], tmp_path: Path) -> None:
     if expected.get("error"):
         with pytest.raises(ModuleIdConflictError) as excinfo:
             discover_multi_class(path, extensions_root=extensions_root)
-        assert excinfo.value.code == expected["error"]["code"], (
-            f"[{cid}] error code: got {excinfo.value.code!r}, expected {expected['error']['code']!r}"
-        )
+        assert (
+            excinfo.value.code == expected["error"]["code"]
+        ), f"[{cid}] error code: got {excinfo.value.code!r}, expected {expected['error']['code']!r}"
         conflicting = expected["error"]["conflicting_segment"]
-        assert conflicting in str(excinfo.value), (
-            f"[{cid}] the conflict must name the colliding segment {conflicting!r}; got: {excinfo.value}"
-        )
-        assert expected["module_ids"] == [], (
-            f"[{cid}] a conflict must register nothing from the file"
-        )
+        assert conflicting in str(
+            excinfo.value
+        ), f"[{cid}] the conflict must name the colliding segment {conflicting!r}; got: {excinfo.value}"
+        assert expected["module_ids"] == [], f"[{cid}] a conflict must register nothing from the file"
         return
 
     assert expected["error"] is None
     result = discover_multi_class(path, extensions_root=extensions_root)
     ids = sorted(module_id for module_id, _ in result)
-    assert ids == sorted(expected["module_ids"]), (
-        f"[{cid}] derived module ids {ids}, expected {sorted(expected['module_ids'])}"
-    )
+    assert ids == sorted(
+        expected["module_ids"]
+    ), f"[{cid}] derived module ids {ids}, expected {sorted(expected['module_ids'])}"
 
     if expected.get("grammar_valid"):
         for module_id in ids:
-            assert _CANONICAL_ID_RE.match(module_id), (
-                f"[{cid}] {module_id!r} violates the canonical_id grammar"
-            )
+            assert _CANONICAL_ID_RE.match(module_id), f"[{cid}] {module_id!r} violates the canonical_id grammar"
 
 
 @pytest.mark.parametrize("case", _single_class_cases(), ids=lambda c: c["id"])
@@ -179,8 +174,7 @@ def test_single_class_mode_never_suffixes_base_id(case: dict[str, Any], tmp_path
         f"{base_id!r}; the SDK derived {derived_base_id!r} for {case['input']['file_path']!r}"
     )
     assert "." in derived_base_id and not derived_base_id.startswith(f"{base_id}."), (
-        f"[{cid}] {derived_base_id!r} must be the bare base_id, never suffixed with a "
-        f"class segment"
+        f"[{cid}] {derived_base_id!r} must be the bare base_id, never suffixed with a " f"class segment"
     )
 
     registry = Registry(extensions_dir=str(extensions_root))
@@ -188,9 +182,9 @@ def test_single_class_mode_never_suffixes_base_id(case: dict[str, Any], tmp_path
     registered = sorted(registry.module_ids)
 
     for module_id in registered:
-        assert not module_id.startswith(f"{base_id}."), (
-            f"[{cid}] multi_class is disabled, so {module_id!r} must not carry a class segment"
-        )
+        assert not module_id.startswith(
+            f"{base_id}."
+        ), f"[{cid}] multi_class is disabled, so {module_id!r} must not carry a class segment"
 
     if registered == expected_ids:
         return  # ignore-the-second-class branch
@@ -203,15 +197,15 @@ def test_single_class_mode_never_suffixes_base_id(case: dict[str, Any], tmp_path
     )
     with pytest.raises(ModuleLoadError) as excinfo:
         resolve_entry_point(path)
-    assert "Ambiguous entry point" in str(excinfo.value), (
-        f"[{cid}] the error branch must report the ambiguity; got: {excinfo.value}"
-    )
+    assert "Ambiguous entry point" in str(
+        excinfo.value
+    ), f"[{cid}] the error branch must report the ambiguity; got: {excinfo.value}"
 
 
 def test_every_fixture_case_is_dispatched() -> None:
     """No case may fall between the three dispatch predicates."""
     dispatched = {c["id"] for c in _segment_cases() + _multi_class_cases() + _single_class_cases()}
     all_ids = {c["id"] for c in CASES}
-    assert dispatched == all_ids, (
-        f"multi_module_discovery.json cases no dispatch predicate matches: {sorted(all_ids - dispatched)}"
-    )
+    assert (
+        dispatched == all_ids
+    ), f"multi_module_discovery.json cases no dispatch predicate matches: {sorted(all_ids - dispatched)}"

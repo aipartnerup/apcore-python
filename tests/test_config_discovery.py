@@ -183,9 +183,7 @@ class TestConfigFileEnvVarIsNotAnOverride:
             if name.startswith("APCORE_"):
                 monkeypatch.delenv(name, raising=False)
 
-    def test_legacy_mode_declares_exactly_the_file_keys(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_legacy_mode_declares_exactly_the_file_keys(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._clear_apcore_env(monkeypatch)
         config_file = tmp_path / "custom.yaml"
         config_file.write_text("version: '1.0.0'\nproject:\n  name: demo\n")

@@ -115,9 +115,7 @@ _BARE_ASSERTION_KEYWORDS = (
 )
 
 
-def _bare_assertion_schema(
-    schema: dict[str, Any], carried: dict[str, Any] | None
-) -> dict[str, Any] | None:
+def _bare_assertion_schema(schema: dict[str, Any], carried: dict[str, Any] | None) -> dict[str, Any] | None:
     """Build the §6/§10.3 sub-schema a `type`-less position has no annotation for.
 
     At a position that declares a `type`, every keyword below is expressed
@@ -367,9 +365,7 @@ def _make_schema_assertion(
         raise SchemaParseError(message=f"Invalid schema for keyword(s) {sorted(sub_schema)}: {exc.message}") from exc
 
     validator = (
-        Draft202012Validator(sub_schema)
-        if registry is None
-        else Draft202012Validator(sub_schema, registry=registry)
+        Draft202012Validator(sub_schema) if registry is None else Draft202012Validator(sub_schema, registry=registry)
     )
 
     def assert_sub_schema(value: Any) -> Any:
@@ -722,18 +718,14 @@ class SchemaLoader:
         # presence and array positions, both of which conversion erases.
         applicators = _applicator_assertion_schema(prop_schema)
         if applicators is not None:
-            python_type = Annotated[
-                python_type, BeforeValidator(_make_schema_assertion(applicators, plain_data=True))
-            ]
+            python_type = Annotated[python_type, BeforeValidator(_make_schema_assertion(applicators, plain_data=True))]
 
         # The §6/§10.3 keywords a `type`-less position has no annotation to carry.
         # `before` for the same reason as the applicators, and because the
         # annotation there is `Any` — there is nothing for conversion to hand over.
         bare = _bare_assertion_schema(prop_schema, applicators)
         if bare is not None:
-            python_type = Annotated[
-                python_type, BeforeValidator(_make_schema_assertion(bare, plain_data=True))
-            ]
+            python_type = Annotated[python_type, BeforeValidator(_make_schema_assertion(bare, plain_data=True))]
 
         return python_type, self._build_field(prop_schema, is_array=is_array)
 
@@ -884,9 +876,7 @@ class SchemaLoader:
             annotation = dict[str, value_type]  # type: ignore[valid-type]
         return _with_property_count(annotation, prop_schema)
 
-    def _handle_array(
-        self, prop_schema: dict[str, Any], prop_name: str, parent_name: str, root: dict[str, Any]
-    ) -> Any:
+    def _handle_array(self, prop_schema: dict[str, Any], prop_name: str, parent_name: str, root: dict[str, Any]) -> Any:
         """Handle array type schemas."""
         # With a `prefixItems` sibling, `items` describes only the positions past
         # the prefix (§10.3.1.2); `list[T]` would apply it to the tuple head too,
@@ -936,18 +926,14 @@ class SchemaLoader:
 
         applicators = _applicator_assertion_schema(schema)
         if applicators is not None:
-            annotation = Annotated[
-                annotation, BeforeValidator(_make_schema_assertion(applicators, plain_data=True))
-            ]
+            annotation = Annotated[annotation, BeforeValidator(_make_schema_assertion(applicators, plain_data=True))]
 
         # §17.3: the §6/§10.3 keywords hold "inside `items` … exactly as at the
         # top level", so a type-less element schema gets the same delegation a
         # type-less property does.
         bare = _bare_assertion_schema(schema, applicators)
         if bare is not None:
-            annotation = Annotated[
-                annotation, BeforeValidator(_make_schema_assertion(bare, plain_data=True))
-            ]
+            annotation = Annotated[annotation, BeforeValidator(_make_schema_assertion(bare, plain_data=True))]
         return annotation
 
     def _handle_all_of(

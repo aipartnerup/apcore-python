@@ -156,9 +156,7 @@ class TestNestedRetryBlockSemantics:
 
     def test_flat_retry_count_still_honoured_for_webhook(self) -> None:
         """Deprecated alias: retry_count counted retries AFTER the first attempt."""
-        sub = create_subscriber_from_config(
-            {"type": "webhook", "url": "https://example.com/hook", "retry_count": 5}
-        )
+        sub = create_subscriber_from_config({"type": "webhook", "url": "https://example.com/hook", "retry_count": 5})
         assert sub.retry.max_attempts == 6
 
     def test_nested_block_wins_over_flat_retry_count(self) -> None:
@@ -248,10 +246,6 @@ class TestDeclaredPolicyTakesEffect:
             async def on_event(self, event: ApCoreEvent) -> None:
                 await asyncio.sleep(0)
 
-        register_subscriber_type(
-            "custom_sink", lambda cfg: _CustomSink(_parse_retry_config(cfg))
-        )
-        sub = create_subscriber_from_config(
-            {"type": "custom_sink", "retry": NON_DEFAULT_RETRY}
-        )
+        register_subscriber_type("custom_sink", lambda cfg: _CustomSink(_parse_retry_config(cfg)))
+        sub = create_subscriber_from_config({"type": "custom_sink", "retry": NON_DEFAULT_RETRY})
         _assert_non_default_policy(sub.retry)

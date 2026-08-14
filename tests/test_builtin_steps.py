@@ -485,9 +485,7 @@ class TestModuleBoundaryDoesNotCoerceTypes:
         from apcore.registry.registry import _DictSchemaAdapter
 
         module = FakeModule(
-            input_schema=_DictSchemaAdapter(
-                {"type": "object", "properties": {"a": {"type": "integer"}}}
-            )
+            input_schema=_DictSchemaAdapter({"type": "object", "properties": {"a": {"type": "integer"}}})
         )
         ctx = _make_ctx(inputs={"a": "42"}, module=module)
         result = await BuiltinInputValidation().execute(ctx)
@@ -703,9 +701,7 @@ class TestPerModuleResourceTimeout:
             ("annotations", {"annotations": None}),
         ],
     )
-    async def test_negative_timeout_is_invalid_input(
-        self, case: str, module_kwargs: dict[str, Any]
-    ) -> None:
+    async def test_negative_timeout_is_invalid_input(self, case: str, module_kwargs: dict[str, Any]) -> None:
         if case == "annotations":
             module_kwargs = {"annotations": self._annotations({"timeout": -1})}
         module = self.SlowModule(**module_kwargs)

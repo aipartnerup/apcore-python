@@ -91,15 +91,15 @@ def test_reload_path_filter_case(case: dict[str, Any]) -> None:
             error = exc
 
     if "error_code" in expected:
-        assert error is not None, (
-            f"[{cid}] expected error_code {expected['error_code']!r} but execute() returned {result!r}"
-        )
-        assert isinstance(error, ModuleReloadConflictError), (
-            f"[{cid}] expected ModuleReloadConflictError, got {type(error).__name__}: {error}"
-        )
-        assert error.code == expected["error_code"], (
-            f"[{cid}] error code mismatch: got {error.code!r}, expected {expected['error_code']!r}"
-        )
+        assert (
+            error is not None
+        ), f"[{cid}] expected error_code {expected['error_code']!r} but execute() returned {result!r}"
+        assert isinstance(
+            error, ModuleReloadConflictError
+        ), f"[{cid}] expected ModuleReloadConflictError, got {type(error).__name__}: {error}"
+        assert (
+            error.code == expected["error_code"]
+        ), f"[{cid}] error code mismatch: got {error.code!r}, expected {expected['error_code']!r}"
         return
 
     assert error is None, f"[{cid}] execute() raised unexpectedly: {type(error).__name__}: {error}"
@@ -107,9 +107,9 @@ def test_reload_path_filter_case(case: dict[str, Any]) -> None:
         assert expected["error"] is None, f"[{cid}] fixture declares a non-null error this driver cannot express"
 
     if "success" in expected:
-        assert result.get("success") is expected["success"], (
-            f"[{cid}] success mismatch: got {result.get('success')!r}, expected {expected['success']!r}"
-        )
+        assert (
+            result.get("success") is expected["success"]
+        ), f"[{cid}] success mismatch: got {result.get('success')!r}, expected {expected['success']!r}"
 
     # Single reload reports the id in `module_id`; bulk reload reports the list
     # in `reloaded_modules`. Both are compared as a set against the fixture.
@@ -131,6 +131,6 @@ def test_reload_path_filter_case(case: dict[str, Any]) -> None:
     # Non-matching modules must be left registered and untouched.
     survivors = set(case["registered_modules"]) - set(expected["reloaded_modules_set"])
     still_registered = {mid for mid in survivors if registry.get(mid) is not None}
-    assert still_registered == survivors, (
-        f"[{cid}] reload dropped non-matching modules: {sorted(survivors - still_registered)}"
-    )
+    assert (
+        still_registered == survivors
+    ), f"[{cid}] reload dropped non-matching modules: {sorted(survivors - still_registered)}"

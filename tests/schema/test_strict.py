@@ -221,9 +221,7 @@ class TestToStrictSchema:
         """`type: ["object", "null"]` still declares an object schema."""
         schema: dict[str, Any] = {
             "type": "object",
-            "properties": {
-                "inner": {"type": ["object", "null"], "properties": {"k": {"type": "string"}}}
-            },
+            "properties": {"inner": {"type": ["object", "null"], "properties": {"k": {"type": "string"}}}},
             "required": ["inner"],
         }
         result = to_strict_schema(schema)

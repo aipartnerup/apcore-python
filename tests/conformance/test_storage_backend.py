@@ -112,8 +112,7 @@ def _assert_case(case: dict[str, Any], run: _Run) -> None:
     if "raised_error" in expected:
         raised = run.error is not None
         assert raised is expected["raised_error"], (
-            f"[{cid}] raised_error mismatch: got {raised} ({run.error!r}), "
-            f"expected {expected['raised_error']}"
+            f"[{cid}] raised_error mismatch: got {raised} ({run.error!r}), " f"expected {expected['raised_error']}"
         )
     elif run.error is not None:
         raise AssertionError(f"[{cid}] operation raised unexpectedly: {run.error!r}")
@@ -128,9 +127,9 @@ def _assert_case(case: dict[str, Any], run: _Run) -> None:
     if "matched_keys_sorted" in expected:
         assert run.lists, f"[{cid}] fixture expects matched_keys_sorted but no list() op ran"
         got = sorted(key for key, _ in run.lists[-1])
-        assert got == expected["matched_keys_sorted"], (
-            f"[{cid}] list() prefix filter returned {got}, expected {expected['matched_keys_sorted']}"
-        )
+        assert (
+            got == expected["matched_keys_sorted"]
+        ), f"[{cid}] list() prefix filter returned {got}, expected {expected['matched_keys_sorted']}"
 
     for expectation, namespace in (
         ("errors_namespace_value", "errors"),

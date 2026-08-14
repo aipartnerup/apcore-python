@@ -1586,9 +1586,7 @@ class TestCombinatorsOutsideProperties:
         schema = {
             "type": "object",
             "required": ["a"],
-            "properties": {
-                "a": {"type": "array", "items": {"oneOf": [{"type": "integer"}, {"type": "number"}]}}
-            },
+            "properties": {"a": {"type": "array", "items": {"oneOf": [{"type": "integer"}, {"type": "number"}]}}},
         }
         assert not _is_valid(schema, {"a": [3]}, "ItemOneOf1")
         assert _is_valid(schema, {"a": [3.5]}, "ItemOneOf2")
@@ -1625,9 +1623,7 @@ class TestUniqueItemsOverNonScalars:
         assert _is_valid(self.SCHEMA, {"a": [{"k": "x"}, {"k": "y"}]}, "Unique2")
 
     def test_key_order_does_not_make_two_members_distinct(self) -> None:
-        assert not _is_valid(
-            self.SCHEMA, {"a": [{"k": "x", "j": 1}, {"j": 1, "k": "x"}]}, "Unique3"
-        )
+        assert not _is_valid(self.SCHEMA, {"a": [{"k": "x", "j": 1}, {"j": 1, "k": "x"}]}, "Unique3")
 
     def test_nested_arrays_are_compared_by_value(self) -> None:
         schema: dict[str, Any] = {
@@ -1691,9 +1687,7 @@ class TestTypelessSubSchemaKeywords:
             ("multiple_of", {"multipleOf": 3}, 4),
         ],
     )
-    def test_bare_keyword_rejects_a_violating_instance(
-        self, case: str, sub: dict[str, Any], value: Any
-    ) -> None:
+    def test_bare_keyword_rejects_a_violating_instance(self, case: str, sub: dict[str, Any], value: Any) -> None:
         assert not _is_valid(self._wrap(sub), {"v": value}, f"BareReject_{case}")
 
     @pytest.mark.parametrize(
@@ -1713,9 +1707,7 @@ class TestTypelessSubSchemaKeywords:
             ("multiple_of", {"multipleOf": 3}, 9),
         ],
     )
-    def test_bare_keyword_accepts_a_satisfying_instance(
-        self, case: str, sub: dict[str, Any], value: Any
-    ) -> None:
+    def test_bare_keyword_accepts_a_satisfying_instance(self, case: str, sub: dict[str, Any], value: Any) -> None:
         assert _is_valid(self._wrap(sub), {"v": value}, f"BareAccept_{case}")
 
     # ── R2: the keyword is inert on every other instance type ──────────────
@@ -1745,9 +1737,7 @@ class TestTypelessSubSchemaKeywords:
             ("properties_on_string", {"properties": {"a": {"type": "string"}}}, "x"),
         ],
     )
-    def test_bare_keyword_is_inert_on_another_instance_type(
-        self, case: str, sub: dict[str, Any], value: Any
-    ) -> None:
+    def test_bare_keyword_is_inert_on_another_instance_type(self, case: str, sub: dict[str, Any], value: Any) -> None:
         # Not `_is_valid`: `minimum` and `pattern` used to raise a *bare*
         # TypeError out of pydantic's `apply_known_metadata` fallback, which
         # `BuiltinInputValidation` does not catch (it catches only

@@ -197,8 +197,7 @@ class TestExamplesReadmeAccuracy:
                 if f"from modules.{stem}" in source or f"import modules.{stem}" in source:
                     offenders.append(f"{script.name} imports modules.{stem}")
         assert offenders == [], (
-            "examples/README.md says no example imports modules/; update the README "
-            f"if that changed: {offenders}"
+            "examples/README.md says no example imports modules/; update the README " f"if that changed: {offenders}"
         )
 
     def test_every_reference_module_is_exercised_here(self) -> None:

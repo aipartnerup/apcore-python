@@ -160,15 +160,11 @@ def test_case(case_id: str, tmp_path: Path) -> None:
             f"({run.construction_error!r})"
         )
     else:
-        assert not construction_raised, (
-            f"[{case_id}] constructing the store raised: {run.construction_error!r}"
-        )
+        assert not construction_raised, f"[{case_id}] constructing the store raised: {run.construction_error!r}"
 
     if "raised_error" in expected:
         raised = run.error is not None
-        assert raised is expected["raised_error"], (
-            f"[{case_id}] raised_error mismatch: got {raised} ({run.error!r})"
-        )
+        assert raised is expected["raised_error"], f"[{case_id}] raised_error mismatch: got {raised} ({run.error!r})"
     else:
         assert run.error is None, f"[{case_id}] operation raised unexpectedly: {run.error!r}"
 
@@ -181,9 +177,9 @@ def test_case(case_id: str, tmp_path: Path) -> None:
 
     if "first_load_value" in expected:
         assert len(run.gets) >= 1, f"[{case_id}] fixture expects first_get_value but no load() ran"
-        assert run.gets[0] == expected["first_load_value"], (
-            f"[{case_id}] first load() returned {run.gets[0]!r}, expected {expected['first_load_value']!r}"
-        )
+        assert (
+            run.gets[0] == expected["first_load_value"]
+        ), f"[{case_id}] first load() returned {run.gets[0]!r}, expected {expected['first_load_value']!r}"
 
     if "second_instance_load_value" in expected:
         assert len(run.gets) >= 2, f"[{case_id}] fixture expects a second load() this driver did not run"
@@ -203,14 +199,14 @@ def test_case(case_id: str, tmp_path: Path) -> None:
 
     if "get_all_before_save" in expected:
         assert run.loads, f"[{case_id}] fixture expects get_all_before_save but no load() ran"
-        assert run.loads[0] == expected["get_all_before_save"], (
-            f"[{case_id}] a store over a missing path must read as empty, got {run.loads[0]!r}"
-        )
+        assert (
+            run.loads[0] == expected["get_all_before_save"]
+        ), f"[{case_id}] a store over a missing path must read as empty, got {run.loads[0]!r}"
 
     if "path_exists_after_save" in expected:
-        assert path.exists() is expected["path_exists_after_save"], (
-            f"[{case_id}] path_exists_after_save mismatch for {path}"
-        )
+        assert (
+            path.exists() is expected["path_exists_after_save"]
+        ), f"[{case_id}] path_exists_after_save mismatch for {path}"
 
     if "get_all_keys" in expected:
         assert run.loads, f"[{case_id}] fixture expects get_all_keys but no load() ran"
@@ -260,9 +256,9 @@ def test_startup_loads_overrides_after_base_config(tmp_path: Path) -> None:
         )
 
     base_file_modified = base_path.read_bytes() != base_bytes_before
-    assert base_file_modified is expected["base_file_modified"], (
-        f"[{case['id']}] the base config file MUST NOT be rewritten when overrides are applied"
-    )
+    assert (
+        base_file_modified is expected["base_file_modified"]
+    ), f"[{case['id']}] the base config file MUST NOT be rewritten when overrides are applied"
 
 
 def _nest(flat: dict[str, Any]) -> dict[str, Any]:

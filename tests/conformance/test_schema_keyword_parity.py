@@ -74,4 +74,6 @@ class TestKeywordParityFixture:
 
     def test_fixture_case_ids_are_unique(self) -> None:
         ids = [tc["id"] for tc in self._fixture["test_cases"]]
-        assert len(ids) == len(set(ids)), f"duplicate case ids in fixture: {sorted({i for i in ids if ids.count(i) > 1})}"
+        assert len(ids) == len(
+            set(ids)
+        ), f"duplicate case ids in fixture: {sorted({i for i in ids if ids.count(i) > 1})}"

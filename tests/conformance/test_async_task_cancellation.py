@@ -117,9 +117,7 @@ async def test_cancel_during_backoff_stops_further_retries() -> None:
     # "the counter did not move", reading neither ``expected_final_status``
     # nor ``expected_no_attempt_after_cancel``. Both declared values now reach
     # an assertion, so mutating either in the fixture turns this test red.
-    reject_unknown_expectations(
-        FIXTURE_NAME, case, {"expected_final_status", "expected_no_attempt_after_cancel"}
-    )
+    reject_unknown_expectations(FIXTURE_NAME, case, {"expected_final_status", "expected_no_attempt_after_cancel"})
     expected_status = dispatch_or_fail(
         FIXTURE_NAME,
         case["id"],

@@ -314,9 +314,7 @@ def build_strategy_from_config(
         # field that quietly never took effect.
         unknown_entry_keys = [k for k in step_def if k not in _STEP_ENTRY_FIELDS]
         if unknown_entry_keys:
-            raise ConfigurationError(
-                _unknown_step_entry_field_message(step_def.get("name", ""), unknown_entry_keys)
-            )
+            raise ConfigurationError(_unknown_step_entry_field_message(step_def.get("name", ""), unknown_entry_keys))
         after = step_def.get("after")
         before = step_def.get("before")
         if not after and not before:

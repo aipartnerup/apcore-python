@@ -116,12 +116,11 @@ def _assert_parse_time_rejection(case: dict[str, Any]) -> ConfigurationError:
     strategy, raised_at, error = _observe_parse_failure(case)
 
     assert raised_at == case["expected"]["raised_at"], (
-        f"[{case['id']}] must be rejected at {case['expected']['raised_at']!r}, "
-        f"observed {raised_at!r}"
+        f"[{case['id']}] must be rejected at {case['expected']['raised_at']!r}, " f"observed {raised_at!r}"
     )
-    assert (error is not None) is case["expected"]["raises"], (
-        f"[{case['id']}] expected raises={case['expected']['raises']}, got {error!r}"
-    )
+    assert (error is not None) is case["expected"][
+        "raises"
+    ], f"[{case['id']}] expected raises={case['expected']['raises']}, got {error!r}"
     # `deferred_to_first_call`: a build that RETURNS a strategy has deferred the
     # failure to whenever that strategy is first called.
     assert (strategy is not None) is case["expected"]["deferred_to_first_call"], (
@@ -143,9 +142,7 @@ def _assert_message_contains(case: dict[str, Any], message: str) -> None:
     if isinstance(needles, str):
         needles = [needles]
     for needle in needles:
-        assert needle in message, (
-            f"[{case['id']}] error message must name {needle!r}; got: {message}"
-        )
+        assert needle in message, f"[{case['id']}] error message must name {needle!r}; got: {message}"
 
 
 class _NoopStep(BaseStep):
@@ -231,14 +228,14 @@ class TestConfigurableFieldSetIsFour:
         except Exception as exc:  # noqa: BLE001 - the fixture decides whether this may raise
             raised = exc
 
-        assert (raised is not None) is case["expected"]["raises"], (
-            f"[{case['id']}] all four declared fields must be accepted; got {raised!r}"
-        )
+        assert (raised is not None) is case["expected"][
+            "raises"
+        ], f"[{case['id']}] all four declared fields must be accepted; got {raised!r}"
         assert strategy is not None
         strategy_callable = all(callable(getattr(step, "execute", None)) for step in strategy.steps)
-        assert strategy_callable is case["expected"]["strategy_callable"], (
-            f"[{case['id']}] strategy_callable: every step must expose a callable execute()"
-        )
+        assert (
+            strategy_callable is case["expected"]["strategy_callable"]
+        ), f"[{case['id']}] strategy_callable: every step must expose a callable execute()"
 
         # `driver_contract.read_the_field_back_off_the_step`: assert the four
         # values ON THE STEP. `raises: false` alone also passes against an
@@ -252,19 +249,19 @@ class TestConfigurableFieldSetIsFour:
             f"[{case['id']}] the configured step {expected['step_name']!r} is missing from the "
             f"built strategy: {[s.name for s in strategy.steps]}"
         )
-        assert list(step.match_modules or ()) == expected["match_modules"], (
-            f"[{case['id']}] match_modules was accepted but not applied: {step.match_modules!r}"
-        )
-        assert step.ignore_errors == expected["ignore_errors"], (
-            f"[{case['id']}] ignore_errors was accepted but not applied: {step.ignore_errors!r}"
-        )
+        assert (
+            list(step.match_modules or ()) == expected["match_modules"]
+        ), f"[{case['id']}] match_modules was accepted but not applied: {step.match_modules!r}"
+        assert (
+            step.ignore_errors == expected["ignore_errors"]
+        ), f"[{case['id']}] ignore_errors was accepted but not applied: {step.ignore_errors!r}"
         assert step.pure == expected["pure"], (
             f"[{case['id']}] pure was accepted but not applied: {step.pure!r} "
             f"(the built-in default is True, so this only passes if the override landed)"
         )
-        assert step.timeout_ms == expected["timeout_ms"], (
-            f"[{case['id']}] timeout_ms was accepted but not applied: {step.timeout_ms!r}"
-        )
+        assert (
+            step.timeout_ms == expected["timeout_ms"]
+        ), f"[{case['id']}] timeout_ms was accepted but not applied: {step.timeout_ms!r}"
 
     def test_the_configurable_set_is_exactly_four(self) -> None:
         """`driver_contract.configurable_set_is_four` — pin the SET, not just its members.
@@ -279,15 +276,15 @@ class TestConfigurableFieldSetIsFour:
         case = CASES["all_four_configurable_fields_are_accepted"]
         declared = set(_CONFIGURABLE_STEP_FIELDS)
         assert declared == {"match_modules", "ignore_errors", "pure", "timeout_ms"}, (
-            f"$defs/ConfigurableStepFields declares exactly four fields; "
-            f"this SDK declares {sorted(declared)}"
+            f"$defs/ConfigurableStepFields declares exactly four fields; " f"this SDK declares {sorted(declared)}"
         )
-        assert declared == set(case["input"]["yaml"]["pipeline"]["configure"]["input_validation"]), (
-            "the accept case must exercise every configurable field and no others"
-        )
-        assert not declared & {"requires", "provides"}, (
-            "a step's capability contract is declared by its implementation, never by config"
-        )
+        assert declared == set(
+            case["input"]["yaml"]["pipeline"]["configure"]["input_validation"]
+        ), "the accept case must exercise every configurable field and no others"
+        assert not declared & {
+            "requires",
+            "provides",
+        }, "a step's capability contract is declared by its implementation, never by config"
 
 
 class TestStrategyConstructionFailFast:
@@ -318,9 +315,9 @@ class TestStrategyConstructionFailFast:
         )
         assert error is not None
         _assert_message_contains(case, str(error))
-        assert error.step_name == "execute", (
-            f"[{case['id']}] the error must name the dependent step, got {error.step_name!r}"
-        )
+        assert (
+            error.step_name == "execute"
+        ), f"[{case['id']}] the error must name the dependent step, got {error.step_name!r}"
 
     def test_satisfied_requires_constructs_successfully(self) -> None:
         case = CASES["satisfied_requires_constructs_successfully"]
@@ -334,19 +331,19 @@ class TestStrategyConstructionFailFast:
         except Exception as exc:  # noqa: BLE001 - the fixture decides whether this may raise
             raised = exc
 
-        assert (raised is not None) is case["expected"]["raises"], (
-            f"[{case['id']}] a satisfied `requires:` must construct cleanly; got {raised!r}"
-        )
+        assert (raised is not None) is case["expected"][
+            "raises"
+        ], f"[{case['id']}] a satisfied `requires:` must construct cleanly; got {raised!r}"
         assert strategy is not None
-        assert [s.name for s in strategy.steps] == [s["name"] for s in case["input"]["strategy"]["steps"]], (
-            f"[{case['id']}] construction must preserve the declared step order"
-        )
+        assert [s.name for s in strategy.steps] == [
+            s["name"] for s in case["input"]["strategy"]["steps"]
+        ], f"[{case['id']}] construction must preserve the declared step order"
         # `strategy_callable`: every step is runnable, so the strategy can be
         # executed — construction validated cleanly and left nothing deferred.
         strategy_callable = all(callable(getattr(step, "execute", None)) for step in strategy.steps)
-        assert strategy_callable is case["expected"]["strategy_callable"], (
-            f"[{case['id']}] strategy_callable: every step must expose a callable execute()"
-        )
+        assert (
+            strategy_callable is case["expected"]["strategy_callable"]
+        ), f"[{case['id']}] strategy_callable: every step must expose a callable execute()"
 
 
 class TestStepsEntryIsClosed:

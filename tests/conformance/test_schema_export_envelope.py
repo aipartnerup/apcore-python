@@ -65,8 +65,7 @@ def test_export_schema_envelope(case: dict[str, Any]) -> None:
 
     # EXACT key set — a subset check would not catch the extra keys this pins.
     assert sorted(result) == sorted(ENVELOPE_KEYS), (
-        f"{case['id']}: envelope keys are {sorted(result)}, "
-        f"canonical is {sorted(ENVELOPE_KEYS)}"
+        f"{case['id']}: envelope keys are {sorted(result)}, " f"canonical is {sorted(ENVELOPE_KEYS)}"
     )
     assert result == expected
 

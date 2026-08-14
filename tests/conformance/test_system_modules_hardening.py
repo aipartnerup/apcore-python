@@ -78,14 +78,14 @@ def _assert_topological_order(
     the fixture's dependency-free module set and the dependency-bearing case
     below are judged by the same rule.
     """
-    assert sorted(order) == sorted(matched), (
-        f"every matched module must be reloaded exactly once: got {order!r}, expected {matched!r}"
-    )
+    assert sorted(order) == sorted(
+        matched
+    ), f"every matched module must be reloaded exactly once: got {order!r}, expected {matched!r}"
     for dependent, deps in declared_dependencies.items():
         for dep in deps:
-            assert order.index(dep) < order.index(dependent), (
-                f"{dependent} declares a dependency on {dep}, which must reload first; order was {order!r}"
-            )
+            assert order.index(dep) < order.index(
+                dependent
+            ), f"{dependent} declares a dependency on {dep}, which must reload first; order was {order!r}"
     if not declared_dependencies:
         # With no edges, Kahn's sort over a deterministic (sorted) queue has
         # exactly one valid output.
@@ -251,9 +251,9 @@ class TestOverridesLoadedOnStartup:
         registry = Registry()
         register_sys_modules(registry=registry, executor=executor, config=config)
 
-        assert config.get(resolved["key"]) == resolved["value"], (
-            f"{resolved['key']} must resolve to the override value after startup"
-        )
+        assert (
+            config.get(resolved["key"]) == resolved["value"]
+        ), f"{resolved['key']} must resolve to the override value after startup"
 
     def test_base_config_file_is_not_modified(self, tmp_path: Path) -> None:
         """`base_not_modified`: applying overrides MUST NOT write back to the base config.
@@ -292,11 +292,12 @@ class TestOverridesLoadedOnStartup:
         assert config.get(resolved["key"]) == resolved["value"]
         # ...while the base config on disk is untouched.
         base_not_modified = base_file.read_bytes() == base_before
-        assert base_not_modified is expected["base_not_modified"], (
-            f"base config file was rewritten during startup: {base_file.read_text()!r}"
-        )
-        assert yaml.safe_load(base_file.read_text())["executor"]["default_timeout"] == (
-            setup["base_config"][resolved["key"]]
+        assert (
+            base_not_modified is expected["base_not_modified"]
+        ), f"base config file was rewritten during startup: {base_file.read_text()!r}"
+        assert (
+            yaml.safe_load(base_file.read_text())["executor"]["default_timeout"]
+            == (setup["base_config"][resolved["key"]])
         )
 
     def test_missing_overrides_file_does_not_error(self, tmp_path: Path) -> None:
@@ -354,9 +355,9 @@ class TestAuditEntryRecordsActor:
 
         entry = audit_store.query()[0]
         timestamp_present = bool(entry.timestamp) and "T" in entry.timestamp  # ISO 8601
-        assert timestamp_present is expected["timestamp_present"], (
-            f"audit entry timestamp {entry.timestamp!r} is not a present ISO 8601 value"
-        )
+        assert (
+            timestamp_present is expected["timestamp_present"]
+        ), f"audit entry timestamp {entry.timestamp!r} is not a present ISO 8601 value"
 
     def test_audit_entry_has_trace_id(self) -> None:
         """Audit entry contains the trace_id from context."""
@@ -487,9 +488,9 @@ class TestPrometheusUsageExportsCallsTotal:
         start = time.monotonic()
         collector.export_prometheus()
         elapsed_ms = (time.monotonic() - start) * 1000.0
-        assert elapsed_ms < expected["export_within_timeout_ms"], (
-            f"export_prometheus took {elapsed_ms:.1f}ms, budget is {expected['export_within_timeout_ms']}ms"
-        )
+        assert (
+            elapsed_ms < expected["export_within_timeout_ms"]
+        ), f"export_prometheus took {elapsed_ms:.1f}ms, budget is {expected['export_within_timeout_ms']}ms"
 
 
 # ---------------------------------------------------------------------------
@@ -863,9 +864,9 @@ class TestStartupFailOnErrorFalseContinues:
         # Other modules are still registered despite the failure, and the failed
         # one is not.
         remaining_modules_registered = bool(registered) and failure["module_id"] not in registered
-        assert remaining_modules_registered is expected["remaining_modules_registered"], (
-            f"modules registered after the simulated failure: {registered!r}"
-        )
+        assert (
+            remaining_modules_registered is expected["remaining_modules_registered"]
+        ), f"modules registered after the simulated failure: {registered!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -980,12 +981,12 @@ class TestReloadOrderIsTopologicalNotAlphabetical:
         expected = case["expected"]
         alphabetical = expected["alphabetical_order_would_be"]
 
-        assert sorted(case["setup"]["registered_modules"]) == alphabetical, (
-            "alphabetical_order_would_be must be the plain sort of the registered modules"
-        )
-        assert (expected["reload_order_observed"] != alphabetical) is expected["orders_differ"], (
-            "orders_differ must describe whether the topological and alphabetical orders disagree"
-        )
+        assert (
+            sorted(case["setup"]["registered_modules"]) == alphabetical
+        ), "alphabetical_order_would_be must be the plain sort of the registered modules"
+        assert (expected["reload_order_observed"] != alphabetical) is expected[
+            "orders_differ"
+        ], "orders_differ must describe whether the topological and alphabetical orders disagree"
 
     def test_reload_order_observed_is_topological(self, monkeypatch: Any) -> None:
         """`reload_order_observed` — the registry mutations, in order.
@@ -1023,16 +1024,13 @@ class TestReloadOrderIsTopologicalNotAlphabetical:
         assert result["success"] is expected["call_success"]
         observed = expected["reload_order_observed"]
         assert unregistered == observed, (
-            f"modules were unregistered in {unregistered!r}; the declared dependency graph "
-            f"requires {observed!r}"
+            f"modules were unregistered in {unregistered!r}; the declared dependency graph " f"requires {observed!r}"
         )
-        assert reregistered == observed, (
-            f"modules were re-registered in {reregistered!r}, expected {observed!r}"
-        )
+        assert reregistered == observed, f"modules were re-registered in {reregistered!r}, expected {observed!r}"
         if expected["orders_differ"]:
-            assert unregistered != expected["alphabetical_order_would_be"], (
-                "reload order collapsed to the alphabetical order — the dependency graph was ignored"
-            )
+            assert (
+                unregistered != expected["alphabetical_order_would_be"]
+            ), "reload order collapsed to the alphabetical order — the dependency graph was ignored"
 
 
 # ---------------------------------------------------------------------------
@@ -1066,20 +1064,14 @@ class TestFixtureCoverage:
         "startup_fail_on_error_false_continues": "TestStartupFailOnErrorFalseContinues",
         # language=rust — asserted here only as a documented cross-language note.
         "rust_register_returns_result": "TestRustRegisterReturnsResult",
-        "reload_order_is_topological_not_alphabetical": (
-            "TestReloadOrderIsTopologicalNotAlphabetical"
-        ),
+        "reload_order_is_topological_not_alphabetical": ("TestReloadOrderIsTopologicalNotAlphabetical"),
     }
 
     def test_every_canonical_case_is_claimed(self) -> None:
         canonical = set(case_ids(self.FIXTURE))
         claimed = set(self.COVERED)
-        assert canonical - claimed == set(), (
-            f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
-        )
-        assert claimed - canonical == set(), (
-            f"this file claims case(s) {self.FIXTURE} no longer defines"
-        )
+        assert canonical - claimed == set(), f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
+        assert claimed - canonical == set(), f"this file claims case(s) {self.FIXTURE} no longer defines"
 
     def test_every_claimed_class_exists(self) -> None:
         module = sys.modules[__name__]

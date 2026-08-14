@@ -185,9 +185,9 @@ class TestErrorHandling:
         except Exception:  # noqa: BLE001 - the fixture says the error must not escape
             propagated = True
 
-        assert propagated is case["expected"]["error_propagated"], (
-            f"[{case['id']}] error_propagated mismatch: recovery must swallow the step error"
-        )
+        assert (
+            propagated is case["expected"]["error_propagated"]
+        ), f"[{case['id']}] error_propagated mismatch: recovery must swallow the step error"
         assert invoked == case["expected"]["on_step_error_invoked"], (
             f"[{case['id']}] on_step_error invocation: got {invoked}, "
             f"expected {case['expected']['on_step_error_invoked']} (reverse order, first-recovery-wins)"
@@ -283,9 +283,9 @@ class TestErrorHandling:
             f"[{case['id']}] the before_step exception must be carried as the wrapper's cause, "
             f"got {excinfo.value.cause!r}"
         )
-        assert isinstance(getattr(excinfo.value, "original", None), RuntimeError), (
-            f"[{case['id']}] apcore-python additionally exposes it as MiddlewareChainError.original"
-        )
+        assert isinstance(
+            getattr(excinfo.value, "original", None), RuntimeError
+        ), f"[{case['id']}] apcore-python additionally exposes it as MiddlewareChainError.original"
         assert before == case["expected"]["before_step_invoked"], (
             f"[{case['id']}] before_step must stop at the raising middleware: got {before}, "
             f"expected {case['expected']['before_step_invoked']}"
@@ -340,9 +340,7 @@ class TestErrorHandling:
         # setting that MUST NOT apply to a MiddlewareChainError — and is
         # followed by a second step whose non-execution is the load-bearing
         # proof that the recovery was discarded.
-        gated = _RecordingStep(
-            case["input"]["step"], executed, ignore_errors=case["input"]["ignore_errors"]
-        )
+        gated = _RecordingStep(case["input"]["step"], executed, ignore_errors=case["input"]["ignore_errors"])
         following = _RecordingStep(case["input"]["following_step"], executed)
         strategy = ExecutionStrategy("conformance", [gated, following])
         for label in case["input"]["register_order"]:
@@ -393,9 +391,9 @@ class TestErrorHandling:
         # a MiddlewareChainError propagates through it regardless, because a
         # broken middleware chain is not a step failure.
         assert gated.ignore_errors is True, f"[{case['id']}] the fixture requires ignore_errors on the step"
-        assert (raised is not None) is expected["error_propagated"], (
-            f"[{case['id']}] ignore_errors MUST NOT swallow the chain failure; nothing was raised"
-        )
+        assert (raised is not None) is expected[
+            "error_propagated"
+        ], f"[{case['id']}] ignore_errors MUST NOT swallow the chain failure; nothing was raised"
         # Asserted on the WIRE CODE via ModuleError, never on a class name.
         assert isinstance(raised, ModuleError) and raised.code == expected["wrapper_error_code"], (
             f"[{case['id']}] the chain failure must surface as "
@@ -409,9 +407,9 @@ class TestErrorHandling:
             f"[{case['id']}] ignore_errors MUST NOT apply to a MiddlewareChainError: "
             f"ignore_errors={gated.ignore_errors}, raised={raised!r}"
         )
-        assert before == expected["before_step_invoked"], (
-            f"[{case['id']}] before_step invocation: got {before}, expected {expected['before_step_invoked']}"
-        )
+        assert (
+            before == expected["before_step_invoked"]
+        ), f"[{case['id']}] before_step invocation: got {before}, expected {expected['before_step_invoked']}"
         # Every already-entered middleware gets its cleanup call: there is no
         # recovery on this path, so there is nothing to short-circuit on, and
         # short-circuiting would skip mw_a's cleanup for a discarded value.
@@ -496,9 +494,9 @@ class TestErrorHandling:
         except Exception:  # noqa: BLE001 - the fixture says the error must not escape
             propagated = True
 
-        assert propagated is expected["error_propagated"], (
-            f"[{case['id']}] a recovered step body must not propagate its error"
-        )
+        assert (
+            propagated is expected["error_propagated"]
+        ), f"[{case['id']}] a recovered step body must not propagate its error"
         assert errored == expected["on_step_error_invoked"], (
             f"[{case['id']}] first-recovery-wins short-circuits the remaining handlers: "
             f"got {errored}, expected {expected['on_step_error_invoked']}"
@@ -554,9 +552,9 @@ class TestObservationSemantics:
             f"[{case['id']}] async step middleware callbacks must be awaited: "
             f"recorded={recorded}, unawaited warnings={unawaited}"
         )
-        assert (not unawaited) is case["expected"]["no_unawaited_warning"], (
-            f"[{case['id']}] coroutines must be awaited, not created and dropped: {unawaited}"
-        )
+        assert (not unawaited) is case["expected"][
+            "no_unawaited_warning"
+        ], f"[{case['id']}] coroutines must be awaited, not created and dropped: {unawaited}"
 
     async def test_before_step_return_value_is_ignored(self) -> None:
         """A ``before_step`` return value MUST NOT change what the step body sees."""
@@ -583,12 +581,12 @@ class TestObservationSemantics:
         except Exception as exc:  # noqa: BLE001 - the fixture asserts nothing is raised
             raised = exc
 
-        assert (raised is not None) is case["expected"]["error_raised"], (
-            f"[{case['id']}] returning a dict from before_step must not raise; got {raised!r}"
-        )
-        assert invoked == case["expected"]["before_step_invoked"], (
-            f"[{case['id']}] before_step invocation: got {invoked}, expected {case['expected']['before_step_invoked']}"
-        )
+        assert (raised is not None) is case["expected"][
+            "error_raised"
+        ], f"[{case['id']}] returning a dict from before_step must not raise; got {raised!r}"
+        assert (
+            invoked == case["expected"]["before_step_invoked"]
+        ), f"[{case['id']}] before_step invocation: got {invoked}, expected {case['expected']['before_step_invoked']}"
         assert seen and seen[0] == case["expected"]["module_received_inputs"], (
             f"[{case['id']}] before_step observes but does not rewrite: the step body must still see "
             f"{case['expected']['module_received_inputs']!r}, got {seen[0] if seen else None!r}"
@@ -647,9 +645,7 @@ class TestStateOutputs:
                     name,
                     values[name],
                     raises=(
-                        ModuleError(code=raises["code"], message=raises["message"])
-                        if name == error_step
-                        else None
+                        ModuleError(code=raises["code"], message=raises["message"]) if name == error_step else None
                     ),
                 )
                 for name in step_names
@@ -665,12 +661,9 @@ class TestStateOutputs:
 
         # The failing step must actually have failed, or the on_step_error
         # observation below would be vacuously absent rather than asserted.
-        assert raised is not None, (
-            f"[{case['id']}] the {error_step!r} step must fail so on_step_error is observed"
-        )
+        assert raised is not None, f"[{case['id']}] the {error_step!r} step must fail so on_step_error is observed"
         assert ("on_step_error", error_step) in seen_keys, (
-            f"[{case['id']}] on_step_error was never invoked on {error_step!r}; "
-            f"observations: {sorted(seen_keys)}"
+            f"[{case['id']}] on_step_error was never invoked on {error_step!r}; " f"observations: {sorted(seen_keys)}"
         )
 
         assert seen_keys[("before_step", observed_step)] == expected["outputs_keys_in_before_step"], (
@@ -692,9 +685,7 @@ class TestStateOutputs:
         # `current_step_never_present` bound to the OBSERVATION across every
         # hook of every step, not restated from the fixture (apcore-python#32 /
         # aiperceivable/apcore#81).
-        offenders = {
-            (hook, step_name): keys for (hook, step_name), keys in seen_keys.items() if step_name in keys
-        }
+        offenders = {(hook, step_name): keys for (hook, step_name), keys in seen_keys.items() if step_name in keys}
         current_step_never_present = not offenders
         assert current_step_never_present is expected["current_step_never_present"], (
             f"[{case['id']}] the current step MUST NOT appear in state.outputs in any hook; "

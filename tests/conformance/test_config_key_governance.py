@@ -88,8 +88,7 @@ class TestConfigKeySurfaceGovernance:
         expected = CASES["sdk_constraint_table_declares_no_undeclared_key"]["expected"]
         violations = sorted(CONSTRAINT_KEYS - ALLOWED)
         assert violations == expected["violations"], (
-            "_CONSTRAINTS validates keys no canonical schema allows:\n  "
-            + "\n  ".join(violations)
+            "_CONSTRAINTS validates keys no canonical schema allows:\n  " + "\n  ".join(violations)
         )
 
     def test_reproduces_every_canonical_default(self) -> None:
@@ -129,8 +128,7 @@ class TestConfigKeySurfaceGovernance:
         reported against the specific key.
         """
         assert _values_equal(DEFAULT_KEYS[key], CANONICAL[key]), (
-            f"{key}: _DEFAULTS has {DEFAULT_KEYS[key]!r}, "
-            f"defaults.schema.json declares {CANONICAL[key]!r}"
+            f"{key}: _DEFAULTS has {DEFAULT_KEYS[key]!r}, " f"defaults.schema.json declares {CANONICAL[key]!r}"
         )
 
     def test_every_canonical_case_has_a_driver(self) -> None:
@@ -161,9 +159,7 @@ class TestConfigKeySurfaceGovernance:
         declared = FIXTURE["canonical_sources"]
         assert declared, "the fixture must name the schemas it was generated from"
         missing = [src for src in declared if not (spec_repo / src).is_file()]
-        assert missing == [], (
-            f"canonical_sources names schema files that do not exist under {spec_repo}: {missing}"
-        )
+        assert missing == [], f"canonical_sources names schema files that do not exist under {spec_repo}: {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +251,9 @@ class TestUnknownFrameworkKeys:
         config = Config.load(path, validate=True)  # no `_config.strict` in this case
         assert expected["load_succeeds"] is True and expected["error_raised"] is False
 
-        assert config.get(declared[0]) == expected["get_declared_key"], (
-            f"[{mode}] declared key {declared[0]!r} did not survive the load"
-        )
+        assert (
+            config.get(declared[0]) == expected["get_declared_key"]
+        ), f"[{mode}] declared key {declared[0]!r} did not survive the load"
         assert config.get(undeclared[0]) == expected["get_undeclared_key"], (
             f"[{mode}] undeclared key {undeclared[0]!r} was discarded at parse time. "
             "§9.14: with `_config.strict` absent or false the key MUST be retained "
@@ -430,6 +426,6 @@ def test_every_section_the_schema_closes_is_enforced() -> None:
         closed = node.get("additionalProperties") is False or node.get("unevaluatedProperties") is False
         if not closed:
             open_sections.append(section)
-    assert open_sections == [], (
-        f"these sections are enforced as closed but the canonical schema leaves them open: {open_sections}"
-    )
+    assert (
+        open_sections == []
+    ), f"these sections are enforced as closed but the canonical schema leaves them open: {open_sections}"

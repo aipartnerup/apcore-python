@@ -206,9 +206,7 @@ def test_fixture_permanent_failure_emits_dlq_event(fixture_data: dict) -> None:
             assert key in dlq_event.data, f"DLQ event missing required key: {key}"
 
 
-def test_fixture_dlq_event_subscriber_failure_not_retried(
-    fixture_data: dict, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_fixture_dlq_event_subscriber_failure_not_retried(fixture_data: dict, caplog: pytest.LogCaptureFixture) -> None:
     """Case: dlq_event_subscriber_failure_is_not_retried."""
 
     case = next(c for c in fixture_data["test_cases"] if c["id"] == "dlq_event_subscriber_failure_is_not_retried")
@@ -265,9 +263,7 @@ def test_fixture_dlq_event_subscriber_failure_not_retried(
     assert len(error_logs) == expected["error_log_count"], f"{[r.getMessage() for r in error_logs]!r}"
 
 
-def test_fixture_subscriber_id_generated_when_omitted(
-    fixture_data: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fixture_subscriber_id_generated_when_omitted(fixture_data: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     """Case: subscriber_id_sdk_generated_when_omitted.
 
     The generated id has to be observed *on the DLQ events*, which is where the
@@ -305,12 +301,12 @@ def test_fixture_subscriber_id_generated_when_omitted(
     )
 
     dlq_ids = [event.data["subscriber_id"] for event in dlq.received]
-    assert (len(set(dlq_ids)) == len(dlq_ids)) is expected["subscriber_ids_distinct"], (
-        f"DLQ events must carry distinct generated ids, got {dlq_ids!r}"
-    )
-    assert set(dlq_ids) == {s.subscriber_id for s in subscribers}, (
-        "the id on the DLQ event must be the same id the subscriber carries"
-    )
+    assert (len(set(dlq_ids)) == len(dlq_ids)) is expected[
+        "subscriber_ids_distinct"
+    ], f"DLQ events must carry distinct generated ids, got {dlq_ids!r}"
+    assert set(dlq_ids) == {
+        s.subscriber_id for s in subscribers
+    }, "the id on the DLQ event must be the same id the subscriber carries"
 
     pattern = expected["subscriber_ids_pattern"]
     for subscriber_id in dlq_ids:
@@ -444,9 +440,7 @@ COVERED: dict[str, str] = {
     "declared_retry_policy_is_read_for_every_subscriber_type": (
         "test_fixture_declared_retry_policy_is_read_for_every_subscriber_type"
     ),
-    "nested_retry_block_wins_over_legacy_retry_count": (
-        "test_fixture_nested_retry_block_wins_over_legacy_retry_count"
-    ),
+    "nested_retry_block_wins_over_legacy_retry_count": ("test_fixture_nested_retry_block_wins_over_legacy_retry_count"),
 }
 
 

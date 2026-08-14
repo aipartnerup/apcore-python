@@ -395,9 +395,7 @@ class _RecordingOnError:
     def after(self, module_id: str, output: dict[str, Any], context: Any) -> dict[str, Any]:
         return output
 
-    def on_error(
-        self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any
-    ) -> dict[str, Any] | None:
+    def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
         self.seen.append(error)
         return {"recovered": True} if self._recover else None
 

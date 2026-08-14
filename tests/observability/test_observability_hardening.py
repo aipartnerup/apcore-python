@@ -94,9 +94,9 @@ class TestPluggableStoreDefaultInMemory:
     def test_error_history_default_store_is_inmemory(self) -> None:
         """ErrorHistory() uses the store type the fixture declares."""
         case = _case("pluggable_store_default_inmemory")
-        assert case["input"]["constructor_args"] == {}, (
-            "this driver models the no-argument constructor the fixture describes"
-        )
+        assert (
+            case["input"]["constructor_args"] == {}
+        ), "this driver models the no-argument constructor the fixture describes"
         history = ErrorHistory()
         assert type(history.store).__name__ == case["expected"]["store_type"], (
             f"[{case['id']}] fixture declares store_type "
@@ -276,8 +276,7 @@ class TestErrorHistoryEvictsOldestFirst:
         remaining = history.get_all()
         codes = {e.code for e in remaining}
         assert len(remaining) == expected["total_entries"], (
-            f"[{case['id']}] fixture declares total_entries={expected['total_entries']}, "
-            f"got {len(remaining)}"
+            f"[{case['id']}] fixture declares total_entries={expected['total_entries']}, " f"got {len(remaining)}"
         )
         assert expected["evicted_entry_code"] not in codes, (
             f"[{case['id']}] fixture declares {expected['evicted_entry_code']!r} evicted, "
@@ -322,8 +321,7 @@ class TestErrorFingerprintDedupSameError:
         entries = history.get(params["records"][0]["module_id"])
         assert len(entries) == expected["total_entries"]
         assert entries[0].count == expected["entry_count"], (
-            f"[{case['id']}] fixture declares entry_count={expected['entry_count']}, "
-            f"got {entries[0].count}"
+            f"[{case['id']}] fixture declares entry_count={expected['entry_count']}, " f"got {entries[0].count}"
         )
 
     def test_fingerprint_stored_on_entry(self) -> None:
@@ -357,10 +355,7 @@ class TestErrorFingerprintNormalization:
         """Fingerprint equality across the declared messages matches the fixture."""
         case = _case("error_fingerprint_normalization")
         params, expected = case["input"], case["expected"]
-        fingerprints = [
-            compute_fingerprint(params["code"], params["module_id"], m)
-            for m in params["messages"]
-        ]
+        fingerprints = [compute_fingerprint(params["code"], params["module_id"], m) for m in params["messages"]]
         equal = len(set(fingerprints)) == 1
         assert equal is expected["fingerprints_equal"], (
             f"[{case['id']}] fixture declares fingerprints_equal="
@@ -410,10 +405,7 @@ class TestFingerprintDifferentErrorsNoCollision:
         """Fingerprint equality across the declared entries matches the fixture."""
         case = _case("fingerprint_different_errors_no_collision")
         params, expected = case["input"], case["expected"]
-        fingerprints = [
-            compute_fingerprint(e["code"], e["module_id"], e["message"])
-            for e in params["entries"]
-        ]
+        fingerprints = [compute_fingerprint(e["code"], e["module_id"], e["message"]) for e in params["entries"]]
         equal = len(set(fingerprints)) == 1
         assert equal is expected["fingerprints_equal"], (
             f"[{case['id']}] fixture declares fingerprints_equal="
@@ -470,8 +462,7 @@ def _assert_redaction_case(case_id: str) -> None:
 
     record = json.loads(buf.getvalue().strip())
     assert record["extra"]["inputs"] == expected["logged_inputs"], (
-        f"[{case_id}] fixture declares logged_inputs={expected['logged_inputs']}, "
-        f"got {record['extra']['inputs']}"
+        f"[{case_id}] fixture declares logged_inputs={expected['logged_inputs']}, " f"got {record['extra']['inputs']}"
     )
 
     # Correlation fields must SURVIVE redaction — present and carrying the
@@ -568,27 +559,20 @@ def _assert_prometheus_text(case_id: str, output: str, required: list[str]) -> N
     lines, and at least one sample line.
     """
     for name in required:
-        assert f"# HELP {name}" in output, (
-            f"[{case_id}] prometheus_text output must carry a HELP line for {name!r}"
-        )
-        assert f"# TYPE {name} " in output, (
-            f"[{case_id}] prometheus_text output must carry a TYPE line for {name!r}"
-        )
+        assert f"# HELP {name}" in output, f"[{case_id}] prometheus_text output must carry a HELP line for {name!r}"
+        assert f"# TYPE {name} " in output, f"[{case_id}] prometheus_text output must carry a TYPE line for {name!r}"
     samples = [
         line
         for line in output.splitlines()
         if line and not line.startswith("#") and any(line.startswith(n) for n in required)
     ]
-    assert samples, (
-        f"[{case_id}] prometheus_text output carried no sample line for any of {required}"
-    )
+    assert samples, f"[{case_id}] prometheus_text output carried no sample line for any of {required}"
 
 
 #: fixture ``expected.format`` -> the check that makes it observable. A
 #: dispatch with no ``else`` would let an unrecognised format skip the
 #: assertion entirely (apcore#93).
 _EXPORT_FORMAT_CHECKS: dict[str, Any] = {"prometheus_text": _assert_prometheus_text}
-
 
 
 class TestPrometheusFormatIncludesRequiredMetrics:
@@ -682,12 +666,8 @@ class TestFixtureCoverage:
     def test_every_canonical_case_is_claimed(self) -> None:
         canonical = set(case_ids(self.FIXTURE))
         claimed = set(self.COVERED)
-        assert canonical - claimed == set(), (
-            f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
-        )
-        assert claimed - canonical == set(), (
-            f"this file claims case(s) {self.FIXTURE} no longer defines"
-        )
+        assert canonical - claimed == set(), f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
+        assert claimed - canonical == set(), f"this file claims case(s) {self.FIXTURE} no longer defines"
 
     def test_every_claimed_class_exists(self) -> None:
         module = sys.modules[__name__]

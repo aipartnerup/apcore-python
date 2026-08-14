@@ -48,6 +48,7 @@ from .canonical_fixtures import load_fixture
 FIXTURE = load_fixture("event_naming.json")
 CASES: dict[str, dict[str, Any]] = {tc["id"]: tc for tc in FIXTURE["test_cases"]}
 
+
 class _RecordingEmitter:
     """Captures every emitted event instead of fanning out to a thread pool."""
 
@@ -156,13 +157,11 @@ def _assert_data_contains(case_id: str, event: ApCoreEvent, expected: dict[str, 
         if key == "module_id":
             observed = event.data.get("module_id", event.module_id)
         else:
-            assert key in event.data, (
-                f"[{case_id}] {event.event_type} payload is missing {key!r}; got keys {sorted(event.data)}"
-            )
+            assert (
+                key in event.data
+            ), f"[{case_id}] {event.event_type} payload is missing {key!r}; got keys {sorted(event.data)}"
             observed = event.data[key]
-        assert observed == value, (
-            f"[{case_id}] {event.event_type} payload {key}: got {observed!r}, expected {value!r}"
-        )
+        assert observed == value, f"[{case_id}] {event.event_type} payload {key}: got {observed!r}, expected {value!r}"
 
 
 def _assert_data_at_least(case_id: str, event: ApCoreEvent, expected: dict[str, Any]) -> None:
@@ -173,16 +172,15 @@ def _assert_data_at_least(case_id: str, event: ApCoreEvent, expected: dict[str, 
     pin apcore-python's bucket choice rather than the spec's requirement.
     """
     for key, floor in expected.items():
-        assert key in event.data, (
-            f"[{case_id}] {event.event_type} payload is missing {key!r}; got keys {sorted(event.data)}"
-        )
+        assert (
+            key in event.data
+        ), f"[{case_id}] {event.event_type} payload is missing {key!r}; got keys {sorted(event.data)}"
         observed = event.data[key]
-        assert isinstance(observed, (int, float)) and not isinstance(observed, bool), (
-            f"[{case_id}] {event.event_type} payload {key}: expected a number, got {observed!r}"
-        )
+        assert isinstance(observed, (int, float)) and not isinstance(
+            observed, bool
+        ), f"[{case_id}] {event.event_type} payload {key}: expected a number, got {observed!r}"
         assert observed >= floor, (
-            f"[{case_id}] {event.event_type} payload {key}: got {observed!r}, "
-            f"expected at least {floor!r}"
+            f"[{case_id}] {event.event_type} payload {key}: got {observed!r}, " f"expected at least {floor!r}"
         )
 
 
@@ -201,8 +199,7 @@ def _assert_not_emitted(case_id: str, emitted_types: list[str], forbidden: list[
     )
     leaked = sorted(set(emitted_types) & set(forbidden))
     assert not leaked, (
-        f"[{case_id}] these pre-canonical names MUST NOT be emitted but were: {leaked}. "
-        f"Emitted: {emitted_types}"
+        f"[{case_id}] these pre-canonical names MUST NOT be emitted but were: {leaked}. " f"Emitted: {emitted_types}"
     )
 
 

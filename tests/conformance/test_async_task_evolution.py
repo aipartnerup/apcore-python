@@ -122,9 +122,9 @@ async def test_custom_store_injected() -> None:
     manager = AsyncTaskManager(executor=_StubExecutor(), store=store)
 
     assert manager._store is store, f"[{case['id']}] the injected store instance must be used as-is"
-    assert type(manager._store).__name__ == case["expected"]["store_type"], (
-        f"[{case['id']}] store_type mismatch: got {type(manager._store).__name__}"
-    )
+    assert (
+        type(manager._store).__name__ == case["expected"]["store_type"]
+    ), f"[{case['id']}] store_type mismatch: got {type(manager._store).__name__}"
 
 
 async def test_task_store_save_and_get() -> None:
@@ -185,9 +185,9 @@ async def test_retry_scheduled_on_failure() -> None:
         f"[{case['id']}] a task awaiting retry must be {expected['status_after_first_failure']!r}, "
         f"not FAILED; got {info.status.value!r}"
     )
-    assert config.compute_delay_ms(0) == expected["next_retry_delay_ms"], (
-        f"[{case['id']}] the first retry delay must be {expected['next_retry_delay_ms']}ms"
-    )
+    assert (
+        config.compute_delay_ms(0) == expected["next_retry_delay_ms"]
+    ), f"[{case['id']}] the first retry delay must be {expected['next_retry_delay_ms']}ms"
 
     await manager.shutdown()
 
@@ -225,12 +225,12 @@ async def test_max_retries_exhausted_becomes_failed() -> None:
         f"[{case['id']}] after exhausting retries the status must be {expected['final_status']!r}, "
         f"got {info.status.value!r}"
     )
-    assert info.retry_count == expected["retry_count"], (
-        f"[{case['id']}] retry_count: got {info.retry_count}, expected {expected['retry_count']}"
-    )
-    assert (info.error is not None and info.error != "") is expected["error_populated"], (
-        f"[{case['id']}] the error field must be populated on the terminal FAILED record"
-    )
+    assert (
+        info.retry_count == expected["retry_count"]
+    ), f"[{case['id']}] retry_count: got {info.retry_count}, expected {expected['retry_count']}"
+    assert (info.error is not None and info.error != "") is expected[
+        "error_populated"
+    ], f"[{case['id']}] the error field must be populated on the terminal FAILED record"
     assert executor.calls == expected["retry_count"] + 1, (
         f"[{case['id']}] expected {expected['retry_count'] + 1} attempts "
         f"(initial + {expected['retry_count']} retries), got {executor.calls}"
@@ -251,16 +251,14 @@ async def test_reaper_disabled_by_default() -> None:
     manager = AsyncTaskManager(executor=_StubExecutor(), store=store)
 
     running = manager._reaper_task is not None and not manager._reaper_task.done()
-    assert running is expected["reaper_running"], (
-        f"[{case['id']}] no reaper may run until start_reaper() is called"
-    )
+    assert running is expected["reaper_running"], f"[{case['id']}] no reaper may run until start_reaper() is called"
 
     await asyncio.sleep(0.02)
     task_id = case["stored_expired_tasks"][0]["task_id"]
     still_present = await store.get(task_id) is not None
-    assert still_present is expected["expired_task_still_present"], (
-        f"[{case['id']}] with no reaper running, the expired task must remain in the store"
-    )
+    assert (
+        still_present is expected["expired_task_still_present"]
+    ), f"[{case['id']}] with no reaper running, the expired task must remain in the store"
 
 
 async def _sweep(case: dict[str, Any], now: float) -> InMemoryTaskStore:
@@ -276,13 +274,9 @@ async def _sweep(case: dict[str, Any], now: float) -> InMemoryTaskStore:
 async def _assert_sweep(case: dict[str, Any], store: InMemoryTaskStore) -> None:
     expected = case["expected"]
     for task_id in expected["deleted_task_ids"]:
-        assert await store.get(task_id) is None, (
-            f"[{case['id']}] {task_id!r} is past the TTL and must be swept"
-        )
+        assert await store.get(task_id) is None, f"[{case['id']}] {task_id!r} is past the TTL and must be swept"
     for task_id in expected["remaining_task_ids"]:
-        assert await store.get(task_id) is not None, (
-            f"[{case['id']}] {task_id!r} must survive the sweep"
-        )
+        assert await store.get(task_id) is not None, f"[{case['id']}] {task_id!r} must survive the sweep"
 
 
 async def test_reaper_deletes_expired_tasks() -> None:

@@ -89,9 +89,9 @@ class TestUsageExporterFixture:
         expected = case["expected"]
 
         exporter = NoopUsageExporter()
-        assert isinstance(exporter, UsageExporter), (
-            f"[{case['id']}] NoopUsageExporter must satisfy the UsageExporter protocol"
-        )
+        assert isinstance(
+            exporter, UsageExporter
+        ), f"[{case['id']}] NoopUsageExporter must satisfy the UsageExporter protocol"
 
         observed: list[Any] = []
         errors: list[str] = []
@@ -109,12 +109,10 @@ class TestUsageExporterFixture:
             except Exception as exc:  # noqa: BLE001 - the fixture asserts no errors escape
                 errors.append(f"{type(exc).__name__}: {exc}")
 
-        assert observed == expected["calls_observed"], (
-            f"[{case['id']}] NoopUsageExporter must have no observable side effects"
-        )
-        assert shutdown_completed is expected["shutdown_completed"], (
-            f"[{case['id']}] shutdown_completed mismatch"
-        )
+        assert (
+            observed == expected["calls_observed"]
+        ), f"[{case['id']}] NoopUsageExporter must have no observable side effects"
+        assert shutdown_completed is expected["shutdown_completed"], f"[{case['id']}] shutdown_completed mismatch"
         assert errors == expected["errors"], f"[{case['id']}] unexpected errors: {errors}"
 
     async def test_periodic_usage_exporter_pushes_at_interval(self) -> None:
@@ -150,8 +148,7 @@ class TestUsageExporterFixture:
         needle = expected["each_export_summary_includes"]
         for i, payload in enumerate(recorder.exports):
             assert needle in str(payload), (
-                f"[{case['id']}] export #{i} payload does not include the recorded module "
-                f"{needle!r}: {payload!r}"
+                f"[{case['id']}] export #{i} payload does not include the recorded module " f"{needle!r}: {payload!r}"
             )
 
         # Bound to the OBSERVATION: `assert expected[...] is True` restated the
@@ -186,9 +183,9 @@ class TestUsageExporterFixture:
             except Exception as exc:  # noqa: BLE001 - the fixture asserts no errors escape
                 errors.append(f"{type(exc).__name__}: {exc}")
 
-        assert errors == expected["errors"], (
-            f"[{case['id']}] stop_idempotent: a repeated stop() must not raise, got {errors}"
-        )
+        assert (
+            errors == expected["errors"]
+        ), f"[{case['id']}] stop_idempotent: a repeated stop() must not raise, got {errors}"
         assert recorder.shutdown_count == expected["shutdown_call_count"], (
             f"[{case['id']}] shutdown must run exactly {expected['shutdown_call_count']} time(s) "
             f"across two stop() calls, got {recorder.shutdown_count}"
@@ -197,17 +194,16 @@ class TestUsageExporterFixture:
         # raised nothing and did not re-run shutdown.
         stop_idempotent = not errors and recorder.shutdown_count == expected["shutdown_call_count"]
         assert stop_idempotent is expected["stop_idempotent"], (
-            f"[{case['id']}] stop_idempotent: errors={errors}, "
-            f"shutdown_count={recorder.shutdown_count}"
+            f"[{case['id']}] stop_idempotent: errors={errors}, " f"shutdown_count={recorder.shutdown_count}"
         )
 
         # background_task_terminated: the loop task must actually be gone, not
         # merely unreferenced — a leaked task would keep exporting.
-        assert _live_exporter_tasks() == [], (
-            f"[{case['id']}] background_task_terminated: {_TASK_NAME} still running after stop()"
-        )
+        assert (
+            _live_exporter_tasks() == []
+        ), f"[{case['id']}] background_task_terminated: {_TASK_NAME} still running after stop()"
         before = len(recorder.exports)
         await asyncio.sleep(interval * 3)
-        assert len(recorder.exports) == before, (
-            f"[{case['id']}] export() fired after stop(): {before} → {len(recorder.exports)}"
-        )
+        assert (
+            len(recorder.exports) == before
+        ), f"[{case['id']}] export() fired after stop(): {before} → {len(recorder.exports)}"

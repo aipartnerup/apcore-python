@@ -53,7 +53,6 @@ def _case(case_id: str) -> dict[str, Any]:
     return _CASES[case_id]
 
 
-
 class _ContinueStep(BaseStep):
     async def execute(self, ctx: PipelineContext) -> StepResult:
         return StepResult(action="continue")
@@ -128,9 +127,7 @@ class TestFailFastOnStepError:
         assert params["raises"] is True, f"[{case['id']}] this driver models a raising step"
 
         steps: list[BaseStep] = [
-            _RaisingStep(name, ignore_errors=params["ignore_errors"])
-            if name == raising_name
-            else _ContinueStep(name)
+            _RaisingStep(name, ignore_errors=params["ignore_errors"]) if name == raising_name else _ContinueStep(name)
             for name in executed_names
         ]
         steps.append(_ContinueStep(sentinel))
@@ -143,8 +140,7 @@ class TestFailFastOnStepError:
 
         err = exc_info.value
         assert err.code == expected["error_code"], (
-            f"[{case['id']}] fixture declares error code {expected['error_code']!r}, "
-            f"got {err.code!r}"
+            f"[{case['id']}] fixture declares error code {expected['error_code']!r}, " f"got {err.code!r}"
         )
         assert err.step_name == raising_name
         assert isinstance(err.cause, ValueError)
@@ -152,8 +148,7 @@ class TestFailFastOnStepError:
 
         executed = [s.name for s in err.pipeline_trace.steps if not s.skipped]
         assert executed == executed_names, (
-            f"[{case['id']}] fixture declares steps_executed={executed_names}, "
-            f"pipeline ran {executed}"
+            f"[{case['id']}] fixture declares steps_executed={executed_names}, " f"pipeline ran {executed}"
         )
         stopped = sentinel not in executed
         assert stopped is expected["stopped"], (
@@ -219,9 +214,7 @@ class TestContinueOnIgnoredError:
 
         steps: list[BaseStep] = [
             _TrackingStep("step_before", steps_run),
-            _TrackingRaisingStep(
-                ignored_name, steps_run, ignore_errors=params["ignore_errors"]
-            ),
+            _TrackingRaisingStep(ignored_name, steps_run, ignore_errors=params["ignore_errors"]),
             _TrackingStep(after_name, steps_run),
         ]
         strategy = ExecutionStrategy("test", steps)
@@ -238,8 +231,7 @@ class TestContinueOnIgnoredError:
         stopped = after_name not in steps_run
         continued = after_name in steps_run and trace.success is True
         assert stopped is expected["stopped"], (
-            f"[{case['id']}] fixture declares stopped={expected['stopped']}; steps run "
-            f"were {steps_run}"
+            f"[{case['id']}] fixture declares stopped={expected['stopped']}; steps run " f"were {steps_run}"
         )
         assert continued is expected["continued"], (
             f"[{case['id']}] fixture declares continued={expected['continued']}; steps run "
@@ -296,9 +288,7 @@ class TestReplaceSemanticNoDuplicate:
         name = params["configure_step"]
 
         strategy = _make_simple_strategy(["a", name, "b"])
-        replacements = [
-            _ContinueStep(name, f"replacement {i}") for i in range(params["times"])
-        ]
+        replacements = [_ContinueStep(name, f"replacement {i}") for i in range(params["times"])]
         for replacement in replacements:
             strategy.configure_step(name, replacement)
 
@@ -514,9 +504,7 @@ async def _probe_skip_lookup_cost(step_count: int) -> list[str]:
     strategy = ExecutionStrategy("test", steps)
     index = _CountingIndex(strategy._name_to_idx)
     strategy._name_to_idx = index
-    await PipelineEngine().run(
-        strategy, PipelineContext(module_id="m", inputs={}, context=None)
-    )
+    await PipelineEngine().run(strategy, PipelineContext(module_id="m", inputs={}, context=None))
     return index.lookups
 
 
@@ -530,16 +518,15 @@ async def _assert_o1_step_lookup(case_id: str, step_count: int) -> None:
     a far larger one: constant means the two agree.
     """
     strategy = _make_simple_strategy([f"step_{i}" for i in range(step_count)])
-    assert set(strategy._name_to_idx) == {f"step_{i}" for i in range(step_count)}, (
-        f"[{case_id}] the index must cover every one of the {step_count} steps"
-    )
+    assert set(strategy._name_to_idx) == {
+        f"step_{i}" for i in range(step_count)
+    }, f"[{case_id}] the index must cover every one of the {step_count} steps"
 
     at_declared = await _probe_skip_lookup_cost(step_count)
     at_scale = await _probe_skip_lookup_cost(step_count * 20)
 
     assert at_declared == [f"step_{step_count - 1}"], (
-        f"[{case_id}] resolving a skip_to target must cost exactly one index probe; "
-        f"the engine probed {at_declared}"
+        f"[{case_id}] resolving a skip_to target must cost exactly one index probe; " f"the engine probed {at_declared}"
     )
     assert len(at_scale) == len(at_declared), (
         f"[{case_id}] lookup cost grew with the pipeline: {len(at_declared)} probe(s) at "
@@ -695,12 +682,8 @@ class TestFixtureCoverage:
     def test_every_canonical_case_is_claimed(self) -> None:
         canonical = set(case_ids(self.FIXTURE))
         claimed = set(self.COVERED)
-        assert canonical - claimed == set(), (
-            f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
-        )
-        assert claimed - canonical == set(), (
-            f"this file claims case(s) {self.FIXTURE} no longer defines"
-        )
+        assert canonical - claimed == set(), f"canonical fixture {self.FIXTURE} gained case(s) with no driver here"
+        assert claimed - canonical == set(), f"this file claims case(s) {self.FIXTURE} no longer defines"
 
     def test_every_claimed_class_exists(self) -> None:
         module = sys.modules[__name__]

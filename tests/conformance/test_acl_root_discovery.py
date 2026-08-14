@@ -100,17 +100,17 @@ def test_acl_root_discovery_case(case: dict[str, Any], tmp_path: Path) -> None:
     if "resolved_acl_root" in expected:
         # An unset acl.root must resolve to the documented default rather than
         # to None (which would disable discovery entirely).
-        assert Config.get_default("acl.root") == expected["resolved_acl_root"], (
-            f"[{cid}] the acl.root default must be {expected['resolved_acl_root']!r}"
-        )
+        assert (
+            Config.get_default("acl.root") == expected["resolved_acl_root"]
+        ), f"[{cid}] the acl.root default must be {expected['resolved_acl_root']!r}"
         assert expected["resolved_acl_root"] == DEFAULT_ACL_ROOT
 
     if expected.get("config_valid"):
         # Omitting acl.root must not be a validation error (Rust parity, D-64).
         config = _write_config(tmp_path, case)
-        assert config.get("acl.root", Config.get_default("acl.root")) == expected["resolved_acl_root"], (
-            f"[{cid}] a config omitting acl.root must fall back to the default"
-        )
+        assert (
+            config.get("acl.root", Config.get_default("acl.root")) == expected["resolved_acl_root"]
+        ), f"[{cid}] a config omitting acl.root must fall back to the default"
 
     if "acl_attached" not in expected:
         return
