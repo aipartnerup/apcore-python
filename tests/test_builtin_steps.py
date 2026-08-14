@@ -421,6 +421,43 @@ class TestModuleBoundaryDoesNotCoerceTypes:
         result = await BuiltinInputValidation().execute(ctx)
         assert result.action == "continue"
 
+    @staticmethod
+    def _bool_model(name: str) -> Any:
+        from apcore.config import Config
+        from apcore.schema.loader import SchemaLoader
+
+        return SchemaLoader(Config({})).generate_model(
+            {
+                "type": "object",
+                "properties": {"flag": {"type": "boolean"}},
+                "required": ["flag"],
+            },
+            name,
+        )
+
+    @pytest.mark.parametrize("spelling", ["true", "false", "yes", "0", "True"])
+    async def test_input_boolean_spelled_as_a_string_is_rejected(self, spelling: str) -> None:
+        """R5: the boundary MUST reject a string for a declared `boolean`.
+
+        `"true"` and `"false"` are the two spellings the library-level knob gained
+        in apcore#95, so they are the ones that could have leaked here — the knob
+        and the boundary answering differently for one schema and input is the
+        failure TYPE_MAPPING §11 exists to prevent. The knob lives on
+        `SchemaValidator`, which this path does not construct at all.
+        """
+        module = FakeModule(input_schema=self._bool_model(f"BoundaryBool_{spelling}"))
+        ctx = _make_ctx(inputs={"flag": spelling}, module=module)
+        with pytest.raises(SchemaValidationError):
+            await BuiltinInputValidation().execute(ctx)
+
+    @pytest.mark.parametrize("number", [1, 0])
+    async def test_input_number_for_boolean_is_rejected(self, number: int) -> None:
+        """R5 again, on the numeric side: `1` and `0` are not booleans."""
+        module = FakeModule(input_schema=self._bool_model(f"BoundaryBoolNum_{number}"))
+        ctx = _make_ctx(inputs={"flag": number}, module=module)
+        with pytest.raises(SchemaValidationError):
+            await BuiltinInputValidation().execute(ctx)
+
     async def test_input_zero_fraction_number_is_accepted(self) -> None:
         """§6.1.1: `integer` matches any number with a zero fractional part.
 

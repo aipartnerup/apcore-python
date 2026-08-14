@@ -8,7 +8,7 @@ from pydantic import BaseModel, ValidationError as PydanticValidationError
 
 from apcore.schema.types import SchemaValidationErrorDetail, SchemaValidationResult
 
-__all__ = ["SchemaValidator"]
+__all__ = ["SchemaValidator", "coerce_value"]
 
 _PYDANTIC_TO_CONSTRAINT: dict[str, str] = {
     "missing": "required",
@@ -42,6 +42,74 @@ _EXPECTED_KEYS = (
 )
 
 
+# The only two strings the coercing knob turns into a boolean, and the only two
+# JSON itself uses to spell one (TYPE_MAPPING §11 "What the knob coerces, when it
+# exists", normative as of spec v1.12.0). Case-sensitive: JSON's boolean literals
+# are lowercase, so `"True"` is not one of them.
+_STR_TO_BOOL: dict[str, bool] = {"true": True, "false": False}
+
+
+def coerce_value(value: Any, schema: Any) -> Any:
+    """Rewrite strings toward the type *schema* declares, per TYPE_MAPPING §11.
+
+    This is the coercing knob's pre-pass, and it runs **only** when
+    ``SchemaValidator(coerce_types=True)`` — never on the module-invocation
+    boundary, which calls ``model_validate(strict=True)`` directly and has no
+    ``SchemaValidator`` in its path at all (TYPE_MAPPING §17.3).
+
+    Why here and not in the generated model. The `boolean` guard that rejects
+    `"true"` is `loader._ONLY_BOOL`, a `BeforeValidator` baked into the Pydantic
+    model by `SchemaLoader.generate_model()` — which is built without knowing the
+    knob's value, so the guard cannot consult it. Threading a `coerce` flag
+    through `generate_model` would have worked, at the cost of a second cache key
+    and a second compiled model per schema. Doing it as a validator pre-pass
+    instead puts all three SDKs' coercion at the same layer — this is the twin of
+    `apcore-typescript::coerceValue` and `apcore-rust::coerce_value` — and leaves
+    `_ONLY_BOOL` to keep rejecting `"true"`, `1` and `0` on the strict path, which
+    R5 makes a MUST (apcore#95).
+
+    String → `integer` and string → `number` are deliberately *not* handled here:
+    Pydantic's own lax mode already implements exactly the rows §11 specifies
+    (`"42"` → 42, `"1.5"` → 1.5, `"3.14"` for `integer` rejected), and
+    re-implementing them would give one behaviour two sources of truth.
+
+    Coercion is from a string only, and only toward a type the schema declares:
+    a number is never coerced to a boolean, a boolean never to a number, and
+    nothing is coerced toward `string`. The input is never mutated — containers
+    are rebuilt.
+    """
+    if not isinstance(schema, dict):
+        return value
+
+    if isinstance(value, dict):
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            return {k: coerce_value(v, properties[k]) if k in properties else v for k, v in value.items()}
+        return value
+
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            return [coerce_value(item, items) for item in value]
+        return value
+
+    # `bool` is a subclass of `int`, not of `str`, so this cannot catch one.
+    if isinstance(value, str) and "boolean" in _declared_types(schema):
+        return _STR_TO_BOOL.get(value, value)
+
+    return value
+
+
+def _declared_types(schema: dict[str, Any]) -> tuple[str, ...]:
+    """The `type` keyword as a tuple, whether written as a string or an array."""
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        return (declared,)
+    if isinstance(declared, list):
+        return tuple(t for t in declared if isinstance(t, str))
+    return ()
+
+
 class SchemaValidator:
     """Validates runtime data against Pydantic models and produces apcore-standard error output.
 
@@ -56,6 +124,26 @@ class SchemaValidator:
     It defaults to ``False``, matching the boundary and the other two SDKs.
     Coercion is opt-in: a validator that silently rewrites its input is the wrong
     default for the common case of checking data you already believe is well-formed.
+
+    **What it coerces when enabled** is fixed by TYPE_MAPPING §11 (normative as of
+    spec v1.12.0): offering the knob stays a **MAY**, but an SDK that offers one
+    **MUST** coerce exactly
+
+    ==============  ============  ==============================================
+    from            to            accepted
+    ==============  ============  ==============================================
+    ``string``      ``integer``   entire content parses as an integer — ``"42"``,
+                                  ``"-7"``. ``"3.14"`` MUST NOT be accepted.
+    ``string``      ``number``    entire content parses as a number — ``"1.5"``.
+    ``string``      ``boolean``   exactly ``"true"`` and ``"false"``,
+                                  **case-sensitive**.
+    ==============  ============  ==============================================
+
+    and **MUST NOT** coerce anything else. The boolean row is served by
+    :func:`coerce_value` as a pre-pass; the numeric rows by Pydantic's own lax
+    mode, which already implements them. ``"yes"``, ``"on"``, ``"1"``, ``"0"``,
+    ``"True"`` and the number ``1`` are all rejected for a ``boolean`` in both
+    modes (apcore#95).
     """
 
     def __init__(self, coerce_types: bool = False) -> None:
@@ -76,6 +164,8 @@ class SchemaValidator:
         ``model_validate`` accepts a union on first match and cannot detect
         ``oneOf`` ambiguity, so it is not used for union schemas.
         """
+        data = self._coerce(data, model)
+
         union_result = self._validate_top_level_union(data, model)
         if union_result is not None:
             return union_result
@@ -102,6 +192,24 @@ class SchemaValidator:
                 errors=self._pydantic_error_to_details(e),
                 error_code="SCHEMA_VALIDATION_ERROR",
             )
+
+    def _coerce(self, data: Any, model: type[BaseModel]) -> Any:
+        """Run the §11 coercion pre-pass, or return *data* untouched.
+
+        A no-op unless ``coerce_types=True``, so the strict path — and therefore
+        the module-invocation boundary's answer for the same schema and input —
+        is bit-for-bit what it was before the knob grew a boolean row.
+
+        ``__apcore_source_schema__`` is attached by ``generate_model``; a model
+        built some other way (a hand-written ``BaseModel``) carries no source
+        schema, and coercion is skipped rather than guessed at.
+        """
+        if not self._coerce_types:
+            return data
+        source_schema = getattr(model, "__apcore_source_schema__", None)
+        if not isinstance(source_schema, dict):
+            return data
+        return coerce_value(data, source_schema)
 
     @staticmethod
     def _validate_top_level_union(data: Any, model: type[BaseModel]) -> SchemaValidationResult | None:
@@ -134,7 +242,7 @@ class SchemaValidator:
     def _validate_and_dump(self, data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
         """Validate data and return model_dump(). Raises SchemaValidationError on failure."""
         try:
-            instance = model.model_validate(data, strict=not self._coerce_types)
+            instance = model.model_validate(self._coerce(data, model), strict=not self._coerce_types)
             return instance.model_dump()
         except PydanticValidationError as e:
             result = SchemaValidationResult(valid=False, errors=self._pydantic_error_to_details(e))

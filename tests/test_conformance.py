@@ -809,6 +809,21 @@ def test_schema_validation(
         result.valid == expected_valid
     ), f"schema_validate({case['id']}) valid={result.valid}, expected={expected_valid}, errors={result.errors}"
 
+    # `expected_coerced_value` pins what the value BECOMES, not merely that the
+    # input was accepted. Validity alone cannot tell `"false"` -> False from
+    # `"false"` -> True, and an implementation that coerces every non-empty
+    # string to `True` passes both boolean cases on validity (apcore#95).
+    if "expected_coerced_value" in case:
+        coerced = validator.validate_input(input_data, model)
+        prop_name = next(iter(case["schema"]["properties"]))
+        actual = coerced[prop_name]
+        expected_coerced = case["expected_coerced_value"]
+        assert actual == expected_coerced and type(actual) is type(expected_coerced), (
+            f"schema_validate({case['id']}, coerce_types=True) coerced {prop_name}="
+            f"{actual!r} ({type(actual).__name__}), expected {expected_coerced!r} "
+            f"({type(expected_coerced).__name__})"
+        )
+
     # Verify error path when expected
     if not expected_valid and "expected_error_path" in case:
         error_paths = [e.path for e in result.errors]

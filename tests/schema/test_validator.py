@@ -313,3 +313,146 @@ class TestErrorConversion:
     def test_nested_loc_to_path(self, validator: SchemaValidator) -> None:
         result = validator.validate({"address": {"zip_code": "12345"}}, NestedModel)
         assert any(e.path == "/address/city" for e in result.errors)
+
+
+# === TYPE_MAPPING §11 — what the library-level coercion knob coerces ===
+
+
+class TestCoercionKnobTable:
+    """The knob's accepted set, normative as of spec v1.12.0 (apcore#95).
+
+    Offering ``coerce_types`` stays a MAY; an SDK that offers one MUST coerce
+    exactly the §11 table and MUST NOT coerce anything else. Every case here
+    asserts *both* modes: the failure this pins is the strict path and the knob
+    answering the same way for a spelling neither should accept.
+    """
+
+    BOOL_SCHEMA = {"type": "object", "properties": {"flag": {"type": "boolean"}}, "required": ["flag"]}
+    INT_SCHEMA = {"type": "object", "properties": {"count": {"type": "integer"}}, "required": ["count"]}
+    NUM_SCHEMA = {"type": "object", "properties": {"n": {"type": "number"}}, "required": ["n"]}
+    STR_SCHEMA = {"type": "object", "properties": {"s": {"type": "string"}}, "required": ["s"]}
+
+    @pytest.mark.parametrize(
+        ("schema_name", "data", "coerced"),
+        [
+            ("BOOL_SCHEMA", {"flag": "true"}, {"flag": True}),
+            ("BOOL_SCHEMA", {"flag": "false"}, {"flag": False}),
+            ("INT_SCHEMA", {"count": "42"}, {"count": 42}),
+            ("INT_SCHEMA", {"count": "-7"}, {"count": -7}),
+            ("NUM_SCHEMA", {"n": "1.5"}, {"n": 1.5}),
+            ("NUM_SCHEMA", {"n": "-0.5"}, {"n": -0.5}),
+        ],
+        ids=["str_true", "str_false", "str_int", "str_negative_int", "str_float", "str_negative_float"],
+    )
+    def test_accepted_set_coerces_to_the_pinned_value(
+        self,
+        schema_loader: "SchemaLoader",
+        schema_name: str,
+        data: dict,
+        coerced: dict,
+    ) -> None:
+        """The three §11 rows, asserted on the value produced — not just validity.
+
+        Validity alone cannot tell ``"false"`` -> False from ``"false"`` -> True,
+        and an implementation coercing every non-empty string to True passes a
+        validity-only check on both boolean rows.
+        """
+        model = schema_loader.generate_model(getattr(self, schema_name), f"Accept_{schema_name}_{data}")
+        assert SchemaValidator(coerce_types=True).validate(data, model).valid is True
+        produced = SchemaValidator(coerce_types=True).validate_input(data, model)
+        for key, expected in coerced.items():
+            assert produced[key] == expected
+            assert type(produced[key]) is type(expected)
+
+    @pytest.mark.parametrize(
+        ("schema_name", "data"),
+        [
+            ("BOOL_SCHEMA", {"flag": "yes"}),
+            ("BOOL_SCHEMA", {"flag": "no"}),
+            ("BOOL_SCHEMA", {"flag": "on"}),
+            ("BOOL_SCHEMA", {"flag": "off"}),
+            ("BOOL_SCHEMA", {"flag": "y"}),
+            ("BOOL_SCHEMA", {"flag": "t"}),
+            ("BOOL_SCHEMA", {"flag": "1"}),
+            ("BOOL_SCHEMA", {"flag": "0"}),
+            ("BOOL_SCHEMA", {"flag": "True"}),
+            ("BOOL_SCHEMA", {"flag": "TRUE"}),
+            ("BOOL_SCHEMA", {"flag": "False"}),
+            ("BOOL_SCHEMA", {"flag": " true"}),
+            ("BOOL_SCHEMA", {"flag": ""}),
+            ("BOOL_SCHEMA", {"flag": 1}),
+            ("BOOL_SCHEMA", {"flag": 0}),
+            ("INT_SCHEMA", {"count": "3.14"}),
+            ("INT_SCHEMA", {"count": "abc"}),
+            ("INT_SCHEMA", {"count": "true"}),
+            ("NUM_SCHEMA", {"n": True}),
+            ("STR_SCHEMA", {"s": 42}),
+            ("STR_SCHEMA", {"s": True}),
+        ],
+    )
+    def test_everything_else_is_rejected_in_both_modes(
+        self,
+        schema_loader: "SchemaLoader",
+        schema_name: str,
+        data: dict,
+    ) -> None:
+        """MUST NOT coerce anything outside the table.
+
+        The eleven boolean spellings here are the twelve-spelling shell/INI
+        dialect apcore-rust wrote and apcore-typescript ported; §11 caps the set
+        at JSON's own two literals. ``"0"`` is the sharpest: R5 makes the *number*
+        ``0`` a MUST-reject for boolean, so accepting the string put two paths of
+        one SDK on opposite sides of a single value.
+        """
+        model = schema_loader.generate_model(getattr(self, schema_name), f"Reject_{schema_name}_{data}")
+        assert SchemaValidator(coerce_types=True).validate(data, model).valid is False
+        assert SchemaValidator(coerce_types=False).validate(data, model).valid is False
+
+    @pytest.mark.parametrize("spelling", ["true", "false"])
+    def test_strict_path_still_rejects_json_boolean_spellings(
+        self, schema_loader: "SchemaLoader", spelling: str
+    ) -> None:
+        """`_require_bool` keeps its job: R5 makes this a MUST at the boundary.
+
+        The knob gaining a boolean row must not reach the strict path — the two
+        answering differently for one schema and input is the failure TYPE_MAPPING
+        §11 exists to prevent.
+        """
+        model = schema_loader.generate_model(self.BOOL_SCHEMA, f"Strict_{spelling}")
+        assert SchemaValidator(coerce_types=False).validate({"flag": spelling}, model).valid is False
+
+    def test_coercion_reaches_nested_objects_and_arrays(self, schema_loader: "SchemaLoader") -> None:
+        """The pre-pass walks `properties` and `items`, matching TS/Rust `coerceValue`."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "inner": {"type": "object", "properties": {"flag": {"type": "boolean"}}},
+                "flags": {"type": "array", "items": {"type": "boolean"}},
+            },
+        }
+        model = schema_loader.generate_model(schema, "NestedCoerce")
+        data = {"inner": {"flag": "true"}, "flags": ["true", "false"]}
+        assert SchemaValidator(coerce_types=True).validate(data, model).valid is True
+        produced = SchemaValidator(coerce_types=True).validate_input(data, model)
+        assert produced["inner"]["flag"] is True
+        assert produced["flags"] == [True, False]
+
+    def test_pre_pass_does_not_mutate_caller_input(self, schema_loader: "SchemaLoader") -> None:
+        """A validator that rewrites the dict it was handed is a surprise the
+        caller never opted into; only the copy passed to Pydantic is coerced."""
+        model = schema_loader.generate_model(self.BOOL_SCHEMA, "NoMutate")
+        data = {"flag": "true"}
+        SchemaValidator(coerce_types=True).validate(data, model)
+        assert data == {"flag": "true"}
+
+    def test_default_is_no_coercion(self, schema_loader: "SchemaLoader") -> None:
+        """`coerce_types` defaults to False — the boundary's behaviour, and the
+        other two SDKs' default (TYPE_MAPPING §11).
+
+        Asserted on behaviour rather than on the private flag: a default that is
+        `False` and read by nothing would satisfy the flag check.
+        """
+        model = schema_loader.generate_model(self.BOOL_SCHEMA, "DefaultKnob")
+        assert SchemaValidator().validate({"flag": "true"}, model).valid is False
+        int_model = schema_loader.generate_model(self.INT_SCHEMA, "DefaultKnobInt")
+        assert SchemaValidator().validate({"count": "42"}, int_model).valid is False
