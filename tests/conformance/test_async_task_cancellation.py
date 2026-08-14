@@ -17,12 +17,19 @@ import pytest
 
 from apcore.async_task import AsyncTaskManager, RetryConfig, TaskStatus
 from apcore.errors import TaskLimitExceededError
-from conformance.canonical_fixtures import load_fixture
+from conformance.canonical_fixtures import (
+    dispatch_or_fail,
+    load_fixture,
+    reject_unknown_expectations,
+)
+
+
+FIXTURE_NAME = "async_task_cancellation.json"
 
 
 def _load_fixture() -> dict:
     """Load the canonical fixture from the apcore spec repo."""
-    return load_fixture("async_task_cancellation.json")
+    return load_fixture(FIXTURE_NAME)
 
 
 _FIXTURE = _load_fixture()
@@ -72,6 +79,7 @@ class _AlwaysFailingExecutor:
 @pytest.mark.asyncio
 async def test_submit_over_capacity_raises_task_limit_exceeded() -> None:
     case = _case("submit_over_capacity_raises_task_limit_exceeded")
+    reject_unknown_expectations(FIXTURE_NAME, case, {"expected_error"})
 
     executor = _BlockingExecutor()
     manager = AsyncTaskManager(
@@ -95,9 +103,30 @@ async def test_submit_over_capacity_raises_task_limit_exceeded() -> None:
         await manager.shutdown()
 
 
+#: fixture ``expected_final_status`` (a wire-level status STRING) -> the SDK
+#: enum member carrying it. A dispatch with no ``else`` would let an
+#: unrecognised status skip the assertion, so ``dispatch_or_fail`` hard-fails
+#: instead (apcore#93).
+_TASK_STATUS_BY_WIRE_NAME: dict[str, TaskStatus] = {s.value: s for s in TaskStatus}
+
+
 @pytest.mark.asyncio
 async def test_cancel_during_backoff_stops_further_retries() -> None:
     case = _case("cancel_during_backoff_stops_further_retries")
+    # apcore#93: this driver used to hardcode ``TaskStatus.CANCELLED`` and
+    # "the counter did not move", reading neither ``expected_final_status``
+    # nor ``expected_no_attempt_after_cancel``. Both declared values now reach
+    # an assertion, so mutating either in the fixture turns this test red.
+    reject_unknown_expectations(
+        FIXTURE_NAME, case, {"expected_final_status", "expected_no_attempt_after_cancel"}
+    )
+    expected_status = dispatch_or_fail(
+        FIXTURE_NAME,
+        case["id"],
+        case["expected_final_status"],
+        _TASK_STATUS_BY_WIRE_NAME,
+        "final task status",
+    )
 
     executor = _AlwaysFailingExecutor()
     manager = AsyncTaskManager(executor, max_concurrent=1, max_tasks=10)
@@ -129,11 +158,21 @@ async def test_cancel_during_backoff_stops_further_retries() -> None:
 
         final = manager.get_status(task_id)
         assert final is not None
-        assert final.status == TaskStatus.CANCELLED, f"expected final status CANCELLED, got {final.status}"
+        assert final.status == expected_status, (
+            f"[{FIXTURE_NAME} :: {case['id']}] fixture declares final status "
+            f"{case['expected_final_status']!r}, got {final.status.value!r}"
+        )
 
         # No further retry attempt may have been started after the cancel.
-        assert (
-            executor.attempts == attempts_at_cancel
-        ), f"attempt counter increased after cancel: {attempts_at_cancel} -> {executor.attempts}"
+        # ``expected_no_attempt_after_cancel`` is a boolean the fixture states
+        # explicitly, so it drives the comparison rather than decorating it: a
+        # fixture flipping it to false would demand the opposite invariant.
+        no_attempt_after_cancel = executor.attempts == attempts_at_cancel
+        assert no_attempt_after_cancel is case["expected_no_attempt_after_cancel"], (
+            f"[{FIXTURE_NAME} :: {case['id']}] fixture declares "
+            f"expected_no_attempt_after_cancel="
+            f"{case['expected_no_attempt_after_cancel']}, but the attempt counter went "
+            f"{attempts_at_cancel} -> {executor.attempts}"
+        )
     finally:
         await manager.shutdown()

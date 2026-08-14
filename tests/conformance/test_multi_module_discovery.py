@@ -29,11 +29,16 @@ import pytest
 from apcore.errors import ModuleIdConflictError, ModuleLoadError
 from apcore.registry import Registry
 from apcore.registry.entry_point import resolve_entry_point
-from apcore.registry.multi_class import class_name_to_segment, discover_multi_class
+from apcore.registry.multi_class import (
+    _compute_base_id,
+    class_name_to_segment,
+    discover_multi_class,
+)
 
-from .canonical_fixtures import load_fixture
+from .canonical_fixtures import load_fixture, reject_unknown_expectations
 
-FIXTURE = load_fixture("multi_module_discovery.json")
+FIXTURE_NAME = "multi_module_discovery.json"
+FIXTURE = load_fixture(FIXTURE_NAME)
 CASES: list[dict[str, Any]] = FIXTURE["test_cases"]
 
 # PROTOCOL_SPEC §2.7 canonical ID grammar, as quoted by the fixture itself.
@@ -150,9 +155,33 @@ def test_single_class_mode_never_suffixes_base_id(case: dict[str, Any], tmp_path
     a suffixed id is accepted in neither.
     """
     cid = case["id"]
+    reject_unknown_expectations(FIXTURE_NAME, case, {"expected"})
     path = _write_module_file(tmp_path, case)
     extensions_root = tmp_path / case["input"]["extensions_root"]
+    expected_ids = sorted(case["expected"]["module_ids"])
     base_id = case["expected"]["module_ids"][0]
+
+    # apcore#93. Only the ignore branch below ever consulted the fixture's
+    # declared ``module_ids``, and apcore-python takes the ERROR branch — so
+    # every assertion the case actually reached was the driver's own literal
+    # and mutating ``expected.module_ids`` left this test green.
+    #
+    # The fixture's ``note`` permits either SDK policy for the second class
+    # ("silently ignored or causes an error per SDK policy") but pins one thing
+    # unconditionally: "The base_id is never suffixed." That is a statement
+    # about ID DERIVATION, which apcore-python performs on both branches, so
+    # assert it directly against the declared value. This is the observable
+    # post-condition the error branch was missing: "resolve_entry_point raised"
+    # is satisfied by an implementation that derives nothing at all.
+    derived_base_id = _compute_base_id(path, case["input"]["extensions_root"])
+    assert derived_base_id == base_id, (
+        f"[{cid}] with multi_class disabled the fixture requires the bare base_id "
+        f"{base_id!r}; the SDK derived {derived_base_id!r} for {case['input']['file_path']!r}"
+    )
+    assert "." in derived_base_id and not derived_base_id.startswith(f"{base_id}."), (
+        f"[{cid}] {derived_base_id!r} must be the bare base_id, never suffixed with a "
+        f"class segment"
+    )
 
     registry = Registry(extensions_dir=str(extensions_root))
     registry.discover()
@@ -163,14 +192,14 @@ def test_single_class_mode_never_suffixes_base_id(case: dict[str, Any], tmp_path
             f"[{cid}] multi_class is disabled, so {module_id!r} must not carry a class segment"
         )
 
-    if registered == sorted(case["expected"]["module_ids"]):
+    if registered == expected_ids:
         return  # ignore-the-second-class branch
 
     # Error branch: nothing registered, and the SDK must say why rather than
     # registering a partial or suffixed id.
     assert registered == [], (
         f"[{cid}] single-class discovery registered {registered}; the fixture allows only "
-        f"{sorted(case['expected']['module_ids'])} (ignore branch) or nothing (error branch)"
+        f"{expected_ids} (ignore branch) or nothing (error branch)"
     )
     with pytest.raises(ModuleLoadError) as excinfo:
         resolve_entry_point(path)

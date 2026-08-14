@@ -20,7 +20,12 @@ from typing import Any
 
 import pytest
 
-from conformance.canonical_fixtures import spec_repo_env
+from conformance.canonical_fixtures import (
+    dispatch_or_fail,
+    expectation_keys,
+    reject_unknown_expectations,
+    spec_repo_env,
+)
 
 from apcore.acl import ACL, ACLRule
 from apcore.config import (
@@ -109,48 +114,22 @@ def _load(name: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Fixture-expectation helpers (apcore#92)
+# Fixture-expectation helpers (apcore#92, apcore#93)
 # ---------------------------------------------------------------------------
 #
-# A fixture's declared error is a WIRE CODE (``ERROR_CODE_COLLISION``), never a
-# Python class name. Three driver shapes look like they check that and do not:
+# ``expectation_keys`` / ``reject_unknown_expectations`` / ``dispatch_or_fail``
+# were defined privately here for apcore#92 and moved to
+# ``conformance.canonical_fixtures`` for apcore#93, so the per-fixture drivers
+# under ``tests/conformance/``, ``tests/events/`` and ``tests/observability/``
+# share ONE mechanism with this file rather than each growing a copy. The
+# rationale — the five driver shapes that look like they check a fixture's
+# declared value and do not — is documented there.
 #
-#   1. ``if "expected_error" in case:`` branches on the KEY EXISTING, so the
-#      value the fixture declares never reaches an assertion.
-#   2. ``if code == "X": ...`` with no ``else`` silently skips the whole
-#      assertion block for any value the driver does not recognise.
-#   3. ``else: pytest.raises(Exception)`` accepts any error at all.
-#
-# All three make the driver's own literal the contract and the fixture
-# decoration: mutate the declared value in the JSON and the suite stays green.
-# The helpers below exist so the declared value reaches an assertion and an
-# unrecognised expectation is a hard failure — teach the driver, do not skip it.
-# See the ``driver_contract`` block in each fixture and the spec repo's
-# ``conformance/check_case_pinning.py``.
+# The two names below stay local as thin aliases: they are used throughout this
+# file and the underscore spelling marks them as test-internal.
 
-
-def _expectation_keys(case: dict[str, Any]) -> list[str]:
-    """Top-level keys of *case* that state an expectation rather than an input.
-
-    Mirrors ``check_case_pinning.expectation_keys`` — anything spelled
-    ``expected`` or ``expected_*``.
-    """
-    return sorted(k for k in case if k == "expected" or k.startswith("expected_"))
-
-
-def _reject_unknown_expectations(fixture: str, case: dict[str, Any], known: set[str]) -> None:
-    """Fail when a case states an expectation this driver does not read.
-
-    A key nobody reads asserts nothing while reading as covered in the fixture
-    and in every count derived from it.
-    """
-    unknown = sorted(set(_expectation_keys(case)) - known)
-    if unknown:
-        pytest.fail(
-            f"[{fixture} :: {case.get('id')!r}] states expectation key(s) {unknown} "
-            f"that this driver does not read. Teach the driver, do not skip it. "
-            f"Known keys: {sorted(known)}"
-        )
+_expectation_keys = expectation_keys
+_reject_unknown_expectations = reject_unknown_expectations
 
 
 def _exc_class_for(
@@ -164,14 +143,7 @@ def _exc_class_for(
     An unrecognised code is a hard failure, never a skipped branch: that is what
     turns a wrong fixture value into a passing test.
     """
-    exc_class = mapping.get(wire_code)
-    if exc_class is None:
-        pytest.fail(
-            f"[{fixture} :: {case_id}] fixture declares error code {wire_code!r}, "
-            f"which this driver does not know how to raise. Teach the driver, do "
-            f"not skip it. Known codes: {sorted(mapping)}"
-        )
-    return exc_class
+    return dispatch_or_fail(fixture, case_id, wire_code, mapping, "error code")  # type: ignore[no-any-return]
 
 
 def _assert_wire_code(exc: BaseException, wire_code: str, fixture: str, case_id: str) -> None:

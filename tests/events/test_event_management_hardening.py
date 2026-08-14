@@ -17,12 +17,40 @@ import pytest
 
 from apcore.events.circuit_breaker import CircuitBreakerWrapper, CircuitState
 from apcore.events.emitter import ApCoreEvent, EventEmitter
-from conformance.canonical_fixtures import case_ids
+from conformance.canonical_fixtures import (
+    case_ids,
+    dispatch_or_fail,
+    load_fixture,
+    reject_unknown_expectations,
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+FIXTURE = "event_management_hardening.json"
+
+#: canonical case id -> case body. apcore#93: every one of this fixture's ten
+#: cases used to be transcribed into the driver as literals — the subscriber
+#: configs, the events, the circuit-breaker thresholds, the expected states —
+#: so mutating any declared value in the canonical JSON left the whole file
+#: green. Each case body below now takes its inputs AND its expectations from
+#: here.
+_CASES: dict[str, Any] = {case["id"]: case for case in load_fixture(FIXTURE)["test_cases"]}
+
+
+def _case(case_id: str) -> dict[str, Any]:
+    case = _CASES[case_id]
+    reject_unknown_expectations(FIXTURE, case, {"expected"})
+    return case
+
+
+#: fixture ``circuit_state`` (a wire-level state NAME) -> the SDK enum member.
+#: ``dispatch_or_fail`` hard-fails on an unrecognised name rather than letting
+#: it skip the assertion.
+_CIRCUIT_STATE_BY_NAME: dict[str, CircuitState] = {s.value: s for s in CircuitState}
 
 
 def _make_event(**overrides: Any) -> ApCoreEvent:
@@ -35,6 +63,23 @@ def _make_event(**overrides: Any) -> ApCoreEvent:
     }
     defaults.update(overrides)
     return ApCoreEvent(**defaults)
+
+
+def _elapsed_seconds(start: str, end: str) -> float:
+    """Seconds between two ISO-8601 instants the fixture declares."""
+    fmt = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))  # noqa: E731
+    return (fmt(end) - fmt(start)).total_seconds()
+
+
+def _event_from(spec: dict[str, Any]) -> ApCoreEvent:
+    """Build the event a case declares, verbatim."""
+    return ApCoreEvent(
+        event_type=spec["event_type"],
+        module_id=spec["module_id"],
+        timestamp=spec["timestamp"],
+        severity=spec["severity"],
+        data=dict(spec["data"]),
+    )
 
 
 def _make_mock_emitter() -> MagicMock:
@@ -66,21 +111,86 @@ class TestSubscriberFactoryRegisteredType:
             register_subscriber_type,
         )
 
-        mock_subscriber = MagicMock()
-        mock_subscriber.on_event = AsyncMock()
-        slack_factory = MagicMock(return_value=mock_subscriber)
+        case = _case("subscriber_factory_registered_type")
+        params, expected = case["input"], case["expected"]
 
-        register_subscriber_type("slack", slack_factory)
+        # One factory per declared registered type, so the assertion below can
+        # say WHICH factory ran rather than "a subscriber came back".
+        subscribers: dict[str, MagicMock] = {}
+        factories: dict[str, MagicMock] = {}
+        for type_name in params["registered_types"]:
+            sub = MagicMock()
+            sub.on_event = AsyncMock()
+            subscribers[type_name] = sub
+            factories[type_name] = MagicMock(return_value=sub)
+            register_subscriber_type(type_name, factories[type_name])
 
-        sub_cfg: dict[str, Any] = {
-            "type": "slack",
-            "webhook_url": "https://hooks.slack.com/services/TEST",
-            "channel": "#alerts",
-        }
+        sub_cfg: dict[str, Any] = dict(params["subscriber_config"])
         subscriber = _create_subscriber(sub_cfg)
 
-        assert subscriber is mock_subscriber
-        slack_factory.assert_called_once_with(sub_cfg)
+        assert (subscriber is not None) is expected["subscriber_created"], (
+            f"[{case['id']}] fixture declares subscriber_created="
+            f"{expected['subscriber_created']}, got {subscriber!r}"
+        )
+        factory = dispatch_or_fail(
+            FIXTURE, case["id"], expected["subscriber_type"], factories, "subscriber type"
+        )
+        factory.assert_called_once_with(sub_cfg)
+        assert subscriber is subscribers[expected["subscriber_type"]], (
+            f"[{case['id']}] the config named type {sub_cfg['type']!r}; the fixture declares "
+            f"the {expected['subscriber_type']!r} factory must be the one that built it"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cases 2/3: builtin_stdout_type, builtin_file_type
+# ---------------------------------------------------------------------------
+
+
+def _assert_builtin_subscriber_case(case_id: str) -> None:
+    """Drive one ``requires_registration: false`` built-in case off the fixture.
+
+    ``subscriber_created`` and ``requires_registration`` used to reach no
+    assertion at all — the driver checked ``isinstance`` against a class it had
+    chosen itself, which is true of an SDK whose built-in registry is empty for
+    every OTHER type the fixture might declare.
+    """
+    from apcore.events.subscribers import FileSubscriber, StdoutSubscriber
+    from apcore.sys_modules.registration import (
+        _BUILTIN_FACTORIES,
+        _create_subscriber,
+        reset_subscriber_registry,
+    )
+
+    classes: dict[str, type] = {"stdout": StdoutSubscriber, "file": FileSubscriber}
+
+    case = _case(case_id)
+    params, expected = case["input"], case["expected"]
+    sub_cfg: dict[str, Any] = dict(params["subscriber_config"])
+    expected_class = dispatch_or_fail(
+        FIXTURE, case_id, expected["subscriber_type"], classes, "subscriber type"
+    )
+
+    # No register_subscriber_type call anywhere in this test: the registry is
+    # reset to built-ins only, which is what "requires_registration: false"
+    # asserts.
+    reset_subscriber_registry()
+    requires_registration = sub_cfg["type"] not in _BUILTIN_FACTORIES
+    assert requires_registration is expected["requires_registration"], (
+        f"[{case_id}] fixture declares requires_registration="
+        f"{expected['requires_registration']}; {sub_cfg['type']!r} "
+        f"{'is not' if requires_registration else 'is'} a built-in type"
+    )
+
+    subscriber = _create_subscriber(sub_cfg)
+    assert (subscriber is not None) is expected["subscriber_created"], (
+        f"[{case_id}] fixture declares subscriber_created="
+        f"{expected['subscriber_created']}, got {subscriber!r}"
+    )
+    assert isinstance(subscriber, expected_class), (
+        f"[{case_id}] fixture declares subscriber_type "
+        f"{expected['subscriber_type']!r}; got {type(subscriber).__name__}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -92,17 +202,7 @@ class TestBuiltinStdoutType:
     """The stdout subscriber type is available as a built-in without registration."""
 
     def test_stdout_subscriber_created_without_registration(self) -> None:
-        from apcore.events.subscribers import StdoutSubscriber
-        from apcore.sys_modules.registration import _create_subscriber
-
-        sub_cfg: dict[str, Any] = {
-            "type": "stdout",
-            "format": "json",
-            "level_filter": "error",
-        }
-        subscriber = _create_subscriber(sub_cfg)
-
-        assert isinstance(subscriber, StdoutSubscriber)
+        _assert_builtin_subscriber_case("builtin_stdout_type")
 
     def test_stdout_subscriber_conforms_to_protocol(self) -> None:
         from apcore.events.emitter import EventSubscriber
@@ -121,18 +221,7 @@ class TestBuiltinFileType:
     """The file subscriber type is available as a built-in without registration."""
 
     def test_file_subscriber_created_without_registration(self) -> None:
-        from apcore.events.subscribers import FileSubscriber
-        from apcore.sys_modules.registration import _create_subscriber
-
-        sub_cfg: dict[str, Any] = {
-            "type": "file",
-            "path": "/var/log/apcore/events.jsonl",
-            "format": "json",
-            "rotate_bytes": 10485760,
-        }
-        subscriber = _create_subscriber(sub_cfg)
-
-        assert isinstance(subscriber, FileSubscriber)
+        _assert_builtin_subscriber_case("builtin_file_type")
 
     def test_file_subscriber_conforms_to_protocol(self) -> None:
         from apcore.events.emitter import EventSubscriber
@@ -140,6 +229,52 @@ class TestBuiltinFileType:
 
         sub = FileSubscriber(path="/tmp/test.log")
         assert isinstance(sub, EventSubscriber)
+
+
+# ---------------------------------------------------------------------------
+# Cases 4/5: builtin_filter_passes_matching, builtin_filter_discards_nonmatching
+# ---------------------------------------------------------------------------
+
+
+async def _assert_filter_case(case_id: str) -> None:
+    """Drive one filter case off the fixture's own config and event.
+
+    ``delivery_attempted`` and ``discarded`` are the declared contract and are
+    now compared as booleans, so the pass case and the discard case cannot be
+    satisfied by the same implementation — which ``assert_called_once_with`` /
+    ``assert_not_called`` against driver-authored events could not tell apart
+    once the fixture changed.
+    """
+    from apcore.events.subscribers import FilterSubscriber
+
+    case = _case(case_id)
+    params, expected = case["input"], case["expected"]
+    cfg = params["subscriber_config"]
+
+    delegate = MagicMock()
+    delegate.on_event = AsyncMock()
+    filter_sub = FilterSubscriber(
+        delegate=delegate,
+        include_events=list(cfg.get("include_events") or []) or None,
+        exclude_events=list(cfg.get("exclude_events") or []) or None,
+    )
+
+    event = _event_from(params["event"])
+    await filter_sub.on_event(event)
+
+    delivery_attempted = delegate.on_event.call_count > 0
+    assert delivery_attempted is expected["delivery_attempted"], (
+        f"[{case_id}] fixture declares delivery_attempted="
+        f"{expected['delivery_attempted']}; the delegate was called "
+        f"{delegate.on_event.call_count}x for {event.event_type!r}"
+    )
+    discarded = not delivery_attempted
+    assert discarded is expected["discarded"], (
+        f"[{case_id}] fixture declares discarded={expected['discarded']}, got {discarded}"
+    )
+    if delivery_attempted:
+        # Forwarded verbatim: a filter that rebuilds the event is not a filter.
+        delegate.on_event.assert_called_once_with(event)
 
 
 # ---------------------------------------------------------------------------
@@ -152,29 +287,7 @@ class TestBuiltinFilterPassesMatching:
 
     @pytest.mark.asyncio
     async def test_filter_forwards_matching_event(self) -> None:
-        from apcore.events.subscribers import FilterSubscriber
-
-        delegate = MagicMock()
-        delegate.on_event = AsyncMock()
-
-        filter_sub = FilterSubscriber(
-            delegate=delegate,
-            include_events=["apcore.error.*", "apcore.latency.threshold_exceeded"],
-        )
-
-        event = _make_event(
-            event_type="apcore.error.threshold_exceeded",
-            severity="error",
-            data={
-                "module_id": "executor.email.send_email",
-                "error_rate": 0.25,
-                "threshold": 0.1,
-            },
-        )
-
-        await filter_sub.on_event(event)
-
-        delegate.on_event.assert_called_once_with(event)
+        await _assert_filter_case("builtin_filter_passes_matching")
 
 
 # ---------------------------------------------------------------------------
@@ -187,26 +300,7 @@ class TestBuiltinFilterDiscardsNonmatching:
 
     @pytest.mark.asyncio
     async def test_filter_discards_nonmatching_event(self) -> None:
-        from apcore.events.subscribers import FilterSubscriber
-
-        delegate = MagicMock()
-        delegate.on_event = AsyncMock()
-
-        filter_sub = FilterSubscriber(
-            delegate=delegate,
-            include_events=["apcore.error.*"],
-        )
-
-        event = _make_event(
-            event_type="apcore.config.updated",
-            module_id=None,
-            severity="info",
-            data={"key": "sys_modules.events.thresholds.error_rate"},
-        )
-
-        await filter_sub.on_event(event)
-
-        delegate.on_event.assert_not_called()
+        await _assert_filter_case("builtin_filter_discards_nonmatching")
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +313,10 @@ class TestCircuitOpenAfterThreshold:
 
     @pytest.mark.asyncio
     async def test_circuit_opens_after_three_failures(self) -> None:
+        case = _case("circuit_open_after_threshold")
+        params, expected = case["input"], case["expected"]
+        cfg = params["circuit_breaker_config"]
+
         failing_sub = MagicMock()
         failing_sub.on_event = AsyncMock(side_effect=RuntimeError("downstream error"))
 
@@ -229,21 +327,37 @@ class TestCircuitOpenAfterThreshold:
         cb = CircuitBreakerWrapper(
             subscriber=failing_sub,
             emitter=mock_emitter,
-            timeout_ms=3000,
-            open_threshold=3,
-            recovery_window_ms=30000,
+            timeout_ms=cfg["timeout_ms"],
+            open_threshold=cfg["open_threshold"],
+            recovery_window_ms=cfg["recovery_window_ms"],
         )
 
         event = _make_event()
-        for _ in range(3):
+        for attempt in params["failure_sequence"]:
+            assert attempt["outcome"] == "failure", (
+                f"[{case['id']}] this driver models a failure-only sequence; "
+                f"attempt {attempt['attempt']} declares {attempt['outcome']!r}"
+            )
             await cb.on_event(event)
 
-        assert cb.state == CircuitState.OPEN
-        assert cb.consecutive_failures == 3
+        expected_state = dispatch_or_fail(
+            FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
+        )
+        assert cb.state is expected_state, (
+            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, "
+            f"got {cb.state.value!r}"
+        )
+        assert cb.consecutive_failures == expected["consecutive_failures"], (
+            f"[{case['id']}] fixture declares consecutive_failures="
+            f"{expected['consecutive_failures']}, got {cb.consecutive_failures}"
+        )
 
-        circuit_opened = [e for e in emitted_events if e.event_type == "apcore.subscriber.circuit_opened"]
-        assert len(circuit_opened) == 1
-        assert circuit_opened[0].data["consecutive_failures"] == 3
+        emitted = [e for e in emitted_events if e.event_type == expected["event_emitted"]]
+        assert len(emitted) == 1, (
+            f"[{case['id']}] fixture declares event_emitted={expected['event_emitted']!r}; "
+            f"emitted were {[e.event_type for e in emitted_events]}"
+        )
+        assert emitted[0].data["consecutive_failures"] == expected["consecutive_failures"]
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +370,9 @@ class TestCircuitDiscardsInOpenState:
 
     @pytest.mark.asyncio
     async def test_delivery_not_attempted_when_open(self) -> None:
+        case = _case("circuit_discards_in_open_state")
+        params, expected = case["input"], case["expected"]
+
         inner_sub = MagicMock()
         inner_sub.on_event = AsyncMock()
 
@@ -266,15 +383,26 @@ class TestCircuitDiscardsInOpenState:
             emitter=mock_emitter,
             open_threshold=3,
         )
-        # Force OPEN state
-        cb._state = CircuitState.OPEN
+        # Start in the state the fixture declares, inside the recovery window
+        # so nothing transitions on its own.
+        cb._state = _CIRCUIT_STATE_BY_NAME[params["circuit_state"]]
         cb._last_failure_at = datetime.now(timezone.utc)
 
-        event = _make_event()
-        await cb.on_event(event)
+        await cb.on_event(_event_from(params["event"]))
 
-        inner_sub.on_event.assert_not_called()
-        assert cb.state == CircuitState.OPEN
+        delivery_attempted = inner_sub.on_event.call_count > 0
+        assert delivery_attempted is expected["delivery_attempted"], (
+            f"[{case['id']}] fixture declares delivery_attempted="
+            f"{expected['delivery_attempted']}; the wrapped subscriber was called "
+            f"{inner_sub.on_event.call_count}x"
+        )
+        expected_state = dispatch_or_fail(
+            FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
+        )
+        assert cb.state is expected_state, (
+            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, "
+            f"got {cb.state.value!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -287,31 +415,59 @@ class TestCircuitHalfOpenAfterWindow:
 
     @pytest.mark.asyncio
     async def test_transitions_to_half_open_after_window(self) -> None:
-        inner_sub = MagicMock()
-        inner_sub.on_event = AsyncMock()
+        """The state the delivery attempt RUNS IN is the declared one.
 
+        apcore#93: this used to assert ``cb.state != CircuitState.OPEN`` after
+        ``on_event`` — a catch-all that CLOSED, HALF_OPEN and any future state
+        all satisfy, and that read the fixture's declared ``circuit_state``
+        not at all. The wrapped subscriber now records the state it was called
+        in, which is exactly the transition the case describes; the post-
+        delivery state is CLOSED and is asserted by ``circuit_closes_on_success``.
+        """
+        case = _case("circuit_half_open_after_window")
+        params, expected = case["input"], case["expected"]
+        cfg = params["circuit_breaker_config"]
+        elapsed = _elapsed_seconds(params["last_failure_at"], params["current_time"])
+        assert elapsed * 1000 > cfg["recovery_window_ms"], (
+            f"[{case['id']}] the declared current_time must be beyond the recovery window"
+        )
+
+        observed_states: list[CircuitState] = []
+        inner_sub = MagicMock()
+
+        async def _record(_event: ApCoreEvent) -> None:
+            observed_states.append(cb.state)
+
+        inner_sub.on_event = AsyncMock(side_effect=_record)
         mock_emitter = _make_mock_emitter()
 
         cb = CircuitBreakerWrapper(
             subscriber=inner_sub,
             emitter=mock_emitter,
-            timeout_ms=3000,
-            open_threshold=3,
-            recovery_window_ms=30000,
+            timeout_ms=cfg["timeout_ms"],
+            open_threshold=cfg["open_threshold"],
+            recovery_window_ms=cfg["recovery_window_ms"],
         )
-        # Force OPEN with last_failure_at 31 seconds in the past
-        cb._state = CircuitState.OPEN
-        cb._last_failure_at = datetime.now(timezone.utc) - timedelta(seconds=31)
+        cb._state = _CIRCUIT_STATE_BY_NAME[params["circuit_state"]]
+        cb._last_failure_at = datetime.now(timezone.utc) - timedelta(seconds=elapsed)
 
-        # on_event triggers _check_recovery → HALF_OPEN, then attempts delivery
         await cb.on_event(_make_event())
 
-        # After a successful delivery in HALF_OPEN, state transitions to CLOSED.
-        # If inner_sub succeeded, state is CLOSED. What matters is that the
-        # circuit left OPEN state (either HALF_OPEN or CLOSED is correct here).
-        assert cb.state != CircuitState.OPEN
+        expected_state = dispatch_or_fail(
+            FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
+        )
+        assert observed_states == [expected_state], (
+            f"[{case['id']}] fixture declares the circuit transitions to "
+            f"{expected['circuit_state']!r} once the recovery window elapses; the "
+            f"delivery ran in {[s.value for s in observed_states]}"
+        )
 
     def test_check_recovery_transitions_open_to_half_open(self) -> None:
+        case = _case("circuit_half_open_after_window")
+        params, expected = case["input"], case["expected"]
+        cfg = params["circuit_breaker_config"]
+        elapsed = _elapsed_seconds(params["last_failure_at"], params["current_time"])
+
         mock_emitter = _make_mock_emitter()
         inner_sub = MagicMock()
         inner_sub.on_event = AsyncMock()
@@ -319,14 +475,49 @@ class TestCircuitHalfOpenAfterWindow:
         cb = CircuitBreakerWrapper(
             subscriber=inner_sub,
             emitter=mock_emitter,
-            recovery_window_ms=30000,
+            recovery_window_ms=cfg["recovery_window_ms"],
         )
-        cb._state = CircuitState.OPEN
-        cb._last_failure_at = datetime.now(timezone.utc) - timedelta(seconds=31)
+        cb._state = _CIRCUIT_STATE_BY_NAME[params["circuit_state"]]
+        cb._last_failure_at = datetime.now(timezone.utc) - timedelta(seconds=elapsed)
 
         cb._check_recovery()
 
-        assert cb._state == CircuitState.HALF_OPEN
+        expected_state = dispatch_or_fail(
+            FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
+        )
+        assert cb._state is expected_state, (
+            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, "
+            f"got {cb._state.value!r}"
+        )
+
+    def test_recovery_does_not_fire_inside_the_window(self) -> None:
+        """The observable that makes the case above mean something.
+
+        A wrapper that transitions to HALF_OPEN unconditionally would satisfy
+        every assertion above; the window has to actually gate it.
+        """
+        case = _case("circuit_half_open_after_window")
+        params = case["input"]
+        cfg = params["circuit_breaker_config"]
+
+        mock_emitter = _make_mock_emitter()
+        inner_sub = MagicMock()
+        inner_sub.on_event = AsyncMock()
+
+        cb = CircuitBreakerWrapper(
+            subscriber=inner_sub,
+            emitter=mock_emitter,
+            recovery_window_ms=cfg["recovery_window_ms"],
+        )
+        cb._state = _CIRCUIT_STATE_BY_NAME[params["circuit_state"]]
+        cb._last_failure_at = datetime.now(timezone.utc)
+
+        cb._check_recovery()
+
+        assert cb._state is _CIRCUIT_STATE_BY_NAME[params["circuit_state"]], (
+            f"[{case['id']}] the circuit left {params['circuit_state']!r} before "
+            f"recovery_window_ms={cfg['recovery_window_ms']} had elapsed"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +530,12 @@ class TestCircuitClosesOnSuccess:
 
     @pytest.mark.asyncio
     async def test_half_open_success_closes_circuit(self) -> None:
+        case = _case("circuit_closes_on_success")
+        params, expected = case["input"], case["expected"]
+        assert params["delivery_outcome"] == "success", (
+            f"[{case['id']}] this driver models a succeeding delivery"
+        )
+
         inner_sub = MagicMock()
         inner_sub.on_event = AsyncMock(return_value=None)
 
@@ -350,18 +547,29 @@ class TestCircuitClosesOnSuccess:
             subscriber=inner_sub,
             emitter=mock_emitter,
         )
-        # Force HALF_OPEN
-        cb._state = CircuitState.HALF_OPEN
+        cb._state = _CIRCUIT_STATE_BY_NAME[params["circuit_state"]]
         cb._consecutive_failures = 3
 
         await cb.on_event(_make_event())
 
-        assert cb.state == CircuitState.CLOSED
-        assert cb.consecutive_failures == 0
+        expected_state = dispatch_or_fail(
+            FIXTURE, case["id"], expected["circuit_state"], _CIRCUIT_STATE_BY_NAME, "circuit state"
+        )
+        assert cb.state is expected_state, (
+            f"[{case['id']}] fixture declares circuit_state={expected['circuit_state']!r}, "
+            f"got {cb.state.value!r}"
+        )
+        assert cb.consecutive_failures == expected["consecutive_failures"], (
+            f"[{case['id']}] fixture declares consecutive_failures="
+            f"{expected['consecutive_failures']}, got {cb.consecutive_failures}"
+        )
 
-        circuit_closed = [e for e in emitted_events if e.event_type == "apcore.subscriber.circuit_closed"]
-        assert len(circuit_closed) == 1
-        assert circuit_closed[0].severity == "info"
+        emitted = [e for e in emitted_events if e.event_type == expected["event_emitted"]]
+        assert len(emitted) == 1, (
+            f"[{case['id']}] fixture declares event_emitted={expected['event_emitted']!r}; "
+            f"emitted were {[e.event_type for e in emitted_events]}"
+        )
+        assert emitted[0].severity == "info"
 
 
 # ---------------------------------------------------------------------------
@@ -526,31 +734,93 @@ class TestFilterSubscriberExcludeEvents:
 # ---------------------------------------------------------------------------
 
 
+async def _emitted_subscriber_event_names() -> list[str]:
+    """Event names apcore-python ACTUALLY emits, captured from a live circuit.
+
+    Not a transcription: the circuit is driven open and then closed, and the
+    ``event_type`` strings the SDK produces are returned. This is what makes
+    ``event_naming_canonical`` an assertion about the implementation rather
+    than about a list the driver wrote for itself.
+    """
+    emitted: list[ApCoreEvent] = []
+    mock_emitter = _make_mock_emitter()
+    mock_emitter.emit.side_effect = emitted.append
+
+    failing = MagicMock()
+    failing.on_event = AsyncMock(side_effect=RuntimeError("downstream error"))
+    cb = CircuitBreakerWrapper(
+        subscriber=failing, emitter=mock_emitter, open_threshold=1, recovery_window_ms=30000
+    )
+    await cb.on_event(_make_event())  # → OPEN, emits circuit_opened
+
+    cb._state = CircuitState.HALF_OPEN
+    failing.on_event = AsyncMock(return_value=None)
+    cb._subscriber = failing
+    await cb.on_event(_make_event())  # → CLOSED, emits circuit_closed
+
+    return [e.event_type for e in emitted]
+
+
 class TestEventNamingCanonical:
-    """All built-in framework events follow the apcore.<subsystem>.<event> pattern."""
+    """All built-in framework events follow the apcore.<subsystem>.<event> pattern.
 
-    _CANONICAL_EVENTS = [
-        "apcore.config.updated",
-        "apcore.module.reloaded",
-        "apcore.module.toggled",
-        "apcore.health.recovered",
-        "apcore.error.threshold_exceeded",
-        "apcore.latency.threshold_exceeded",
-        "apcore.subscriber.circuit_opened",
-        "apcore.subscriber.circuit_closed",
-    ]
+    ``test_circuit_opened_event_has_canonical_name`` and its ``_closed`` twin
+    used to live here, each matching the driver's own regex against the
+    driver's own string literal — a tautology that could not fail on SDK
+    behaviour (shape 5 in ``conformance.canonical_fixtures``). They are not
+    deleted but CORRECTED into
+    :meth:`test_declared_pattern_accepts_the_names_the_sdk_emits`, which checks
+    the same two names against the same contract with both sides sourced from
+    outside the driver: the pattern from the fixture, the names from a live
+    circuit breaker.
+    """
 
-    _PATTERN = re.compile(r"^apcore\.[a-z_]+\.[a-z_]+$")
+    def test_declared_pattern_accepts_every_declared_event(self) -> None:
+        """``events_to_check`` judged by the fixture's own declared pattern.
 
-    def test_all_canonical_events_match_pattern(self) -> None:
-        mismatches = [e for e in self._CANONICAL_EVENTS if not self._PATTERN.match(e)]
-        assert mismatches == [], f"Events do not match pattern: {mismatches}"
+        apcore#93: the list AND the regex used to be class attributes, so
+        neither ``expected.pattern`` nor ``expected.all_match_pattern`` reached
+        an assertion.
+        """
+        case = _case("event_naming_canonical")
+        params, expected = case["input"], case["expected"]
+        pattern = re.compile(expected["pattern"])
+        mismatches = [e for e in params["events_to_check"] if not pattern.match(e)]
+        all_match = not mismatches
+        assert all_match is expected["all_match_pattern"], (
+            f"[{case['id']}] fixture declares all_match_pattern="
+            f"{expected['all_match_pattern']}; {mismatches} do not match "
+            f"{expected['pattern']!r}"
+        )
 
-    def test_circuit_opened_event_has_canonical_name(self) -> None:
-        assert self._PATTERN.match("apcore.subscriber.circuit_opened")
+    @pytest.mark.asyncio
+    async def test_declared_pattern_accepts_the_names_the_sdk_emits(self) -> None:
+        """The declared pattern must accept apcore-python's real event names.
 
-    def test_circuit_closed_event_has_canonical_name(self) -> None:
-        assert self._PATTERN.match("apcore.subscriber.circuit_closed")
+        This is the assertion that makes the case pin anything. The comparison
+        above is symmetric — mutate ``pattern`` to something unmatchable and
+        ``all_match_pattern`` to false in the same edit and it still passes —
+        so the pattern is additionally held against event names taken from the
+        SDK rather than from the fixture. ``events_to_check`` must name them,
+        too, or the fixture has drifted from what the SDK emits.
+        """
+        case = _case("event_naming_canonical")
+        params, expected = case["input"], case["expected"]
+        pattern = re.compile(expected["pattern"])
+
+        emitted = await _emitted_subscriber_event_names()
+        assert emitted, "the circuit breaker emitted nothing to check"
+
+        unmatched = [name for name in emitted if not pattern.match(name)]
+        assert unmatched == [], (
+            f"[{case['id']}] the declared pattern {expected['pattern']!r} rejects event "
+            f"name(s) apcore-python actually emits: {unmatched}"
+        )
+        undeclared = [name for name in emitted if name not in params["events_to_check"]]
+        assert undeclared == [], (
+            f"[{case['id']}] apcore-python emits {undeclared}, which events_to_check "
+            f"does not list: {params['events_to_check']}"
+        )
 
 
 # ---------------------------------------------------------------------------

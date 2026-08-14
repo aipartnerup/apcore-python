@@ -31,7 +31,12 @@ from apcore.pipeline import (
     PipelineStepNotFoundError,
     StepResult,
 )
-from conformance.canonical_fixtures import case_ids, load_fixture
+from conformance.canonical_fixtures import (
+    case_ids,
+    dispatch_or_fail,
+    load_fixture,
+    reject_unknown_expectations,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -64,6 +69,30 @@ def _make_simple_strategy(step_names: list[str]) -> ExecutionStrategy:
     return ExecutionStrategy("test", steps)
 
 
+class _TrackingStep(BaseStep):
+    """Records its own name on the shared list handed to it."""
+
+    def __init__(self, name: str, log: list[str], **kwargs: Any) -> None:
+        super().__init__(name, **kwargs)
+        self._log = log
+
+    async def execute(self, ctx: PipelineContext) -> StepResult:
+        self._log.append(self.name)
+        return StepResult(action="continue")
+
+
+class _TrackingRaisingStep(BaseStep):
+    """Records its own name, then raises."""
+
+    def __init__(self, name: str, log: list[str], **kwargs: Any) -> None:
+        super().__init__(name, **kwargs)
+        self._log = log
+
+    async def execute(self, ctx: PipelineContext) -> StepResult:
+        self._log.append(self.name)
+        raise ValueError(f"step '{self.name}' intentionally raised")
+
+
 # ---------------------------------------------------------------------------
 # Fixture 1: fail_fast_on_step_error
 # ---------------------------------------------------------------------------
@@ -74,13 +103,37 @@ class TestFailFastOnStepError:
 
     @pytest.mark.asyncio
     async def test_fail_fast_on_step_error(self) -> None:
-        # Pipeline: context_creation → module_lookup → validate_input (raises)
-        steps = [
-            _ContinueStep("context_creation"),
-            _ContinueStep("module_lookup"),
-            _RaisingStep("validate_input"),
-            _ContinueStep("execute"),
+        """apcore#93: every declared value is now read from the fixture.
+
+        This test used to hardcode the step names (``validate_input``, which is
+        not even the name the fixture uses), the wire code, and the executed
+        set — so ``expected.steps_executed``, ``expected.error_code`` and
+        ``expected.stopped`` reached no assertion and mutating any of them in
+        the canonical JSON left this green.
+        """
+        case = _case("fail_fast_on_step_error")
+        reject_unknown_expectations(FIXTURE, case, {"expected"})
+        params, expected = case["input"], case["expected"]
+
+        # The pipeline is the fixture's own executed set, with the declared
+        # step raising, plus one sentinel that must NOT run — the observable
+        # that makes "stopped" mean something.
+        executed_names: list[str] = list(expected["steps_executed"])
+        raising_name = params["step"]
+        sentinel = "step_after_the_failure"
+        assert raising_name in executed_names, (
+            f"[{case['id']}] the raising step {raising_name!r} must be one of the "
+            f"steps the fixture says executed: {executed_names}"
+        )
+        assert params["raises"] is True, f"[{case['id']}] this driver models a raising step"
+
+        steps: list[BaseStep] = [
+            _RaisingStep(name, ignore_errors=params["ignore_errors"])
+            if name == raising_name
+            else _ContinueStep(name)
+            for name in executed_names
         ]
+        steps.append(_ContinueStep(sentinel))
         strategy = ExecutionStrategy("test", steps)
         ctx = PipelineContext(module_id="demo.process", inputs={}, context=None)
         engine = PipelineEngine()
@@ -89,16 +142,24 @@ class TestFailFastOnStepError:
             await engine.run(strategy, ctx)
 
         err = exc_info.value
-        assert err.code == "PIPELINE_STEP_ERROR"
-        assert err.step_name == "validate_input"
+        assert err.code == expected["error_code"], (
+            f"[{case['id']}] fixture declares error code {expected['error_code']!r}, "
+            f"got {err.code!r}"
+        )
+        assert err.step_name == raising_name
         assert isinstance(err.cause, ValueError)
         assert err.pipeline_trace is not None
 
         executed = [s.name for s in err.pipeline_trace.steps if not s.skipped]
-        assert "context_creation" in executed
-        assert "module_lookup" in executed
-        assert "validate_input" in executed
-        assert "execute" not in executed
+        assert executed == executed_names, (
+            f"[{case['id']}] fixture declares steps_executed={executed_names}, "
+            f"pipeline ran {executed}"
+        )
+        stopped = sentinel not in executed
+        assert stopped is expected["stopped"], (
+            f"[{case['id']}] fixture declares stopped={expected['stopped']}; the step "
+            f"after the failure {'did not run' if stopped else 'ran'}"
+        )
 
     @pytest.mark.asyncio
     async def test_fail_fast_stops_subsequent_steps(self) -> None:
@@ -141,22 +202,27 @@ class TestContinueOnIgnoredError:
 
     @pytest.mark.asyncio
     async def test_continue_on_ignored_error(self) -> None:
+        """apcore#93: ``expected.stopped`` / ``expected.continued`` now decide.
+
+        The old body hardcoded the step name and asserted the two outcomes
+        positionally, so neither declared boolean reached a comparison: a
+        fixture flipped to ``continued: false`` still passed.
+        """
+        case = _case("continue_on_ignored_error")
+        reject_unknown_expectations(FIXTURE, case, {"expected"})
+        params, expected = case["input"], case["expected"]
+        assert params["raises"] is True, f"[{case['id']}] this driver models a raising step"
+
         steps_run: list[str] = []
+        ignored_name = params["step"]
+        after_name = "step_after_the_ignored_failure"
 
-        class _TrackingStep(BaseStep):
-            async def execute(self, ctx: PipelineContext) -> StepResult:
-                steps_run.append(self.name)
-                return StepResult(action="continue")
-
-        class _IgnoredRaisingStep(BaseStep):
-            async def execute(self, ctx: PipelineContext) -> StepResult:
-                steps_run.append(self.name)
-                raise ValueError("ignored error")
-
-        steps = [
-            _TrackingStep("step_a"),
-            _IgnoredRaisingStep("validate_input", ignore_errors=True),
-            _TrackingStep("step_c"),
+        steps: list[BaseStep] = [
+            _TrackingStep("step_before", steps_run),
+            _TrackingRaisingStep(
+                ignored_name, steps_run, ignore_errors=params["ignore_errors"]
+            ),
+            _TrackingStep(after_name, steps_run),
         ]
         strategy = ExecutionStrategy("test", steps)
         ctx = PipelineContext(module_id="demo.process", inputs={}, context=None, output={"result": 42})
@@ -165,11 +231,22 @@ class TestContinueOnIgnoredError:
         result, trace = await engine.run(strategy, ctx)
 
         assert result == {"result": 42}
-        assert "validate_input" in steps_run
-        assert "step_c" in steps_run
-        assert trace.success is True
+        assert ignored_name in steps_run, "the ignore_errors step must have been entered"
 
-        ignored_step = next(s for s in trace.steps if s.name == "validate_input")
+        # The two declared booleans are the contract: did the pipeline halt at
+        # the failing step, and did it carry on past it?
+        stopped = after_name not in steps_run
+        continued = after_name in steps_run and trace.success is True
+        assert stopped is expected["stopped"], (
+            f"[{case['id']}] fixture declares stopped={expected['stopped']}; steps run "
+            f"were {steps_run}"
+        )
+        assert continued is expected["continued"], (
+            f"[{case['id']}] fixture declares continued={expected['continued']}; steps run "
+            f"were {steps_run}, trace.success={trace.success}"
+        )
+
+        ignored_step = next(s for s in trace.steps if s.name == ignored_name)
         assert ignored_step.skip_reason == "error_ignored"
 
     @pytest.mark.asyncio
@@ -207,12 +284,32 @@ class TestReplaceSemanticNoDuplicate:
     """§1.2 — configure_step is idempotent: calling twice yields exactly one step."""
 
     def test_configure_step_no_duplicate(self) -> None:
-        strategy = _make_simple_strategy(["a", "validate_input", "b"])
+        """apcore#93: driven by ``input.configure_step`` / ``input.times`` and
+        asserted against ``expected.step_count_for_name``.
 
-        new_step = _ContinueStep("validate_input", "custom validator")
-        strategy.configure_step("validate_input", new_step)
-        count = sum(1 for s in strategy.steps if s.name == "validate_input")
-        assert count == 1
+        The literal ``1`` used to be the driver's own, so a fixture declaring
+        any other count still passed.
+        """
+        case = _case("replace_semantic_no_duplicate")
+        reject_unknown_expectations(FIXTURE, case, {"expected"})
+        params, expected = case["input"], case["expected"]
+        name = params["configure_step"]
+
+        strategy = _make_simple_strategy(["a", name, "b"])
+        replacements = [
+            _ContinueStep(name, f"replacement {i}") for i in range(params["times"])
+        ]
+        for replacement in replacements:
+            strategy.configure_step(name, replacement)
+
+        count = sum(1 for s in strategy.steps if s.name == name)
+        assert count == expected["step_count_for_name"], (
+            f"[{case['id']}] configuring {name!r} {params['times']}x left {count} step(s); "
+            f"the fixture declares {expected['step_count_for_name']}"
+        )
+        # The surviving step must be the LAST configured one — "replace", not
+        # "keep the original and drop the update".
+        assert strategy.steps[strategy._name_to_idx[name]] is replacements[-1]
 
     def test_configure_step_twice_still_one(self) -> None:
         strategy = _make_simple_strategy(["a", "validate_input", "b"])
@@ -377,8 +474,106 @@ class TestRunUntilStopsEarly:
 # ---------------------------------------------------------------------------
 
 
+class _CountingIndex(dict):  # type: ignore[type-arg]
+    """A ``_name_to_idx`` map that records every lookup performed against it.
+
+    Lets the driver state the O(1) claim as something observable: resolving a
+    ``skip_to`` target must cost exactly ONE map probe, whatever the distance
+    skipped. A linear scan would perform zero (it has no map to probe) and a
+    per-candidate probe would perform N.
+    """
+
+    def __init__(self, base: dict[str, int]) -> None:
+        super().__init__(base)
+        self.lookups: list[str] = []
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        self.lookups.append(key)
+        return super().get(key, default)
+
+    def __getitem__(self, key: Any) -> Any:
+        self.lookups.append(key)
+        return super().__getitem__(key)
+
+
+async def _probe_skip_lookup_cost(step_count: int) -> list[str]:
+    """Run a ``step_count``-step pipeline that skips from the first step to the
+    last, and return every name the engine looked up in the index."""
+
+    class _SkipStep(BaseStep):
+        def __init__(self, name: str, target: str) -> None:
+            super().__init__(name)
+            self._target = target
+
+        async def execute(self, ctx: PipelineContext) -> StepResult:
+            return StepResult(action="skip_to", skip_to=self._target)
+
+    names = [f"step_{i}" for i in range(step_count)]
+    steps: list[BaseStep] = [_ContinueStep(n) for n in names]
+    steps[0] = _SkipStep(names[0], names[-1])
+    strategy = ExecutionStrategy("test", steps)
+    index = _CountingIndex(strategy._name_to_idx)
+    strategy._name_to_idx = index
+    await PipelineEngine().run(
+        strategy, PipelineContext(module_id="m", inputs={}, context=None)
+    )
+    return index.lookups
+
+
+async def _assert_o1_step_lookup(case_id: str, step_count: int) -> None:
+    """The observable form of ``lookup_complexity: "O(1)"``.
+
+    "verified by implementation" (the fixture's own words) used to mean the
+    driver asserted that a ``dict`` attribute exists — true of an
+    implementation that keeps the map and still scans the list. The cost of
+    resolution is measured here instead, at the fixture's ``step_count`` and at
+    a far larger one: constant means the two agree.
+    """
+    strategy = _make_simple_strategy([f"step_{i}" for i in range(step_count)])
+    assert set(strategy._name_to_idx) == {f"step_{i}" for i in range(step_count)}, (
+        f"[{case_id}] the index must cover every one of the {step_count} steps"
+    )
+
+    at_declared = await _probe_skip_lookup_cost(step_count)
+    at_scale = await _probe_skip_lookup_cost(step_count * 20)
+
+    assert at_declared == [f"step_{step_count - 1}"], (
+        f"[{case_id}] resolving a skip_to target must cost exactly one index probe; "
+        f"the engine probed {at_declared}"
+    )
+    assert len(at_scale) == len(at_declared), (
+        f"[{case_id}] lookup cost grew with the pipeline: {len(at_declared)} probe(s) at "
+        f"{step_count} steps, {len(at_scale)} at {step_count * 20} — that is not O(1)"
+    )
+
+
+#: fixture ``expected.lookup_complexity`` -> the check that makes it observable.
+#: A dispatch with no ``else`` would let an unrecognised complexity skip the
+#: assertion entirely, so ``dispatch_or_fail`` hard-fails instead (apcore#93).
+_LOOKUP_COMPLEXITY_CHECKS: dict[str, Any] = {"O(1)": _assert_o1_step_lookup}
+
+
 class TestStepLookupIsNotLinear:
     """§1.5 — ExecutionStrategy maintains a _name_to_idx hash map."""
+
+    @pytest.mark.asyncio
+    async def test_declared_lookup_complexity_holds(self) -> None:
+        """apcore#93: ``expected.lookup_complexity`` reaches an assertion.
+
+        Every assertion in this class used to be about the driver's own
+        hand-built strategies; the fixture's declared complexity and its
+        ``step_count`` were read by nothing.
+        """
+        case = _case("step_lookup_is_not_linear")
+        reject_unknown_expectations(FIXTURE, case, {"expected"})
+        check = dispatch_or_fail(
+            FIXTURE,
+            case["id"],
+            case["expected"]["lookup_complexity"],
+            _LOOKUP_COMPLEXITY_CHECKS,
+            "lookup complexity",
+        )
+        await check(case["id"], case["input"]["step_count"])
 
     def test_name_to_idx_exists_and_is_dict(self) -> None:
         strategy = _make_simple_strategy(["a", "b", "c"])

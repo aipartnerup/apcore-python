@@ -26,6 +26,7 @@ from typing import Any
 
 
 from apcore.context import Context
+from apcore.trace_context import TraceParent
 from apcore.errors import ModuleError
 from apcore.observability.context_logger import ObsLoggingMiddleware, RedactionConfig
 from apcore.observability.error_history import (
@@ -36,7 +37,12 @@ from apcore.observability.error_history import (
 from apcore.observability.metrics import MetricsCollector
 from apcore.observability.store import InMemoryObservabilityStore
 from apcore.observability.tracing import BatchSpanProcessor, InMemoryExporter, Span
-from conformance.canonical_fixtures import case_ids, load_fixture
+from conformance.canonical_fixtures import (
+    case_ids,
+    dispatch_or_fail,
+    load_fixture,
+    reject_unknown_expectations,
+)
 
 FIXTURE = "observability_hardening.json"
 
@@ -45,8 +51,36 @@ FIXTURE = "observability_hardening.json"
 _CASES: dict[str, Any] = {case["id"]: case for case in load_fixture(FIXTURE)["test_cases"]}
 
 
-def _case(case_id: str) -> dict[str, Any]:
-    return _CASES[case_id]
+def _context_for(log_entry: dict[str, Any]) -> Context:
+    """Build a Context carrying the log entry's declared correlation fields.
+
+    ``trace_id`` is seeded through a W3C traceparent (the only supported entry
+    point — ``Context.create`` takes no ``trace_id``), and ``caller_id`` comes
+    from ``Context.child``, which is the only thing that sets it.
+    """
+    root = Context.create(
+        trace_parent=TraceParent(
+            version="00",
+            trace_id=log_entry["trace_id"],
+            parent_id="0123456789abcdef",
+            trace_flags="01",
+        )
+    )
+    caller = root.child(log_entry["caller_id"])
+    return caller.child(log_entry["module_id"])
+
+
+def _case(case_id: str, known: set[str] | None = None) -> dict[str, Any]:
+    """Return the canonical case *case_id*, rejecting expectations nobody reads.
+
+    apcore#93: nine of this fixture's ten cases used to be transcribed into the
+    driver as literals rather than read from it, so mutating any declared value
+    left the suite green. Every case body below now takes its inputs AND its
+    expectations from here.
+    """
+    case = _CASES[case_id]
+    reject_unknown_expectations(FIXTURE, case, known if known is not None else {"expected"})
+    return case
 
 
 # ---------------------------------------------------------------------------
@@ -58,14 +92,25 @@ class TestPluggableStoreDefaultInMemory:
     """Case: pluggable_store_default_inmemory"""
 
     def test_error_history_default_store_is_inmemory(self) -> None:
-        """ErrorHistory() uses InMemoryObservabilityStore when no store is given."""
+        """ErrorHistory() uses the store type the fixture declares."""
+        case = _case("pluggable_store_default_inmemory")
+        assert case["input"]["constructor_args"] == {}, (
+            "this driver models the no-argument constructor the fixture describes"
+        )
         history = ErrorHistory()
-        assert type(history.store).__name__ == "InMemoryObservabilityStore"
+        assert type(history.store).__name__ == case["expected"]["store_type"], (
+            f"[{case['id']}] fixture declares store_type "
+            f"{case['expected']['store_type']!r}, got {type(history.store).__name__!r}"
+        )
 
     def test_metrics_collector_default_store_is_inmemory(self) -> None:
-        """MetricsCollector() uses InMemoryObservabilityStore when no store is given."""
+        """MetricsCollector() uses the same declared default store type."""
+        case = _case("pluggable_store_default_inmemory")
         collector = MetricsCollector()
-        assert type(collector._store).__name__ == "InMemoryObservabilityStore"
+        assert type(collector._store).__name__ == case["expected"]["store_type"], (
+            f"[{case['id']}] fixture declares store_type "
+            f"{case['expected']['store_type']!r}, got {type(collector._store).__name__!r}"
+        )
 
     def test_error_history_accepts_injected_store(self) -> None:
         """ErrorHistory accepts an explicit store at construction time."""
@@ -147,29 +192,35 @@ class TestBatchProcessorDropsOnFullQueue:
 
     def test_drops_spans_when_queue_full(self) -> None:
         """When queue is at max_queue_size, additional spans are dropped."""
+        case = _case("batch_processor_drops_on_full_queue")
+        params, expected = case["input"], case["expected"]
         exporter = InMemoryExporter()
-        max_size = 5
         processor = BatchSpanProcessor(
             exporter=exporter,
-            max_queue_size=max_size,
+            max_queue_size=params["max_queue_size"],
             schedule_delay_ms=60_000,
         )
         try:
-            # Fill queue to capacity
-            for _ in range(max_size):
+            # Fill queue to the fixture's starting depth.
+            for _ in range(params["queue_size_before"]):
                 span = Span(trace_id="t1", name="test", start_time=time.time())
                 processor.on_span_end(span)
 
-            assert processor.queue_size == max_size
+            assert processor.queue_size == params["queue_size_before"]
             assert processor.spans_dropped == 0
 
-            # Submit 2 more — both should be dropped
-            for _ in range(2):
+            for _ in range(params["new_spans_submitted"]):
                 span = Span(trace_id="t1", name="overflow", start_time=time.time())
                 processor.on_span_end(span)
 
-            assert processor.queue_size == max_size, "Queue size must stay at max_queue_size"
-            assert processor.spans_dropped == 2
+            assert processor.queue_size == expected["queue_size_after"], (
+                f"[{case['id']}] fixture declares queue_size_after="
+                f"{expected['queue_size_after']}, got {processor.queue_size}"
+            )
+            assert processor.spans_dropped == expected["spans_dropped"], (
+                f"[{case['id']}] fixture declares spans_dropped="
+                f"{expected['spans_dropped']}, got {processor.spans_dropped}"
+            )
         finally:
             processor.shutdown()
 
@@ -203,23 +254,39 @@ class TestErrorHistoryEvictsOldestFirst:
 
     def test_evicts_oldest_last_seen_at_on_overflow(self) -> None:
         """When at capacity, the entry with the oldest last_seen_at is evicted."""
-        history = ErrorHistory(max_total_entries=3)
+        case = _case("error_history_evicts_oldest_first")
+        params, expected = case["input"], case["expected"]
+        history = ErrorHistory(max_total_entries=params["max_total_entries"])
 
-        # Record 3 errors; sequence numbers ensure ERR_A is oldest
-        history.record("executor.a", ModuleError(code="ERR_A", message="err a"))
-        history.record("executor.b", ModuleError(code="ERR_B", message="err b"))
-        history.record("executor.c", ModuleError(code="ERR_C", message="err c"))
+        # Recorded in the fixture's declared order, which is ascending
+        # last_seen_at — so the first entry is the eviction candidate.
+        for entry in params["existing_entries"]:
+            history.record(
+                entry["module_id"],
+                ModuleError(code=entry["code"], message=f"err {entry['code']}"),
+            )
+        assert len(history.get_all()) == len(params["existing_entries"])
 
-        assert len(history.get_all()) == 3
-
-        # 4th entry must evict the oldest
-        history.record("executor.d", ModuleError(code="ERR_D", message="err d"))
+        new_entry = params["new_entry"]
+        history.record(
+            new_entry["module_id"],
+            ModuleError(code=new_entry["code"], message=f"err {new_entry['code']}"),
+        )
 
         remaining = history.get_all()
         codes = {e.code for e in remaining}
-        assert len(remaining) == 3
-        assert "ERR_A" not in codes, "ERR_A (oldest) must be evicted"
-        assert {"ERR_B", "ERR_C", "ERR_D"} == codes
+        assert len(remaining) == expected["total_entries"], (
+            f"[{case['id']}] fixture declares total_entries={expected['total_entries']}, "
+            f"got {len(remaining)}"
+        )
+        assert expected["evicted_entry_code"] not in codes, (
+            f"[{case['id']}] fixture declares {expected['evicted_entry_code']!r} evicted, "
+            f"but it survived: {sorted(codes)}"
+        )
+        assert codes == set(expected["remaining_entry_codes"]), (
+            f"[{case['id']}] fixture declares remaining "
+            f"{sorted(expected['remaining_entry_codes'])}, got {sorted(codes)}"
+        )
 
     def test_total_entries_stays_at_limit(self) -> None:
         """Total entries never exceed max_total_entries after overflow."""
@@ -238,15 +305,26 @@ class TestErrorFingerprintDedupSameError:
     """Case: error_fingerprint_dedup_same_error"""
 
     def test_identical_error_increments_count(self) -> None:
-        """Recording the same error twice results in count=2, not two entries."""
+        """Recording the fixture's identical records dedups into one entry."""
+        case = _case("error_fingerprint_dedup_same_error")
+        params, expected = case["input"], case["expected"]
         history = ErrorHistory()
-        error = ModuleError(code="DB_TIMEOUT", message="connection timed out")
-        history.record("executor.db.query", error)
-        history.record("executor.db.query", error)
+        for record in params["records"]:
+            history.record(
+                record["module_id"],
+                ModuleError(code=record["code"], message=record["message"]),
+            )
 
-        entries = history.get("executor.db.query")
-        assert len(entries) == 1
-        assert entries[0].count == 2
+        assert len(history.get_all()) == expected["total_entries"], (
+            f"[{case['id']}] fixture declares total_entries={expected['total_entries']}, "
+            f"got {len(history.get_all())}"
+        )
+        entries = history.get(params["records"][0]["module_id"])
+        assert len(entries) == expected["total_entries"]
+        assert entries[0].count == expected["entry_count"], (
+            f"[{case['id']}] fixture declares entry_count={expected['entry_count']}, "
+            f"got {entries[0].count}"
+        )
 
     def test_fingerprint_stored_on_entry(self) -> None:
         """ErrorEntry stores a non-empty fingerprint field."""
@@ -266,25 +344,28 @@ class TestErrorFingerprintNormalization:
     """Case: error_fingerprint_normalization"""
 
     def test_uuid_normalized_to_placeholder(self) -> None:
-        """UUID values in messages are replaced with <UUID> before hashing."""
-        msg1 = "token a1b2c3d4-e5f6-7890-abcd-ef1234567890 is invalid"
-        msg2 = "token 00000000-0000-0000-0000-000000000001 is invalid"
-        assert normalize_message(msg1) == "token <uuid> is invalid"
-        assert normalize_message(msg2) == "token <uuid> is invalid"
+        """Each declared message normalizes to the declared normalized form."""
+        case = _case("error_fingerprint_normalization")
+        params, expected = case["input"], case["expected"]
+        normalized = [normalize_message(m) for m in params["messages"]]
+        assert normalized == expected["normalized_messages"], (
+            f"[{case['id']}] fixture declares normalized_messages="
+            f"{expected['normalized_messages']}, got {normalized}"
+        )
 
     def test_same_normalized_message_produces_equal_fingerprints(self) -> None:
-        """Two messages differing only by UUID produce the same fingerprint."""
-        fp1 = compute_fingerprint(
-            "TOKEN_INVALID",
-            "executor.auth",
-            "token a1b2c3d4-e5f6-7890-abcd-ef1234567890 is invalid",
+        """Fingerprint equality across the declared messages matches the fixture."""
+        case = _case("error_fingerprint_normalization")
+        params, expected = case["input"], case["expected"]
+        fingerprints = [
+            compute_fingerprint(params["code"], params["module_id"], m)
+            for m in params["messages"]
+        ]
+        equal = len(set(fingerprints)) == 1
+        assert equal is expected["fingerprints_equal"], (
+            f"[{case['id']}] fixture declares fingerprints_equal="
+            f"{expected['fingerprints_equal']}, got {equal} for {fingerprints}"
         )
-        fp2 = compute_fingerprint(
-            "TOKEN_INVALID",
-            "executor.auth",
-            "token 00000000-0000-0000-0000-000000000001 is invalid",
-        )
-        assert fp1 == fp2
 
     def test_large_integers_normalized(self) -> None:
         """Integers with 4+ digits (with word boundaries) are replaced with <ID>."""
@@ -326,10 +407,18 @@ class TestFingerprintDifferentErrorsNoCollision:
     """Case: fingerprint_different_errors_no_collision"""
 
     def test_different_codes_different_fingerprints(self) -> None:
-        """Two errors with different codes produce distinct fingerprints."""
-        fp1 = compute_fingerprint("DB_TIMEOUT", "executor.db.query", "connection timed out")
-        fp2 = compute_fingerprint("DB_CONN_REFUSED", "executor.db.query", "connection timed out")
-        assert fp1 != fp2
+        """Fingerprint equality across the declared entries matches the fixture."""
+        case = _case("fingerprint_different_errors_no_collision")
+        params, expected = case["input"], case["expected"]
+        fingerprints = [
+            compute_fingerprint(e["code"], e["module_id"], e["message"])
+            for e in params["entries"]
+        ]
+        equal = len(set(fingerprints)) == 1
+        assert equal is expected["fingerprints_equal"], (
+            f"[{case['id']}] fixture declares fingerprints_equal="
+            f"{expected['fingerprints_equal']}, got {equal} for {fingerprints}"
+        )
 
     def test_different_module_ids_different_fingerprints(self) -> None:
         """Same code and message in different modules produce distinct fingerprints."""
@@ -346,6 +435,57 @@ class TestFingerprintDifferentErrorsNoCollision:
 
 
 # ---------------------------------------------------------------------------
+# 8/9. redaction_field_pattern_match, redaction_value_pattern_match
+# ---------------------------------------------------------------------------
+#
+# apcore#93. Both cases used to be transcribed: the patterns, the replacement,
+# the log entry and the expected output were driver literals, and the three
+# ``*_present`` booleans reached no assertion at all — the field case checked
+# only that ``module_id``/``caller_id`` were KEYS of ``extra`` ("value may be
+# None"), which an implementation that drops correlation entirely still
+# satisfies. One driver now runs both cases straight off the fixture, and the
+# correlation fields are asserted by VALUE against the log entry that declared
+# them.
+
+
+def _assert_redaction_case(case_id: str) -> None:
+    from apcore.observability.context_logger import ContextLogger
+
+    case = _case(case_id)
+    params, expected = case["input"], case["expected"]
+    cfg = params["redaction_config"]
+    entry = params["log_entry"]
+
+    buf = io.StringIO()
+    config = RedactionConfig(
+        field_patterns=list(cfg["field_patterns"]),
+        value_patterns=list(cfg["value_patterns"]),
+        replacement=cfg["replacement"],
+    )
+    ctx = _context_for(entry)
+    logger = ContextLogger.from_context(ctx, name="test", output=buf, output_format="json")
+    mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
+
+    mw.before(entry["module_id"], dict(entry["inputs"]), ctx)
+
+    record = json.loads(buf.getvalue().strip())
+    assert record["extra"]["inputs"] == expected["logged_inputs"], (
+        f"[{case_id}] fixture declares logged_inputs={expected['logged_inputs']}, "
+        f"got {record['extra']['inputs']}"
+    )
+
+    # Correlation fields must SURVIVE redaction — present and carrying the
+    # value the log entry declared, not merely present as a null key.
+    for field in ("trace_id", "caller_id", "module_id"):
+        present = record.get(field) == entry[field]
+        assert present is expected[f"{field}_present"], (
+            f"[{case_id}] fixture declares {field}_present="
+            f"{expected[f'{field}_present']}; the record carries {record.get(field)!r} "
+            f"for a declared {entry[field]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 8. redaction_field_pattern_match
 # ---------------------------------------------------------------------------
 
@@ -354,33 +494,8 @@ class TestRedactionFieldPatternMatch:
     """Case: redaction_field_pattern_match"""
 
     def test_field_matching_glob_is_redacted(self) -> None:
-        """Field name matching *password* glob is replaced with the configured replacement."""
-        buf = io.StringIO()
-        config = RedactionConfig(
-            field_patterns=["*password*"],
-            value_patterns=[],
-            replacement="***REDACTED***",
-        )
-        from apcore.observability.context_logger import ContextLogger
-
-        logger = ContextLogger(name="test", output=buf, output_format="json")
-        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
-
-        ctx = Context.create()
-        ctx.call_chain.append("executor.auth.login")
-        mw.before(
-            "executor.auth.login",
-            {"username": "alice", "user_password": "hunter2"},
-            ctx,
-        )
-
-        log_entry = json.loads(buf.getvalue().strip())
-        logged_inputs = log_entry["extra"]["inputs"]
-        assert logged_inputs["username"] == "alice"
-        assert logged_inputs["user_password"] == "***REDACTED***"
-        # Required observability correlation fields must survive redaction (key present, value may be None)
-        assert "module_id" in log_entry["extra"]
-        assert "caller_id" in log_entry["extra"]
+        """Field name matching the declared glob is replaced with the declared string."""
+        _assert_redaction_case("redaction_field_pattern_match")
 
     def test_non_matching_field_not_redacted(self) -> None:
         """Fields not matching any pattern are logged unchanged."""
@@ -408,32 +523,8 @@ class TestRedactionValuePatternMatch:
     """Case: redaction_value_pattern_match"""
 
     def test_value_matching_regex_is_redacted(self) -> None:
-        """Field value matching ^Bearer .* regex is replaced with the replacement."""
-        buf = io.StringIO()
-        config = RedactionConfig(
-            field_patterns=[],
-            value_patterns=[r"^Bearer .*"],
-            replacement="***REDACTED***",
-        )
-        from apcore.observability.context_logger import ContextLogger
-
-        logger = ContextLogger(name="test", output=buf)
-        mw = ObsLoggingMiddleware(logger=logger, log_inputs=True, redaction_config=config)
-
-        ctx = Context.create()
-        mw.before(
-            "executor.http.request",
-            {
-                "url": "https://api.example.com/data",
-                "authorization": "Bearer abc123xyz",
-            },
-            ctx,
-        )
-
-        log_entry = json.loads(buf.getvalue().strip())
-        logged_inputs = log_entry["extra"]["inputs"]
-        assert logged_inputs["url"] == "https://api.example.com/data"
-        assert logged_inputs["authorization"] == "***REDACTED***"
+        """Field value matching the declared regex is replaced with the declared string."""
+        _assert_redaction_case("redaction_value_pattern_match")
 
     def test_non_matching_value_not_redacted(self) -> None:
         """Values not matching any pattern are logged unchanged."""
@@ -455,35 +546,89 @@ class TestRedactionValuePatternMatch:
 # 10. prometheus_format_includes_required_metrics
 # ---------------------------------------------------------------------------
 
+#: The fixture's ``collector_state`` keys name metric FAMILIES; the label sets
+#: are wiring, not expectation, so they live here rather than in the fixture.
+_METRIC_LABELS: dict[str, dict[str, str]] = {
+    "apcore_module_calls_total": {"module_id": "mod.a", "status": "success"},
+    "apcore_module_errors_total": {"module_id": "mod.a", "error_code": "ERR"},
+    "apcore_module_duration_seconds": {"module_id": "mod.a"},
+}
+
+#: ``<family>_observations`` in ``collector_state`` means "observe each of
+#: these values on <family>" rather than "increment <family> by N".
+_OBSERVATIONS_SUFFIX = "_observations"
+
+
+def _assert_prometheus_text(case_id: str, output: str, required: list[str]) -> None:
+    """``format: "prometheus_text"`` made observable.
+
+    Containment alone is satisfied by an exporter that prints the metric names
+    in a comment and nothing else, so the Prometheus text-format framing is
+    asserted too: every required family carries its ``# HELP`` and ``# TYPE``
+    lines, and at least one sample line.
+    """
+    for name in required:
+        assert f"# HELP {name}" in output, (
+            f"[{case_id}] prometheus_text output must carry a HELP line for {name!r}"
+        )
+        assert f"# TYPE {name} " in output, (
+            f"[{case_id}] prometheus_text output must carry a TYPE line for {name!r}"
+        )
+    samples = [
+        line
+        for line in output.splitlines()
+        if line and not line.startswith("#") and any(line.startswith(n) for n in required)
+    ]
+    assert samples, (
+        f"[{case_id}] prometheus_text output carried no sample line for any of {required}"
+    )
+
+
+#: fixture ``expected.format`` -> the check that makes it observable. A
+#: dispatch with no ``else`` would let an unrecognised format skip the
+#: assertion entirely (apcore#93).
+_EXPORT_FORMAT_CHECKS: dict[str, Any] = {"prometheus_text": _assert_prometheus_text}
+
+
 
 class TestPrometheusFormatIncludesRequiredMetrics:
     """Case: prometheus_format_includes_required_metrics"""
 
     def test_output_contains_all_three_required_metrics(self) -> None:
-        """export_prometheus() includes all three mandatory apcore metric families."""
+        """The exported text contains every metric name the fixture requires.
+
+        apcore#93: the three names and the collector state were driver
+        literals, and ``expected.format`` was read by nothing at all. Both now
+        come from the fixture; an unrecognised ``format`` is a hard failure
+        rather than a skipped branch.
+        """
+        case = _case("prometheus_format_includes_required_metrics")
+        params, expected = case["input"], case["expected"]
+
         collector = MetricsCollector()
-        collector.increment_calls("mod.a", "success")
-        collector.increment_calls("mod.a", "success")  # total=2, but we set 42 below via increment
-        collector.reset()
-        collector.increment(
-            "apcore_module_calls_total",
-            {"module_id": "mod.a", "status": "success"},
-            amount=42,
-        )
-        collector.increment(
-            "apcore_module_errors_total",
-            {"module_id": "mod.a", "error_code": "ERR"},
-            amount=3,
-        )
-        collector.observe("apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.01)
-        collector.observe("apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.05)
-        collector.observe("apcore_module_duration_seconds", {"module_id": "mod.a"}, 0.12)
+        for metric, value in params["collector_state"].items():
+            if metric.endswith(_OBSERVATIONS_SUFFIX):
+                name = metric[: -len(_OBSERVATIONS_SUFFIX)]
+                for observation in value:
+                    collector.observe(name, _METRIC_LABELS[name], observation)
+            else:
+                collector.increment(metric, _METRIC_LABELS[metric], amount=value)
 
         output = collector.export_prometheus()
 
-        assert "apcore_module_calls_total" in output
-        assert "apcore_module_errors_total" in output
-        assert "apcore_module_duration_seconds" in output
+        missing = [name for name in expected["output_contains"] if name not in output]
+        assert missing == [], (
+            f"[{case['id']}] fixture requires output_contains="
+            f"{expected['output_contains']}; missing from the export: {missing}"
+        )
+        check_format = dispatch_or_fail(
+            FIXTURE,
+            case["id"],
+            expected["format"],
+            _EXPORT_FORMAT_CHECKS,
+            "export format",
+        )
+        check_format(case["id"], output, expected["output_contains"])
 
     def test_prometheus_text_format_conventions(self) -> None:
         """Output follows Prometheus text format: HELP, TYPE lines, then metric lines."""

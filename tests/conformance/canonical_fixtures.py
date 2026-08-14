@@ -27,7 +27,16 @@ from typing import Any
 
 import pytest
 
-__all__ = ["fixtures_dir", "fixture_path", "load_fixture", "case_ids", "spec_repo_env"]
+__all__ = [
+    "fixtures_dir",
+    "fixture_path",
+    "load_fixture",
+    "case_ids",
+    "spec_repo_env",
+    "expectation_keys",
+    "reject_unknown_expectations",
+    "dispatch_or_fail",
+]
 
 _FIXTURES_ENV = "CONFORMANCE_FIXTURES"
 _SPEC_REPO_ENV = "CONFORMANCE_SPEC_REPO"
@@ -136,3 +145,81 @@ def case_ids(name: str) -> list[str]:
     fixture = load_fixture(name)
     cases = fixture.get("test_cases") or fixture.get("cases") or []
     return [case["id"] for case in cases]
+
+
+# ---------------------------------------------------------------------------
+# Fixture-expectation helpers (apcore#92, apcore#93)
+# ---------------------------------------------------------------------------
+#
+# These live here, beside the loader, because every conformance driver in this
+# repo already imports this module — ``tests/test_conformance.py`` and the
+# per-fixture drivers under ``tests/conformance/``, ``tests/events/`` and
+# ``tests/observability/`` alike. They were introduced privately in
+# ``tests/test_conformance.py`` for apcore#92 and moved here for apcore#93 so
+# there is ONE mechanism rather than a copy per driver file.
+#
+# A fixture's declared expectation is a VALUE — a wire code, a state name, a
+# count. Five driver shapes look like they check it and do not:
+#
+#   1. ``if "expected_error" in case:`` branches on the KEY EXISTING, so the
+#      value the fixture declares never reaches an assertion.
+#   2. ``if code == "X": ...`` with no ``else`` silently skips the whole
+#      assertion block for any value the driver does not recognise.
+#   3. ``else: pytest.raises(Exception)`` / "assert it did not crash" accepts
+#      anything at all.
+#   4. A positive case whose entire assertion is "did not raise" — an
+#      implementation that does nothing also passes. These need an observable
+#      POST-CONDITION.
+#   5. Asserting the fixture's own input back at itself — a tautology that
+#      cannot fail on SDK behaviour.
+#
+# All five make the driver's own literal the contract and the fixture
+# decoration: mutate the declared value in the JSON and the suite stays green,
+# which is exactly what the spec repo's ``conformance/check_case_pinning.py``
+# measures.
+
+
+def expectation_keys(case: dict[str, Any]) -> list[str]:
+    """Top-level keys of *case* that state an expectation rather than an input.
+
+    Mirrors ``check_case_pinning.expectation_keys`` — anything spelled
+    ``expected`` or ``expected_*``.
+    """
+    return sorted(k for k in case if k == "expected" or k.startswith("expected_"))
+
+
+def reject_unknown_expectations(fixture: str, case: dict[str, Any], known: set[str]) -> None:
+    """Fail when a case states an expectation this driver does not read.
+
+    A key nobody reads asserts nothing while reading as covered in the fixture
+    and in every count derived from it.
+    """
+    unknown = sorted(set(expectation_keys(case)) - known)
+    if unknown:
+        pytest.fail(
+            f"[{fixture} :: {case.get('id')!r}] states expectation key(s) {unknown} "
+            f"that this driver does not read. Teach the driver, do not skip it. "
+            f"Known keys: {sorted(known)}"
+        )
+
+
+def dispatch_or_fail(
+    fixture: str,
+    case_id: str,
+    declared: Any,
+    mapping: dict[Any, Any],
+    what: str,
+) -> Any:
+    """Resolve a fixture's declared expectation *declared* through *mapping*.
+
+    The generic form of ``_exc_class_for``: an unrecognised declared value is a
+    hard failure, never a skipped branch. A dispatch with no ``else`` is what
+    turns a wrong fixture value into a passing test — shape 2 above.
+    """
+    if declared not in mapping:
+        pytest.fail(
+            f"[{fixture} :: {case_id}] fixture declares {what} {declared!r}, which this "
+            f"driver does not know how to check. Teach the driver, do not skip it. "
+            f"Known values: {sorted(mapping, key=repr)}"
+        )
+    return mapping[declared]
