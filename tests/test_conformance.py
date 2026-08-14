@@ -37,6 +37,7 @@ from apcore.errors import (
     CircularCallError,
     ErrorCodeCollisionError,
     ErrorCodeRegistry,
+    ModuleError,
 )
 from apcore.schema.loader import SchemaLoader
 from apcore.schema.validator import SchemaValidator
@@ -105,6 +106,88 @@ def _load(name: str) -> dict[str, Any]:
         pytest.skip(f"Fixture {name}.json not found at {path}")
     with open(path) as f:
         return json.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Fixture-expectation helpers (apcore#92)
+# ---------------------------------------------------------------------------
+#
+# A fixture's declared error is a WIRE CODE (``ERROR_CODE_COLLISION``), never a
+# Python class name. Three driver shapes look like they check that and do not:
+#
+#   1. ``if "expected_error" in case:`` branches on the KEY EXISTING, so the
+#      value the fixture declares never reaches an assertion.
+#   2. ``if code == "X": ...`` with no ``else`` silently skips the whole
+#      assertion block for any value the driver does not recognise.
+#   3. ``else: pytest.raises(Exception)`` accepts any error at all.
+#
+# All three make the driver's own literal the contract and the fixture
+# decoration: mutate the declared value in the JSON and the suite stays green.
+# The helpers below exist so the declared value reaches an assertion and an
+# unrecognised expectation is a hard failure — teach the driver, do not skip it.
+# See the ``driver_contract`` block in each fixture and the spec repo's
+# ``conformance/check_case_pinning.py``.
+
+
+def _expectation_keys(case: dict[str, Any]) -> list[str]:
+    """Top-level keys of *case* that state an expectation rather than an input.
+
+    Mirrors ``check_case_pinning.expectation_keys`` — anything spelled
+    ``expected`` or ``expected_*``.
+    """
+    return sorted(k for k in case if k == "expected" or k.startswith("expected_"))
+
+
+def _reject_unknown_expectations(fixture: str, case: dict[str, Any], known: set[str]) -> None:
+    """Fail when a case states an expectation this driver does not read.
+
+    A key nobody reads asserts nothing while reading as covered in the fixture
+    and in every count derived from it.
+    """
+    unknown = sorted(set(_expectation_keys(case)) - known)
+    if unknown:
+        pytest.fail(
+            f"[{fixture} :: {case.get('id')!r}] states expectation key(s) {unknown} "
+            f"that this driver does not read. Teach the driver, do not skip it. "
+            f"Known keys: {sorted(known)}"
+        )
+
+
+def _exc_class_for(
+    fixture: str,
+    case_id: str,
+    wire_code: str,
+    mapping: dict[str, type[Exception]],
+) -> type[Exception]:
+    """Map a fixture's declared WIRE CODE to the SDK exception class carrying it.
+
+    An unrecognised code is a hard failure, never a skipped branch: that is what
+    turns a wrong fixture value into a passing test.
+    """
+    exc_class = mapping.get(wire_code)
+    if exc_class is None:
+        pytest.fail(
+            f"[{fixture} :: {case_id}] fixture declares error code {wire_code!r}, "
+            f"which this driver does not know how to raise. Teach the driver, do "
+            f"not skip it. Known codes: {sorted(mapping)}"
+        )
+    return exc_class
+
+
+def _assert_wire_code(exc: BaseException, wire_code: str, fixture: str, case_id: str) -> None:
+    """Assert the raised error carries the fixture's wire code.
+
+    Errors outside the ``ModuleError`` hierarchy carry no wire code — a fixture
+    that declares ``PARSE_ERROR`` says so explicitly and maps to each SDK's
+    idiomatic invalid-argument signal (Python ``ValueError``), so the class
+    mapping is the whole contract there.
+    """
+    if not isinstance(exc, ModuleError):
+        return
+    assert exc.code == wire_code, (
+        f"[{fixture} :: {case_id}] fixture declares error code {wire_code!r}, "
+        f"but the raised {type(exc).__name__} carries {exc.code!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +301,20 @@ def test_normalize_id(case: dict[str, Any]) -> None:
 
 _version_data = _load("version_negotiation")
 
+#: Fixture WIRE CODE -> the exception class this SDK raises for it.
+#:
+#: This replaces ``if code == "VERSION_INCOMPATIBLE": ... else: raises(Exception)``.
+#: The old ``else`` accepted any error at all — the weakest possible assertion —
+#: so all three negative cases stayed green with their declared code mutated.
+_VERSION_ERROR_MAP: dict[str, type[Exception]] = {
+    "VERSION_INCOMPATIBLE": VersionIncompatibleError,
+    # A14 parse failure has no wire code of its own: the fixture states that
+    # each SDK signals it idiomatically (Python ValueError / TS Error /
+    # Rust ParseError). VersionIncompatibleError is NOT a ValueError, so this
+    # entry cannot be satisfied by the incompatibility path.
+    "PARSE_ERROR": ValueError,
+}
+
 
 @pytest.mark.parametrize(
     "case",
@@ -225,15 +322,15 @@ _version_data = _load("version_negotiation")
     ids=[c["id"] for c in _version_data["test_cases"]],
 )
 def test_version_negotiation(case: dict[str, Any]) -> None:
-    if "expected_error" in case:
-        error_type = case["expected_error"]
-        if error_type == "VERSION_INCOMPATIBLE":
-            with pytest.raises(VersionIncompatibleError):
-                negotiate_version(case["declared"], case["sdk"])
-        else:
-            # PARSE_ERROR or other — any exception is acceptable
-            with pytest.raises(Exception):
-                negotiate_version(case["declared"], case["sdk"])
+    _reject_unknown_expectations("version_negotiation", case, {"expected", "expected_error"})
+    case_id = case["id"]
+    expected_error = case.get("expected_error")
+
+    if expected_error is not None:
+        exc_class = _exc_class_for("version_negotiation", case_id, expected_error, _VERSION_ERROR_MAP)
+        with pytest.raises(exc_class) as exc_info:
+            negotiate_version(case["declared"], case["sdk"])
+        _assert_wire_code(exc_info.value, expected_error, "version_negotiation", case_id)
     else:
         result = negotiate_version(case["declared"], case["sdk"])
         assert result == case["expected"], (
@@ -264,18 +361,53 @@ _call_chain_data = _load("call_chain")
     ids=[c["id"] for c in _call_chain_data["test_cases"]],
 )
 def test_call_chain(case: dict[str, Any]) -> None:
+    _reject_unknown_expectations("call_chain", case, {"expected", "expected_error"})
+    case_id = case["id"]
+    module_id = case["module_id"]
     kwargs: dict[str, Any] = {}
     if "max_call_depth" in case:
         kwargs["max_call_depth"] = case["max_call_depth"]
     if "max_module_repeat" in case:
         kwargs["max_module_repeat"] = case["max_module_repeat"]
 
-    if "expected_error" in case:
-        exc_class = _CALL_CHAIN_ERROR_MAP[case["expected_error"]]
-        with pytest.raises(exc_class):
-            guard_call_chain(case["module_id"], case["call_chain"], **kwargs)
-    else:
-        guard_call_chain(case["module_id"], case["call_chain"], **kwargs)
+    expected_error = case.get("expected_error")
+    if expected_error is not None:
+        exc_class = _exc_class_for("call_chain", case_id, expected_error, _CALL_CHAIN_ERROR_MAP)
+        with pytest.raises(exc_class) as exc_info:
+            guard_call_chain(module_id, case["call_chain"], **kwargs)
+        _assert_wire_code(exc_info.value, expected_error, "call_chain", case_id)
+        return
+
+    if case.get("expected") != "ok":
+        pytest.fail(
+            f"[call_chain :: {case_id}] states expectation {case.get('expected')!r}, "
+            f"which this driver does not recognise. Teach the driver, do not skip it."
+        )
+
+    # Positive case. "It did not raise" is not a post-condition: an
+    # implementation that does nothing at all also does not raise. Assert what
+    # is observably true after a guard that accepted the chain.
+    chain = list(case["call_chain"])
+    result = guard_call_chain(module_id, chain, **kwargs)
+    assert result is None, f"[call_chain :: {case_id}] guard_call_chain signals by raising and returns nothing"
+    assert chain == case["call_chain"], (
+        f"[call_chain :: {case_id}] guard_call_chain MUST NOT mutate the caller's "
+        f"chain; it became {chain!r}"
+    )
+
+    # Boundary probe: the guard accepted this chain because it is WITHIN the
+    # limits, not because it inspects nothing. Re-run it with the one limit the
+    # chain sits under tightened by one and require the matching rejection.
+    # Skipped where the fixture's chain cannot be pushed over a legal limit
+    # (empty_chain, single_element — max_* < 1 is itself invalid input).
+    depth = len(chain)
+    if depth >= 2:
+        with pytest.raises(CallDepthExceededError):
+            guard_call_chain(module_id, chain, **{**kwargs, "max_call_depth": depth - 1})
+    repeats = chain.count(module_id)
+    if repeats >= 2:
+        with pytest.raises(CallFrequencyExceededError):
+            guard_call_chain(module_id, chain, **{**kwargs, "max_module_repeat": repeats - 1})
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +416,80 @@ def test_call_chain(case: dict[str, Any]) -> None:
 
 _error_code_data = _load("error_codes")
 
+#: Fixture WIRE CODE -> the exception class this SDK raises for it.
+#:
+#: ``expected_error`` is the wire code ``ERROR_CODE_COLLISION``. The driver used
+#: to branch on ``if "expected_error" in case`` (the key existing) and assert the
+#: Python class ``ErrorCodeCollisionError``, never comparing the two, so the
+#: declared code could be anything at all and the suite stayed green.
+_ERROR_CODE_ERROR_MAP: dict[str, type[Exception]] = {
+    "ERROR_CODE_COLLISION": ErrorCodeCollisionError,
+}
+
+
+def _run_error_code_registrations(
+    registry: ErrorCodeRegistry,
+    case: dict[str, Any],
+    *,
+    observe: bool,
+) -> None:
+    """Replay a case's registration steps against *registry*.
+
+    One shared body so the positive and negative branches drive exactly the same
+    sequence — the negative branch only wraps it in ``pytest.raises``.
+
+    With ``observe=True`` (the ``expected: "ok"`` path) each step also asserts
+    its OBSERVABLE post-condition against ``registry.all_codes``: a registered
+    code is queryable, an unregistered module's codes are gone. "register() did
+    not raise" is satisfied by an implementation that does nothing at all, which
+    is why those nine cases could not go red.
+    """
+    case_id = case["id"]
+    action = case["action"]
+    # Fixture-declared ownership, so the unregister post-condition never has to
+    # reach into the registry's private state to learn what should have gone.
+    owned: dict[str, set[str]] = {}
+
+    def _register(module_id: str, code: str) -> None:
+        registry.register(module_id, {code})
+        owned.setdefault(module_id, set()).add(code)
+        if observe:
+            assert code in registry.all_codes, (
+                f"[error_codes :: {case_id}] {code!r} registered OK but is not queryable "
+                f"through registry.all_codes"
+            )
+
+    def _unregister(module_id: str) -> None:
+        released = owned.pop(module_id, set())
+        registry.unregister(module_id)
+        if observe:
+            for code in sorted(released):
+                assert code not in registry.all_codes, (
+                    f"[error_codes :: {case_id}] unregister({module_id!r}) left {code!r} in "
+                    f"registry.all_codes, so any later reuse proves nothing"
+                )
+
+    if action == "register":
+        _register(case["module_id"], case["error_code"])
+    elif action == "register_sequence":
+        for step in case["steps"]:
+            _register(step["module_id"], step["error_code"])
+    elif action == "register_unregister_register":
+        for step in case["steps"]:
+            if step["action"] == "register":
+                _register(step["module_id"], step["error_code"])
+            elif step["action"] == "unregister":
+                _unregister(step["module_id"])
+            else:
+                pytest.fail(
+                    f"[error_codes :: {case_id}] unknown step action {step['action']!r}. "
+                    f"Teach the driver, do not skip it."
+                )
+    else:
+        pytest.fail(
+            f"[error_codes :: {case_id}] unknown action {action!r}. Teach the driver, do not skip it."
+        )
+
 
 @pytest.mark.parametrize(
     "case",
@@ -291,30 +497,29 @@ _error_code_data = _load("error_codes")
     ids=[c["id"] for c in _error_code_data["test_cases"]],
 )
 def test_error_codes(case: dict[str, Any]) -> None:
+    _reject_unknown_expectations("error_codes", case, {"expected", "expected_error"})
+    case_id = case["id"]
     registry = ErrorCodeRegistry()
+    expected_error = case.get("expected_error")
+    expected_ok = case.get("expected")
 
-    if case["action"] == "register":
-        if "expected_error" in case:
-            with pytest.raises(ErrorCodeCollisionError):
-                registry.register(case["module_id"], {case["error_code"]})
-        else:
-            registry.register(case["module_id"], {case["error_code"]})
+    if expected_error is not None and expected_ok is not None:
+        pytest.fail(f"[error_codes :: {case_id}] states both expected_error and expected; pick one")
 
-    elif case["action"] == "register_sequence":
-        if "expected_error" in case:
-            with pytest.raises(ErrorCodeCollisionError):
-                for step in case["steps"]:
-                    registry.register(step["module_id"], {step["error_code"]})
-        else:
-            for step in case["steps"]:
-                registry.register(step["module_id"], {step["error_code"]})
+    if expected_error is not None:
+        exc_class = _exc_class_for("error_codes", case_id, expected_error, _ERROR_CODE_ERROR_MAP)
+        with pytest.raises(exc_class) as exc_info:
+            _run_error_code_registrations(registry, case, observe=False)
+        _assert_wire_code(exc_info.value, expected_error, "error_codes", case_id)
+        return
 
-    elif case["action"] == "register_unregister_register":
-        for step in case["steps"]:
-            if step["action"] == "register":
-                registry.register(step["module_id"], {step["error_code"]})
-            elif step["action"] == "unregister":
-                registry.unregister(step["module_id"])
+    if expected_ok != "ok":
+        pytest.fail(
+            f"[error_codes :: {case_id}] states expectation {expected_ok!r}, which this "
+            f"driver does not recognise. Teach the driver, do not skip it."
+        )
+
+    _run_error_code_registrations(registry, case, observe=True)
 
 
 # ---------------------------------------------------------------------------
@@ -612,8 +817,18 @@ def test_schema_validation(
     if "expected_valid" in case:
         expected_valid = case["expected_valid"]
     elif "expected_valid_strict" in case:
-        # This validator was built with coerce_types=True — assert that half.
+        # This validator was built with coerce_types=True, so it asserts the
+        # `_coerce` half. The `_strict` half used to be selected on and then
+        # never read (the branch tested one key and asserted a different one),
+        # so the fixture's strict expectation was decoration — the same
+        # named-but-unasserted shape as apcore#92. Both halves now reach an
+        # assertion, each against a validator built in the matching mode.
         expected_valid = case["expected_valid_coerce"]
+        strict_result = SchemaValidator(coerce_types=False).validate(input_data, model)
+        assert strict_result.valid == case["expected_valid_strict"], (
+            f"schema_validate({case['id']}, coerce_types=False) valid={strict_result.valid}, "
+            f"expected={case['expected_valid_strict']}, errors={strict_result.errors}"
+        )
     else:
         expected_valid = True
 
@@ -816,6 +1031,11 @@ _identity_data = _load("identity_system")
     ids=[c["id"] for c in _identity_data["test_cases"]],
 )
 def test_identity_system(case: dict[str, Any]) -> None:
+    _reject_unknown_expectations(
+        "identity_system",
+        case,
+        {"expected", "expected_type", "expected_roles", "expected_attrs"},
+    )
     identity = Identity(
         id=case["input_id"],
         type=case.get("input_type", "user"),
@@ -838,11 +1058,45 @@ def test_identity_system(case: dict[str, Any]) -> None:
             identity.attrs == case["expected_attrs"]
         ), f"Identity attrs: got {identity.attrs!r}, expected {case['expected_attrs']!r}"
 
-    if case["id"] == "identity_propagates_to_child_context":
+    if "expected" in case:
+        # Child-context propagation. `expected` used to be the prose string
+        # "child.identity === parent.identity" — a sentence in a value slot, so
+        # the driver hardcoded the comparison and the fixture value was
+        # decoration. It is now four declared fields and every one is asserted.
+        expected = case["expected"]
+        known_fields = {
+            "child_identity_id",
+            "child_identity_type",
+            "child_identity_roles",
+            "child_identity_equals_parent",
+        }
+        unknown_fields = sorted(set(expected) - known_fields)
+        assert not unknown_fields, (
+            f"[identity_system :: {case['id']}] expected states field(s) {unknown_fields} "
+            f"this driver does not read. Teach the driver, do not skip it."
+        )
+
         ctx = Context.create(identity=identity)
-        child_module_id = case.get("child_module_id", "target.module")
-        child_ctx = ctx.child(child_module_id)
-        assert child_ctx.identity is identity, "Child context identity must be the same object as the parent identity"
+        child_ctx = ctx.child(case["child_module_id"])
+        assert child_ctx.identity is not None, "child context lost the parent identity entirely"
+        assert child_ctx.identity.id == expected["child_identity_id"], (
+            f"child identity id: {child_ctx.identity.id!r} != {expected['child_identity_id']!r}"
+        )
+        assert child_ctx.identity.type == expected["child_identity_type"], (
+            f"child identity type: {child_ctx.identity.type!r} != {expected['child_identity_type']!r}"
+        )
+        assert list(child_ctx.identity.roles) == expected["child_identity_roles"], (
+            f"child identity roles: {list(child_ctx.identity.roles)!r} != {expected['child_identity_roles']!r}"
+        )
+        equals_parent = child_ctx.identity == ctx.identity
+        assert equals_parent is expected["child_identity_equals_parent"], (
+            f"child identity {child_ctx.identity!r} vs parent {ctx.identity!r}: "
+            f"equality is {equals_parent}, fixture declares {expected['child_identity_equals_parent']}"
+        )
+        # Python-specific and stronger than the cross-language contract above:
+        # Identity is immutable, so child() propagates the same object rather
+        # than a copy. Kept from the pre-#92 driver, which asserted only this.
+        assert child_ctx.identity is identity, "child context identity must be the parent identity object"
 
 
 # ---------------------------------------------------------------------------
@@ -936,6 +1190,16 @@ from apcore.pipeline import PipelineContext  # noqa: E402
 
 _approval_data = _load("approval_gate")
 
+#: Fixture WIRE CODE -> the exception class this SDK raises for it.
+#:
+#: ``expected.http_status`` is deliberately NOT asserted: apcore-python exposes
+#: no HTTP-status surface for error codes, and an assertion with nothing to
+#: observe would be decoration. Recorded in apcore#92 as a cross-SDK gap.
+_APPROVAL_GATE_ERROR_MAP: dict[str, type[Exception]] = {
+    "APPROVAL_DENIED": ApprovalDeniedError,
+    "APPROVAL_PENDING": ApprovalPendingError,
+}
+
 
 class _FixtureApprovalHandler:
     """Approval handler that returns a fixed result from the fixture."""
@@ -999,22 +1263,31 @@ def test_approval_gate(case: dict[str, Any]) -> None:
     expected = case["expected"]
 
     async def _run() -> None:
-        if expected["outcome"] == "proceed":
+        case_id = case["id"]
+        outcome = expected["outcome"]
+        if outcome == "proceed":
             result = await gate.execute(pipe_ctx)
             assert result.action == "continue", f"Expected gate to continue, got action={result.action!r}"
+        elif outcome == "error":
+            # Same audit as apcore#92: this used to dispatch on the expected
+            # error code and fall through to `raises(Exception)`, which any
+            # error at all satisfies. The code is now mapped, and an
+            # unrecognised one is a hard failure.
+            error_code = expected["error_code"]
+            exc_class = _exc_class_for("approval_gate", case_id, error_code, _APPROVAL_GATE_ERROR_MAP)
+            with pytest.raises(exc_class) as exc_info:
+                await gate.execute(pipe_ctx)
+            _assert_wire_code(exc_info.value, error_code, "approval_gate", case_id)
+            if "approval_id" in expected:
+                assert exc_info.value.approval_id == expected["approval_id"], (
+                    f"[approval_gate :: {case_id}] approval_id: "
+                    f"{exc_info.value.approval_id!r} != {expected['approval_id']!r}"
+                )
         else:
-            error_code = expected.get("error_code", "")
-            if error_code == "APPROVAL_DENIED":
-                with pytest.raises(ApprovalDeniedError):
-                    await gate.execute(pipe_ctx)
-            elif error_code == "APPROVAL_PENDING":
-                with pytest.raises(ApprovalPendingError) as exc_info:
-                    await gate.execute(pipe_ctx)
-                if "approval_id" in expected:
-                    assert exc_info.value.approval_id == expected["approval_id"]
-            else:
-                with pytest.raises(Exception):
-                    await gate.execute(pipe_ctx)
+            pytest.fail(
+                f"[approval_gate :: {case_id}] unknown outcome {outcome!r}. "
+                f"Teach the driver, do not skip it."
+            )
 
         gate_invoked = handler is not None and handler.called
         assert (
@@ -1096,7 +1369,15 @@ def test_binding_errors(case: dict[str, Any]) -> None:
                 assert substring in err.message, f"[{case['id']}] expected {substring!r} in message {err.message!r}"
 
     else:
-        pytest.skip(f"Unknown error_code {error_code!r}")
+        # A skip here is the same silent-branch defect as apcore#92: a fixture
+        # code this driver does not know would be reported as "skipped", which
+        # reads as deliberate, while nothing at all is checked. The one genuinely
+        # per-SDK code (PIPELINE_HANDLER_NOT_SUPPORTED, Rust-only) is skipped
+        # explicitly above; anything else is a driver that needs teaching.
+        pytest.fail(
+            f"[binding_errors :: {case['id']}] declares error code {error_code!r}, which "
+            f"this driver does not know. Teach the driver, do not skip it."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1150,6 +1431,18 @@ from apcore.registry.types import DependencyInfo  # noqa: E402
 
 _dep_version_data = _load("dependency_version_constraints")
 
+#: Fixture WIRE CODE -> the exception class this SDK raises for it.
+#:
+#: The driver used to dispatch on the expected VALUE with no ``else``:
+#: ``if error_code == "DEPENDENCY_VERSION_MISMATCH": ...``. Every *_violated*
+#: case — the entire negative half of this fixture — therefore skipped its
+#: assertion block whenever the declared value was anything else, so an
+#: implementation that always reported "constraint satisfied" passed every case
+#: the fixture actually ran.
+_DEPENDENCY_ERROR_MAP: dict[str, type[Exception]] = {
+    "DEPENDENCY_VERSION_MISMATCH": DependencyVersionMismatchError,
+}
+
 
 @pytest.mark.parametrize(
     "case",
@@ -1194,28 +1487,33 @@ def test_dependency_version_constraints(case: dict[str, Any]) -> None:
             both_loaded = dependent in load_order and dependency in load_order
             edge_dropped = both_loaded and load_order.index(dependency) > load_order.index(dependent)
             assert edge_dropped, f"{expected['skipped_edges']!r} not dropped; load_order={load_order!r}"
+    elif expected["outcome"] == "error":
+        error_code = expected["error_code"]
+        exc_class = _exc_class_for("dependency_version_constraints", case["id"], error_code, _DEPENDENCY_ERROR_MAP)
+        with pytest.raises(exc_class) as exc_info:
+            resolve_dependencies(modules_input, module_versions=module_versions)
+        err = exc_info.value
+        _assert_wire_code(err, error_code, "dependency_version_constraints", case["id"])
+        # Every field the fixture declares is compared against the error the SDK
+        # actually raised — `required` and `actual` in particular, because they
+        # are what distinguishes "the checker rejected the right pair" from "the
+        # checker rejected something".
+        for field in ("module_id", "dependency_id", "required", "actual"):
+            assert err.details.get(field) == expected[field], (
+                f"[dependency_version_constraints :: {case['id']}] error {field}: "
+                f"{err.details.get(field)!r} != {expected[field]!r}"
+            )
     else:
-        error_code = expected.get("error_code")
-        if error_code == "DEPENDENCY_VERSION_MISMATCH":
-            with pytest.raises(DependencyVersionMismatchError) as exc_info:
-                resolve_dependencies(modules_input, module_versions=module_versions)
-            err = exc_info.value
-            assert (
-                err.details.get("module_id") == expected["module_id"]
-            ), f"error module_id: {err.details.get('module_id')!r} != {expected['module_id']!r}"
-            assert (
-                err.details.get("dependency_id") == expected["dependency_id"]
-            ), f"error dependency_id: {err.details.get('dependency_id')!r} != {expected['dependency_id']!r}"
-        else:
-            with pytest.raises(Exception):
-                resolve_dependencies(modules_input, module_versions=module_versions)
+        pytest.fail(
+            f"[dependency_version_constraints :: {case['id']}] unknown outcome "
+            f"{expected['outcome']!r}. Teach the driver, do not skip it."
+        )
 
 
 # ---------------------------------------------------------------------------
 # 21. Middleware On-Error Recovery (A11)
 # ---------------------------------------------------------------------------
 
-from apcore.errors import ModuleError  # noqa: E402
 from apcore.middleware.base import Middleware  # noqa: E402
 from apcore.middleware.manager import MiddlewareManager  # noqa: E402
 
@@ -1328,6 +1626,13 @@ def test_middleware_on_error_recovery(case: dict[str, Any]) -> None:
             # execute_after can legitimately modify output — that's by design.
             # The key invariant is that on_error handlers are not invoked on success.
             assert final_output is not None, "execute_after must return a non-None output"
+    else:
+        # Value dispatch with no else is the apcore#92 shape: an outcome this
+        # driver does not recognise would skip every assertion above and pass.
+        pytest.fail(
+            f"[middleware_on_error_recovery :: {case['id']}] unknown outcome "
+            f"{expected['outcome']!r}. Teach the driver, do not skip it."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1841,14 +2146,34 @@ def test_context_create_unified_signature(case: dict[str, Any]) -> None:
         assert raised_error is expected["raised_error"]
 
     elif case_id == "executor_rejects_cross_executor_rebind":
+        # The fixture used to say `expected_one_of: [raise, silent_accept]`; a
+        # driver cannot assert an alternation, so this branch hardcoded "raise"
+        # and read the fixture only in a comment. The spec now makes the raise a
+        # MUST and declares the WIRE CODE, so both declared fields are observed:
+        # that it raised at all, and which code came out. `ContextBindingError`
+        # is a class name two SDKs share and apcore-rust does not have.
         executor_a = _build_executor_with_echo("test.echo")
         executor_b = _build_executor_with_echo("test.echo")
         ctx = Context.create()
         executor_a.call("test.echo", {}, context=ctx)
         assert ctx.executor is executor_a
-        # Python SDK chooses the "raise" branch of expected_one_of.
-        with pytest.raises(_ContextBindingError):
+        raised_code: str | None = None
+        try:
             executor_b.call("test.echo", {}, context=ctx)
+        except ModuleError as exc:
+            raised_code = exc.code
+        assert (raised_code is not None) is expected["raises"], (
+            f"cross-executor rebind: raised={raised_code!r}, fixture declares raises="
+            f"{expected['raises']}"
+        )
+        assert raised_code == expected["error_code"], (
+            f"cross-executor rebind raised {raised_code!r}, fixture declares "
+            f"{expected['error_code']!r}"
+        )
+        # The wire code is the contract; this pins the Python class that carries
+        # it so a future refactor cannot quietly move the code onto another type.
+        assert issubclass(_ContextBindingError, ModuleError)
+        assert _ContextBindingError().code == expected["error_code"]
 
     elif case_id == "child_propagates_executor":
         executor = _build_executor_with_echo("test.echo")
