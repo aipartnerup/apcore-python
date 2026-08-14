@@ -64,7 +64,9 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
-    "ruff>=0.15.0",
+    # Bound the minor: ruff 0.x treats the minor as its major, and each minor can
+    # change lint defaults and formatter output. Raise deliberately.
+    "ruff>=0.15.0,<0.17",
     "mypy>=1.0",
     "apdev[dev]>=0.2.3",
 ]
@@ -75,6 +77,13 @@ where = ["src"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. Ruff's implicit default selection changes between
+# releases (0.16 widened it from E4/E7/E9/F to a much larger set), which made CI
+# fail on a newer ruff while an older local ruff passed. Widening the selection
+# is a deliberate change, not a side effect of upgrading the linter.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.11"
