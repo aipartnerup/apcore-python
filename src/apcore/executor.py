@@ -70,12 +70,21 @@ __all__ = ["Executor"]
 
 _logger = logging.getLogger(__name__)
 
+# Canonical PreflightResult check names (PROTOCOL_SPEC §12.8.4 enum). Named
+# rather than spelled inline because §12.8.5.1 makes `acl` the switch that
+# withholds the other two — a rename that silently stopped matching would turn
+# the disclosure gate off. apcore-rust exports the same three as public
+# constants (`apcore::ACL_CHECK_NAME` and friends).
+_ACL_CHECK = "acl"
+_MODULE_PREFLIGHT_CHECK = "module_preflight"
+_MODULE_PREVIEW_CHECK = "module_preview"
+
 # Map pipeline step names to PreflightResult check names
 _STEP_TO_CHECK: dict[str, str] = {
     "context_creation": "context",
     "call_chain_guard": "call_chain",
     "module_lookup": "module_lookup",
-    "acl_check": "acl",
+    "acl_check": _ACL_CHECK,
     "approval_gate": "approval",
     "middleware_before": "middleware",
     "input_validation": "schema",
@@ -104,7 +113,7 @@ _PREFLIGHT_CHECK_BY_TYPE: list[tuple[type[BaseException], str]] = [
     # Ordered: more specific first. isinstance() matches subclasses, so
     # walking in declaration order is enough to give the narrowest label.
     (ModuleNotFoundError, "module_lookup"),
-    (ACLDeniedError, "acl"),
+    (ACLDeniedError, _ACL_CHECK),
     (SchemaValidationError, "schema"),
     (InvalidInputError, "schema"),
     (CallDepthExceededError, "call_chain"),
@@ -648,9 +657,28 @@ class Executor:
                 # so preflight reports the same verdict the gate will enforce.
                 requires_approval = self._policy.resolve(module_id, annotations).needs_approval
 
+        # Module-level introspection is gated on TWO conditions, not one.
+        #
+        # 1. Module lookup succeeded (`pipe_ctx.module` is not None).
+        # 2. The ACL did not deny the call — PROTOCOL_SPEC §12.8.5.1.
+        #
+        # Condition 2 is the security half. `preflight()` and `preview()` are
+        # module-authored code, and what they return names what the call would
+        # do: the resolved binary and argv of a command-wrapping module, the
+        # target of a write. Module lookup is Step 3 and the ACL check is Step
+        # 4, so gating on lookup alone runs module code for a caller the ACL
+        # just denied and hands back what it said.
+        #
+        # Scoped to authorization deliberately: a failed `schema` check does
+        # NOT suppress introspection, because a caller the ACL permits is
+        # entitled to the module's account of what would happen even when its
+        # inputs are malformed.
+        acl_denied = any(c.check == _ACL_CHECK and not c.passed for c in checks)
+
         # Module-level preflight (optional)
         if (
-            pipe_ctx.module is not None
+            not acl_denied
+            and pipe_ctx.module is not None
             and hasattr(pipe_ctx.module, "preflight")
             and callable(pipe_ctx.module.preflight)
         ):
@@ -659,17 +687,17 @@ class Executor:
                 if isinstance(preflight_warnings, list) and preflight_warnings:
                     checks.append(
                         PreflightCheckResult(
-                            check="module_preflight",
+                            check=_MODULE_PREFLIGHT_CHECK,
                             passed=True,
                             warnings=preflight_warnings,
                         )
                     )
                 else:
-                    checks.append(PreflightCheckResult(check="module_preflight", passed=True))
+                    checks.append(PreflightCheckResult(check=_MODULE_PREFLIGHT_CHECK, passed=True))
             except Exception as exc:
                 checks.append(
                     PreflightCheckResult(
-                        check="module_preflight",
+                        check=_MODULE_PREFLIGHT_CHECK,
                         passed=True,
                         warnings=[f"preflight() raised {type(exc).__name__}: {exc}"],
                     )
@@ -680,7 +708,12 @@ class Executor:
         # surface the failure as a warning on the module_preview check rather
         # than failing validation. This mirrors preflight() exception semantics.
         predicted_changes: list[Change] = []
-        if pipe_ctx.module is not None and hasattr(pipe_ctx.module, "preview") and callable(pipe_ctx.module.preview):
+        if (
+            not acl_denied
+            and pipe_ctx.module is not None
+            and hasattr(pipe_ctx.module, "preview")
+            and callable(pipe_ctx.module.preview)
+        ):
             try:
                 raw = pipe_ctx.module.preview(inputs, pipe_ctx.context)
                 # Support both sync and async preview() implementations.
@@ -688,11 +721,11 @@ class Executor:
                     raw = await raw
                 if isinstance(raw, PreviewResult):
                     predicted_changes = list(raw.changes)
-                checks.append(PreflightCheckResult(check="module_preview", passed=True))
+                checks.append(PreflightCheckResult(check=_MODULE_PREVIEW_CHECK, passed=True))
             except Exception as exc:
                 checks.append(
                     PreflightCheckResult(
-                        check="module_preview",
+                        check=_MODULE_PREVIEW_CHECK,
                         passed=True,
                         warnings=[f"preview() raised {type(exc).__name__}: {exc}"],
                     )

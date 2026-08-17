@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Release note:** this section contains BREAKING changes. It must ship as a
 > **minor** (or major) version bump, never a patch.
 
+### Changed
+
+- **BREAKING (security): a failed `acl` check now withholds module-level introspection from `validate()` (spec v1.13.0 §12.8.5.1, apcore#96).** `validate()` looked the module up at Step 3 and ran `preflight()` and `preview()` at Check 7 on the strength of that lookup alone, so a caller the ACL had just denied still made module-authored code run and still received what it returned. For a command-wrapping module that is the resolved binary and its argv; for a writer it is the target of the side effect. All three SDKs did it, and `apcore-mcp-rust` had already grown a string-matched disclosure filter over the top of it, which is the evidence the gap was reachable in a shipped product rather than theoretical.
+
+  `validate()` no longer invokes either hook, emits a `module_preflight` / `module_preview` check, or populates `predicted_changes` when the `acl` check failed. The failed `acl` check itself is still reported, so a denied caller still learns *why*, and no other check is suppressed: the rule is about **authorization**, not validity. A failed `schema` check does **not** suppress introspection — a caller the ACL permits is entitled to the module's account of what would happen even when its inputs are malformed, which is what it needs in order to fix the call. Pinned by `conformance/fixtures/preflight_disclosure.json` (4 cases), whose control case exists so that an implementation which never introspects at all cannot pass the denial cases for the wrong reason.
+
 ### Added
 
 
