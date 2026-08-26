@@ -476,20 +476,43 @@ class TestModuleBoundaryDoesNotCoerceTypes:
         with pytest.raises(SchemaValidationError):
             await BuiltinInputValidation().execute(ctx)
 
-    async def test_raw_dict_schema_module_still_passes_through(self) -> None:
+    async def test_raw_dict_schema_module_accepts_the_strict_keyword(self) -> None:
         """A module that declared its schema as a raw dict must not break.
 
-        ``_DictSchemaAdapter.model_validate`` is a pass-through; it has to accept
-        the ``strict`` keyword the boundary now passes.
+        ``_DictSchemaAdapter.model_validate`` has to accept the ``strict``
+        keyword the boundary passes. Valid input, so this asserts the signature
+        and nothing else.
         """
         from apcore.registry.registry import _DictSchemaAdapter
 
         module = FakeModule(
             input_schema=_DictSchemaAdapter({"type": "object", "properties": {"a": {"type": "integer"}}})
         )
-        ctx = _make_ctx(inputs={"a": "42"}, module=module)
+        ctx = _make_ctx(inputs={"a": 42}, module=module)
         result = await BuiltinInputValidation().execute(ctx)
         assert result.action == "continue"
+
+    async def test_raw_dict_schema_is_enforced_not_passed_through(self) -> None:
+        """The same parity this class exists for, for dict-declared schemas.
+
+        ``_DictSchemaAdapter`` used to return the data unchanged, so every
+        constraint a dict schema declared was inert -- while apcore-typescript
+        and apcore-rust enforced them.
+        """
+        from apcore.registry.registry import _DictSchemaAdapter
+
+        module = FakeModule(
+            input_schema=_DictSchemaAdapter(
+                {
+                    "type": "object",
+                    "properties": {"a": {"type": "integer"}},
+                    "required": ["a"],
+                }
+            )
+        )
+        ctx = _make_ctx(inputs={"a": "42"}, module=module)
+        with pytest.raises(SchemaValidationError):
+            await BuiltinInputValidation().execute(ctx)
 
 
 class TestMiddlewareBeforeStep:

@@ -239,6 +239,61 @@ class StrategyInfo:
         return f"{self.step_count}-step pipeline: " + " \u2192 ".join(self.step_names)
 
 
+@dataclass(frozen=True)
+class GovernanceState:
+    """What is actually gating an executor's registry (PROTOCOL_SPEC 6.6.5).
+
+    Eight plain observations plus one derived flag. ``acl is not None`` is not
+    the answer to "what is gating this registry": the ACL and approval gates are
+    pipeline *steps*, and the ``internal``, ``testing`` and ``minimal``
+    strategies all remove them -- so an executor can hold an ACL that no step
+    ever consults.
+
+    Returned by :meth:`apcore.Executor.governance_state`. Pure data: reading it
+    enforces nothing and changes nothing.
+    """
+
+    control_modules_registered: bool
+    """At least one ``system.control.*`` module is in the registry."""
+
+    read_modules_registered: bool
+    """At least one read-only ``system.*`` module is in the registry."""
+
+    acl_configured: bool
+    """An ACL object is attached to the executor."""
+
+    builtin_acl_gate_wired: bool
+    """The running strategy contains the built-in ACL gate, matched by TYPE."""
+
+    approval_handler_configured: bool
+    """An ``ApprovalHandler`` is attached."""
+
+    builtin_approval_gate_wired: bool
+    """The running strategy contains the built-in approval gate, matched by TYPE."""
+
+    policy_strict: bool
+    """An ``ExecutionPolicy`` with ``strict=True`` is attached."""
+
+    all_control_modules_require_approval: bool
+    """Every registered ``system.control.*`` module declares ``requires_approval``.
+
+    Required by the derived flag because the two gates are not symmetric
+    (PROTOCOL_SPEC 6.6.5.1.1): ``acl_check`` evaluates every call, but
+    ``approval_gate`` resolves per module and returns before consulting the
+    handler when the module does not need approval. ``False`` when no control
+    module is registered.
+    """
+
+    unprotected_control_surface: bool
+    """Control modules are registered and no recognised built-in gate engages.
+
+    Reports the **absence of a gate**, never the presence of protection: a wired
+    ACL that permits every call still yields ``False``. And ``True`` does not
+    mean the call will succeed -- a custom step, custom middleware or an
+    upstream gateway is invisible here by construction.
+    """
+
+
 class ExecutionStrategy:
     """An ordered sequence of steps that defines how a module is executed."""
 

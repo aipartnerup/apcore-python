@@ -8,7 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+> **Release note:** this section contains BREAKING changes (input validation now
+> runs for dict-declared schemas, and `p99_latency_ms` changes value). It must
+> ship as a **minor** (or major) version bump, never a patch.
+
+### Added
+
+- **`Executor.governance_state()` (spec v1.16.0 §6.6.5, apcore#97).** A read-only accessor returning a `GovernanceState` of eight observations plus one derived flag: what is *configured* on this executor versus what is actually *wired* into the running pipeline. `acl is not None` was never the answer to "what is gating this registry" — the ACL and approval gates are pipeline steps, and the `internal`, `testing` and `minimal` presets all remove them, so an executor can hold an ACL that no step consults.
+
+  Gate detection is by **type** (`isinstance(step, BuiltinACLCheck)`), never by step name: a custom step named `acl_check` that never reads an ACL must not set `builtin_acl_gate_wired`, because a false `True` there reports a gate that is not present — the one direction the flag must never fail in.
+
+  `all_control_modules_require_approval` is a required conjunct of the derived flag, because the two gates are not symmetric (§6.6.5.1.1): `acl_check` evaluates every call, while `approval_gate` returns before consulting the handler when the module does not declare `requires_approval`. It reads the annotation through the same `_module_requires_approval` predicate the gate itself uses, so the accessor cannot disagree with the pipeline it describes.
+
+  The accessor is a pure read — it never enforces, warns, throws or mutates — computes live rather than caching, and returns booleans only: no ACL object, handler or policy leaks out. `GovernanceState` is exported from the package root.
+
+### Changed
+
+- **BREAKING: input validation now runs for modules that declare `input_schema` / `output_schema` as a raw dict.** `_DictSchemaAdapter.model_validate` was a pass-through. Its own comment justified this by `jsonschema` being "not currently declared" as a dependency — stale, since it is a hard dependency in `pyproject.toml`, and `apcore.schema.hardening.validate_schema_dict` has existed for some time. The effect was that **every constraint a dict schema declared was inert**: `required`, `enum`, `minimum`, `pattern` and even `type`, on user modules and on all nine `system.*` modules. `{"n": "not-an-int"}` against `{"n": {"type": "integer"}, "required": ["n"]}` was accepted, and so was `{}`.
+
+  apcore-typescript (`validateSchema`) and apcore-rust (`validate_against_schema`) both enforced these, so the same module contract meant two different things depending on which SDK loaded it. Validation failures now raise `SchemaValidationError` with wire code `SCHEMA_VALIDATION_ERROR` — the same code the Pydantic path produces, so a caller cannot tell how a module declared its schema.
+
+  **Modules that relied on the laxness will now fail.** That is the point: they were being validated everywhere except here. `system.control.update_config` had already grown a hand-written re-check of its own `required` list inside `execute()` to work around this.
+
+- **BREAKING: `p99_latency_ms` changes value (spec v1.14.0 §6.7.1.3, apcore#96).** `_compute_p99` computed the nearest-rank index and then discarded it, returning `sorted[rank]` — one element past the rank it had just computed — whenever `rank < N`. For 100 samples `1..100` it answered 100 where apcore-typescript and apcore-rust answered 99. It now returns `sorted[min(ceil(0.99·N), N) − 1]`, with no interpolation and `0.0` for an empty sample set.
+
+  A value disagreement inside a `number` field is invisible to any schema, which is why this survived: the test that covered it asserted `p99 >= 100.0` for a sample of 99×10ms plus one 100ms outlier. The nearest-rank 99th percentile of that distribution is 10.0 — 99% of the samples are at or below it — so the assertion was pinning the defect. Replaced with four tests asserting exact values, including the spec's normative worked example.
+
+- **`period` on `system.usage.summary` / `system.usage.module` is constrained by the schema (spec v1.14.0 §6.7.1.1, apcore#96).** `input_schema` now declares `"pattern": "^[1-9][0-9]*[hd]$"`, so a malformed value is rejected at input validation with `SCHEMA_VALIDATION_ERROR` rather than reaching `_parse_period`. Previously `"0h"`, `"-5d"` and `"+3h"` were accepted and silently produced an empty or negative window — a report that reads as "no traffic" rather than as bad input — while apcore-typescript rejected all three.
 
 ---
 

@@ -70,8 +70,18 @@ class UsageSummaryModule:
         "properties": {
             "period": {
                 "type": "string",
-                "description": "Time period for usage data",
+                "description": (
+                    "Time window: a positive integer followed by 'h' (hours) or "
+                    "'d' (days), e.g. '1h', '24h', '7d'. Every statistic in the "
+                    "output is computed over [now - period, now]."
+                ),
                 "default": "24h",
+                # PROTOCOL_SPEC 6.7.1.1: declared here so a malformed value is
+                # rejected by input validation with SCHEMA_VALIDATION_ERROR,
+                # uniformly across SDKs, rather than by _parse_period raising a
+                # language-native ValueError -- or, for "0h" / "-5d" / "+3h",
+                # silently producing an empty or negative window.
+                "pattern": "^[1-9][0-9]*[hd]$",
             },
         },
     }
@@ -155,17 +165,23 @@ class HourlyBucketEntry:
 
 
 def _compute_p99(latencies: list[float]) -> float:
-    """Compute the 99th percentile from a list of latency values using nearest-rank."""
+    """Compute the 99th percentile using nearest-rank (PROTOCOL_SPEC 6.7.1.3).
+
+    ``sorted[min(ceil(0.99 * N), N) - 1]``, no interpolation, 0.0 for an empty
+    sample set. For 100 samples ``1..100`` the answer is 99, not 100.
+
+    This function previously computed ``idx`` and then discarded it, returning
+    ``sorted_lat[rank]`` -- one element past the rank it had just computed --
+    whenever ``rank < N``. apcore-typescript and apcore-rust both returned the
+    element AT the rank, so the same latency samples produced a different p99 in
+    Python than in the other two SDKs, inside a field typed ``number`` where no
+    schema could see it.
+    """
     if not latencies:
         return 0.0
     sorted_lat = sorted(latencies)
-    # Nearest-rank method: index = ceil(p/100 * N) - 1
     rank = math.ceil(0.99 * len(sorted_lat))
     idx = min(rank, len(sorted_lat)) - 1
-    # For the 99th percentile, we want the value at or above the 99th rank
-    # Use the next higher index when there are enough values
-    if rank < len(sorted_lat):
-        return sorted_lat[rank]
     return sorted_lat[idx]
 
 
@@ -227,8 +243,18 @@ class UsageModule:
             },
             "period": {
                 "type": "string",
-                "description": "Time period for usage data",
+                "description": (
+                    "Time window: a positive integer followed by 'h' (hours) or "
+                    "'d' (days), e.g. '1h', '24h', '7d'. Every statistic in the "
+                    "output is computed over [now - period, now]."
+                ),
                 "default": "24h",
+                # PROTOCOL_SPEC 6.7.1.1: declared here so a malformed value is
+                # rejected by input validation with SCHEMA_VALIDATION_ERROR,
+                # uniformly across SDKs, rather than by _parse_period raising a
+                # language-native ValueError -- or, for "0h" / "-5d" / "+3h",
+                # silently producing an empty or negative window.
+                "pattern": "^[1-9][0-9]*[hd]$",
             },
         },
         "required": ["module_id"],

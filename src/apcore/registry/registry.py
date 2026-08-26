@@ -48,10 +48,15 @@ class _DictSchemaAdapter:
     other code that calls ``model_validate``, ``model_json_schema``, or
     ``model_rebuild`` on a schema object.
 
-    Note: ``model_validate`` is a pass-through — no JSON Schema validation is
-    performed.  Adding real validation would require a ``jsonschema`` dependency
-    which is not currently declared.  Modules that need strict input checking
-    should use Pydantic model classes or validate inside ``execute()``.
+    ``model_validate`` validates *data* against the declared schema, so a dict
+    schema is the same contract a Pydantic model would be. It used to be a
+    pass-through, justified in a comment by ``jsonschema`` "not currently
+    declared" -- stale since it became a hard dependency. The effect was that
+    every constraint a dict schema declared was inert in apcore-python:
+    ``required``, ``enum``, ``minimum`` and ``type`` alike, on user modules and
+    on all nine ``system.*`` modules. apcore-typescript (``validateSchema``) and
+    apcore-rust (``validate_against_schema``) both enforced them, so the same
+    module contract meant two different things depending on the SDK.
     """
 
     def __init__(self, schema: dict[str, Any]) -> None:
@@ -61,13 +66,27 @@ class _DictSchemaAdapter:
         return self._schema
 
     def model_validate(self, data: Any, *, strict: bool | None = None) -> Any:
-        """Pass-through: returns *data* unchanged (no validation).
+        """Validate *data* against the declared dict schema.
 
-        ``strict`` is accepted and ignored so this shim stays signature-
-        compatible with ``BaseModel.model_validate``: the module-invocation
-        boundary passes ``strict=True`` (TYPE_MAPPING §17.3) and must not blow
-        up on a module that declared its schema as a raw dict.
+        ``strict`` is accepted for signature compatibility with
+        ``BaseModel.model_validate`` -- the module-invocation boundary passes
+        ``strict=True`` (TYPE_MAPPING §17.3) -- and is not a knob: this path
+        never coerces, so it is already strict.
+
+        Raises:
+            SchemaValidationError: with wire code ``SCHEMA_VALIDATION_ERROR``,
+                the same code the Pydantic path produces, so a caller cannot
+                tell which way a module declared its schema.
         """
+        from apcore.errors import SchemaValidationError
+        from apcore.schema.hardening import validate_schema_dict
+
+        result = validate_schema_dict(data, self._schema)
+        if not result.valid:
+            raise SchemaValidationError(
+                message=f"Input validation failed: {result.errors}",
+                errors=result.errors,
+            )
         return data
 
     def model_rebuild(self) -> None:

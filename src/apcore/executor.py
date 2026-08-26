@@ -53,6 +53,7 @@ from apcore.policy import ExecutionPolicy
 from apcore.pipeline import (
     AbortReason,
     ExecutionStrategy,
+    GovernanceState,
     PipelineAbortError,
     PipelineContext,
     PipelineEngine,
@@ -1444,6 +1445,86 @@ class Executor:
     def current_strategy(self) -> ExecutionStrategy:
         """Return the current execution strategy."""
         return self._strategy
+
+    def governance_state(self) -> GovernanceState:
+        """Return what is actually gating this executor (PROTOCOL_SPEC 6.6.5).
+
+        A **pure read**: it never enforces, warns, throws or mutates. What to do
+        about an unprotected control surface belongs to the caller -- a
+        serve-time adapter may warn or refuse, a test may assert, a health
+        endpoint may report. Putting the reaction here would make it
+        unavoidable and untestable.
+
+        The value is computed fresh on every call, so attaching an ACL or
+        swapping the strategy is visible in the next one.
+
+        Returns:
+            A :class:`~apcore.pipeline.GovernanceState` of eight observations
+            plus one derived flag.
+        """
+        from apcore.builtin_steps import (
+            BuiltinACLCheck,
+            BuiltinApprovalGate,
+            _module_requires_approval,
+        )
+
+        steps = self._strategy.steps
+        # Gate detection is by TYPE, never by step name (PROTOCOL_SPEC 6.6.5.2).
+        # `StrategyInfo` carries names only, and a custom step named
+        # `acl_check` that never consults an ACL would satisfy a name test --
+        # producing `builtin_acl_gate_wired=True` for a gate that is not there.
+        # That is the one direction this accessor must never fail in.
+        acl_gate_wired = any(isinstance(step, BuiltinACLCheck) for step in steps)
+        approval_gate_wired = any(isinstance(step, BuiltinApprovalGate) for step in steps)
+
+        # `visibility` must include hidden: the accessor reports what is
+        # REGISTERED, and `list()` defaults to public-only. A control module
+        # registered with `discoverable: false` is still callable by ID, so
+        # omitting it would under-report the write surface.
+        all_ids = self._registry.list(visibility=["public", "hidden"])
+        control_ids = [mid for mid in all_ids if mid.startswith("system.control.")]
+        read_modules_registered = any(
+            mid.startswith(("system.health.", "system.usage.", "system.manifest."))
+            for mid in all_ids
+        )
+
+        # Read the annotation through the SAME predicate the approval gate uses.
+        # A second reading of `requires_approval` here would be a second way for
+        # the accessor to disagree with the pipeline it describes.
+        all_control_require_approval = bool(control_ids) and all(
+            _module_requires_approval(self._registry.get(mid)) for mid in control_ids
+        )
+
+        acl_configured = self._acl is not None
+        handler_configured = self._approval_handler is not None
+        policy_strict = self._policy is not None and bool(
+            getattr(self._policy, "strict", False)
+        )
+
+        # PROTOCOL_SPEC 6.6.5.1. The approval conjunct carries
+        # `all_control_modules_require_approval` because `approval_gate` is
+        # per-module conditional while `acl_check` is not (6.6.5.1.1).
+        unprotected = (
+            bool(control_ids)
+            and not (acl_configured and acl_gate_wired)
+            and not (
+                approval_gate_wired
+                and all_control_require_approval
+                and (handler_configured or policy_strict)
+            )
+        )
+
+        return GovernanceState(
+            control_modules_registered=bool(control_ids),
+            read_modules_registered=read_modules_registered,
+            acl_configured=acl_configured,
+            builtin_acl_gate_wired=acl_gate_wired,
+            approval_handler_configured=handler_configured,
+            builtin_approval_gate_wired=approval_gate_wired,
+            policy_strict=policy_strict,
+            all_control_modules_require_approval=all_control_require_approval,
+            unprotected_control_surface=unprotected,
+        )
 
     def describe_pipeline(self) -> StrategyInfo:
         """Return an AI-introspectable description of the current pipeline.

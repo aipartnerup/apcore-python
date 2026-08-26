@@ -177,19 +177,59 @@ class TestUsageModuleHourlyDistributionCounts:
 
 
 class TestUsageModuleP99Latency:
-    def test_usage_module_p99_latency(self) -> None:
-        """Record known latencies; verify p99 is approximately the 99th percentile."""
+    """Nearest-rank p99 per PROTOCOL_SPEC 6.7.1.3.
+
+    ``sorted[min(ceil(0.99 * N), N) - 1]``, no interpolation. These assert the
+    exact value: p99 is a ``number`` in a ``number`` field, so no schema can
+    catch a wrong one, and the previous ``>= 100.0`` assertion here pinned an
+    off-by-one that disagreed with apcore-typescript and apcore-rust.
+    """
+
+    def test_p99_is_the_value_at_the_rank_not_past_it(self) -> None:
         registry, collector, module_id = _make_deps()
-        # Record 100 calls: 99 at 10ms, 1 at 100ms
-        for i in range(99):
+        # 99 calls at 10ms, 1 at 100ms. N=100, rank=ceil(99.0)=99, idx=98.
+        # sorted[98] is 10.0 -- 99% of the samples are at or below it, which is
+        # what the 99th percentile means. Returning 100.0 reads one past the
+        # rank and reports the single outlier as the percentile.
+        for _ in range(99):
             collector.record(module_id, "caller-a", 10.0, True)
         collector.record(module_id, "caller-a", 100.0, True)
 
         mod = UsageModuleModule(registry=registry, usage_collector=collector)
         result = mod.execute({"module_id": module_id}, None)
 
-        # p99 should be >= 100.0 (the 99th percentile value)
-        assert result["p99_latency_ms"] >= 100.0
+        assert result["p99_latency_ms"] == pytest.approx(10.0)
+
+    def test_p99_matches_the_specs_worked_example(self) -> None:
+        """PROTOCOL_SPEC 6.7.1.3 states this one normatively: 1..100 -> 99."""
+        registry, collector, module_id = _make_deps()
+        for i in range(1, 101):
+            collector.record(module_id, "caller-a", float(i), True)
+
+        mod = UsageModuleModule(registry=registry, usage_collector=collector)
+        result = mod.execute({"module_id": module_id}, None)
+
+        assert result["p99_latency_ms"] == pytest.approx(99.0)
+
+    def test_p99_single_sample_is_that_sample(self) -> None:
+        registry, collector, module_id = _make_deps()
+        collector.record(module_id, "caller-a", 42.0, True)
+
+        mod = UsageModuleModule(registry=registry, usage_collector=collector)
+        result = mod.execute({"module_id": module_id}, None)
+
+        # N=1, rank=ceil(0.99)=1, idx=0. The clamp is what keeps this in range.
+        assert result["p99_latency_ms"] == pytest.approx(42.0)
+
+    def test_p99_empty_sample_set_is_zero_not_none(self) -> None:
+        registry, collector, module_id = _make_deps()
+
+        mod = UsageModuleModule(registry=registry, usage_collector=collector)
+        result = mod.execute({"module_id": module_id}, None)
+
+        # 0, not None: the field is required and typed number in
+        # schemas/sys-usage-module.schema.json.
+        assert result["p99_latency_ms"] == 0.0
 
 
 class TestUsageModuleAvgLatency:

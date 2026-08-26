@@ -291,6 +291,7 @@ from apcore.pipeline import (
     StepNotReplaceableError,
     StepResult,
     StepTrace,
+    GovernanceState,
     StrategyInfo,
     StrategyNotFoundError,
 )
@@ -832,6 +833,7 @@ __all__ = [
     "PipelineTrace",
     "StepTrace",
     "ExecutionStrategy",
+    "GovernanceState",
     "StrategyInfo",
     "PipelineAbortError",
     "PipelineState",

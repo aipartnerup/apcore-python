@@ -689,6 +689,7 @@ class TestPublicAPIAll:
         "PipelineTrace",
         "StepTrace",
         "ExecutionStrategy",
+        "GovernanceState",
         "StrategyInfo",
         "PipelineAbortError",
         "PipelineState",
