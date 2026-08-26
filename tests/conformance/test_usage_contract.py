@@ -78,9 +78,7 @@ class _NoCallerContext:
     data: dict[str, Any] = {}
 
 
-def _record_through_middleware(
-    collector: UsageCollector, module_id: str, success: bool
-) -> None:
+def _record_through_middleware(collector: UsageCollector, module_id: str, success: bool) -> None:
     middleware = UsageMiddleware(collector)
     context = _NoCallerContext()
     middleware.before(module_id, {}, context)
@@ -134,8 +132,8 @@ def test_usage_contract(case: dict[str, Any]) -> None:
     for field, want in expected.items():
         if field.startswith("hourly_distribution_") or field == "caller_ids":
             continue
-        assert result[field] == pytest.approx(want) if isinstance(want, (int, float)) else (
-            result[field] == want
+        assert (
+            result[field] == pytest.approx(want) if isinstance(want, (int, float)) else (result[field] == want)
         ), f"{case['id']}: {field} is {result[field]!r}, fixture expects {want!r}\n  {case['note']}"
 
     if "hourly_distribution_length" in expected:
@@ -143,9 +141,7 @@ def test_usage_contract(case: dict[str, Any]) -> None:
         assert len(hourly) == expected["hourly_distribution_length"]
         key_re = re.compile(expected["hourly_distribution_key_format"])
         for entry in hourly:
-            assert key_re.match(entry["hour"]), (
-                f"{case['id']}: hour key {entry['hour']!r} is not YYYY-MM-DDTHH"
-            )
+            assert key_re.match(entry["hour"]), f"{case['id']}: hour key {entry['hour']!r} is not YYYY-MM-DDTHH"
         assert sum(e["call_count"] for e in hourly) == expected["hourly_distribution_total_calls"]
         if expected["hourly_distribution_sorted_ascending"]:
             hours = [e["hour"] for e in hourly]

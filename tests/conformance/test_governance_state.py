@@ -66,9 +66,7 @@ def _build(setup: dict[str, Any]) -> Executor:
         executor = Executor(
             registry,
             config=config,
-            strategy=ExecutionStrategy(
-                "lookalike_acl_check", [_LookalikeACLCheck()], validate_dependencies=False
-            ),
+            strategy=ExecutionStrategy("lookalike_acl_check", [_LookalikeACLCheck()], validate_dependencies=False),
         )
     elif strategy == "standard":
         executor = Executor(registry, config=config)
@@ -92,8 +90,7 @@ def test_governance_state(case: dict[str, Any]) -> None:
     for field, expected in case["expected"].items():
         actual = getattr(state, field)
         assert actual == expected, (
-            f"{case['id']}: {field} is {actual}, fixture expects {expected}\n"
-            f"  {case['note']}"
+            f"{case['id']}: {field} is {actual}, fixture expects {expected}\n" f"  {case['note']}"
         )
 
 
@@ -101,9 +98,7 @@ def test_accessor_is_a_pure_read() -> None:
     """driver_contract.purity — two reads are equal and the handler is never called."""
     executor = _build(
         {
-            "control_modules": [
-                {"module_id": "system.control.reload_module", "requires_approval": True}
-            ],
+            "control_modules": [{"module_id": "system.control.reload_module", "requires_approval": True}],
             "read_modules": True,
             "strategy": "standard",
             "acl_attached": False,
@@ -118,9 +113,7 @@ def test_accessor_is_live_not_cached() -> None:
     """driver_contract.liveness — a cached value passes every static case."""
     executor = _build(
         {
-            "control_modules": [
-                {"module_id": "system.control.reload_module", "requires_approval": True}
-            ],
+            "control_modules": [{"module_id": "system.control.reload_module", "requires_approval": True}],
             "read_modules": True,
             "strategy": "standard",
             "acl_attached": False,

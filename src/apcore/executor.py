@@ -1484,8 +1484,7 @@ class Executor:
         all_ids = self._registry.list(visibility=["public", "hidden"])
         control_ids = [mid for mid in all_ids if mid.startswith("system.control.")]
         read_modules_registered = any(
-            mid.startswith(("system.health.", "system.usage.", "system.manifest."))
-            for mid in all_ids
+            mid.startswith(("system.health.", "system.usage.", "system.manifest.")) for mid in all_ids
         )
 
         # Read the annotation through the SAME predicate the approval gate uses.
@@ -1497,9 +1496,7 @@ class Executor:
 
         acl_configured = self._acl is not None
         handler_configured = self._approval_handler is not None
-        policy_strict = self._policy is not None and bool(
-            getattr(self._policy, "strict", False)
-        )
+        policy_strict = self._policy is not None and bool(getattr(self._policy, "strict", False))
 
         # PROTOCOL_SPEC 6.6.5.1. The approval conjunct carries
         # `all_control_modules_require_approval` because `approval_gate` is
@@ -1507,11 +1504,7 @@ class Executor:
         unprotected = (
             bool(control_ids)
             and not (acl_configured and acl_gate_wired)
-            and not (
-                approval_gate_wired
-                and all_control_require_approval
-                and (handler_configured or policy_strict)
-            )
+            and not (approval_gate_wired and all_control_require_approval and (handler_configured or policy_strict))
         )
 
         return GovernanceState(

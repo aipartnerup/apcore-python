@@ -7,8 +7,6 @@ answer to "what is gating this registry": the gates are pipeline steps, and the
 
 from __future__ import annotations
 
-import pytest
-
 from apcore import (
     ACL,
     APCore,
@@ -98,9 +96,7 @@ class TestGateDetectionIsByType:
                 return None
 
         client = _client(SYS_ON)
-        strategy = ExecutionStrategy(
-            "lookalike", [LookalikeACLCheck()], validate_dependencies=False
-        )
+        strategy = ExecutionStrategy("lookalike", [LookalikeACLCheck()], validate_dependencies=False)
         executor = _executor(client, strategy)
         executor.set_acl(ACL(default_effect="deny"))
 
@@ -135,9 +131,7 @@ class TestApprovalGateIsPerModuleConditional:
 
     def test_unannotated_control_module_makes_the_surface_unprotected(self) -> None:
         client = _client(SYS_ON)
-        self._register_control_module(
-            client, "system.control.custom_thing", requires_approval=False
-        )
+        self._register_control_module(client, "system.control.custom_thing", requires_approval=False)
         executor = client.executor
         executor.set_approval_handler(_AlwaysApprove())
 
@@ -150,9 +144,7 @@ class TestApprovalGateIsPerModuleConditional:
 
     def test_strict_policy_does_not_gate_an_unannotated_module(self) -> None:
         client = _client(SYS_ON)
-        self._register_control_module(
-            client, "system.control.custom_thing", requires_approval=False
-        )
+        self._register_control_module(client, "system.control.custom_thing", requires_approval=False)
         executor = client.executor
         executor.set_policy(ExecutionPolicy(strict=True))
 
@@ -163,9 +155,7 @@ class TestApprovalGateIsPerModuleConditional:
 
     def test_all_annotated_with_handler_is_gated(self) -> None:
         client = _client(SYS_ON)
-        self._register_control_module(
-            client, "system.control.custom_thing", requires_approval=True
-        )
+        self._register_control_module(client, "system.control.custom_thing", requires_approval=True)
         executor = client.executor
         executor.set_approval_handler(_AlwaysApprove())
 
