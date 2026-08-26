@@ -11,19 +11,42 @@ in the sys-module layer's choice of accessor.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
+
+from jsonschema import Draft202012Validator
 
 import pytest
 
 from apcore import ModuleAnnotations, Registry
 from apcore.observability.usage import UsageCollector, UsageMiddleware
 from apcore.sys_modules.usage import UsageModuleModule, UsageSummaryModule
-from conformance.canonical_fixtures import case_ids, load_fixture
+from conformance.canonical_fixtures import case_ids, fixtures_dir, load_fixture
 
 FIXTURE = load_fixture("usage_contract.json")
 CASES = FIXTURE["test_cases"]
+
+# driver_contract.output_validates_against_the_canonical_schema: the same files
+# the spec repo ships, not a copy. `additionalProperties: false` is the point —
+# a field one SDK emits and the others do not fails here.
+_SCHEMAS = Path(fixtures_dir()).parent.parent / "schemas"
+_SCHEMA_FOR = {
+    "system.usage.summary": "sys-usage-summary.schema.json",
+    "system.usage.module": "sys-usage-module.schema.json",
+}
+
+
+def _validate_against_canonical_schema(module: str, output: dict[str, Any]) -> None:
+    schema = json.loads((_SCHEMAS / _SCHEMA_FOR[module]).read_text())
+    errors = sorted(
+        Draft202012Validator(schema).iter_errors(output), key=lambda e: list(e.path)
+    )
+    assert not errors, "\n".join(
+        f"{list(e.path)}: {e.message}" for e in errors
+    )
 _OFFSET = re.compile(r"^-(\d+)([hd])$")
 
 
@@ -121,6 +144,7 @@ def test_usage_contract(case: dict[str, Any]) -> None:
         return
 
     result = _run(case)
+    _validate_against_canonical_schema(case["module"], result)
 
     if "caller_ids" in expected:
         assert [c["caller_id"] for c in result["callers"]] == expected["caller_ids"], (
