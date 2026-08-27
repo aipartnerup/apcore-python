@@ -1592,6 +1592,15 @@ class Registry:
             examples=list(meta.get("examples") or []),
             metadata=effective_metadata,
             sunset_date=sunset_date,
+            # Parsed once here so consumers get typed DependencyInfo rather than
+            # re-deriving `{module_id, version?, optional?}` from raw JSON at
+            # every call site (PROTOCOL_SPEC §12.2; sync finding A-D-004).
+            # `meta` is checked first because `merge_module_metadata` lifts a
+            # declared `dependencies` to the top level; the nested
+            # `metadata["dependencies"]` form is the manual-register path.
+            dependencies=parse_dependencies(
+                meta.get("dependencies") or effective_metadata.get("dependencies") or []
+            ),
         )
 
     def _log_deprecation_warning(self, module_id: str, version: str, deprecation: dict[str, Any]) -> None:

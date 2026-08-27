@@ -1742,3 +1742,66 @@ class TestRegisterVersionArgumentReachesDescriptor:
         registry = Registry()
         registry.register("math.mul", self._Mod())
         assert registry.get_definition("math.mul").version == "1.0.0"
+
+
+class TestDescriptorCarriesTypedDependencies:
+    """`get_definition().dependencies` is a typed field on all three SDKs.
+
+    Sync finding A-D-004. PROTOCOL_SPEC §12.2 requires a `dependencies` entry
+    in `metadata` to reach the registered module's descriptor. apcore-rust
+    carried a typed `Vec<DependencyInfo>`; this SDK surfaced only the unparsed
+    list nested under `descriptor.metadata`, and apcore-typescript surfaced it
+    on neither.
+
+    Promoting it matters beyond the accessor name: `metadata` is specified as
+    "arbitrary extension metadata" — the `x-` layer of the three-layer model —
+    while dependencies are structural data the framework consumes for load and
+    reload ordering. Left in the extension bag, the
+    `{module_id, version?, optional?}` parse falls on every caller;
+    `sys_modules/control.py` imported `parse_dependencies` inside its reload
+    function to do exactly that.
+    """
+
+    class _Mod:
+        description = "d"
+        input_schema = {"type": "object"}
+        output_schema = {"type": "object"}
+
+        async def execute(self, inputs, ctx):  # noqa: ANN001, ANN201
+            return {}
+
+    def test_dependencies_are_parsed_into_typed_objects(self) -> None:
+        from apcore import Registry
+        from apcore.registry.types import DependencyInfo
+
+        registry = Registry()
+        registry.register(
+            "a.b",
+            self._Mod(),
+            metadata={"dependencies": [{"module_id": "a.dep", "version": "^1.0", "optional": True}]},
+        )
+        deps = registry.get_definition("a.b").dependencies
+        assert deps == [DependencyInfo(module_id="a.dep", version="^1.0", optional=True)]
+        assert isinstance(deps[0], DependencyInfo), "callers must not have to parse raw JSON"
+
+    def test_absent_dependencies_is_an_empty_list_not_none(self) -> None:
+        from apcore import Registry
+
+        registry = Registry()
+        registry.register("a.c", self._Mod())
+        assert registry.get_definition("a.c").dependencies == []
+
+    def test_reload_ordering_accessor_still_agrees(self) -> None:
+        # The descriptor field and get_module_metadata() must not disagree —
+        # reload ordering reads the latter, and a split between the two is the
+        # hazard §12.2 describes.
+        from apcore import Registry
+
+        registry = Registry()
+        registry.register(
+            "a.d", self._Mod(), metadata={"dependencies": [{"module_id": "a.dep"}]}
+        )
+        from_descriptor = [d.module_id for d in registry.get_definition("a.d").dependencies]
+        raw = registry.get_module_metadata("a.d").get("dependencies") or []
+        from_metadata = [d["module_id"] for d in raw]
+        assert from_descriptor == from_metadata == ["a.dep"]
