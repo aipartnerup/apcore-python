@@ -163,20 +163,19 @@ _DEFAULTS: dict[str, Any] = {
             "enabled": False,
         },
     },
+    # Only `enabled`, because that is all `schemas/defaults.schema.json`
+    # declares for this section — the same rule `project` is held to below.
+    # The other thirteen `sys_modules` defaults live in
+    # `schemas/sys-modules.schema.json` and reach a Config through the
+    # namespace registration at the bottom of this module, which is the layer
+    # §9.15.3 gives that namespace. Carrying them here as well made
+    # `get("sys_modules.error_history.max_entries_per_module")` answer 50 in
+    # legacy mode while apcore-typescript and apcore-rust answered
+    # undefined/None over the same call (sync finding A-D-021). No behaviour
+    # depended on the difference: every consumer in `sys_modules/registration.py`
+    # passes the schema default as its own fallback.
     "sys_modules": {
         "enabled": False,
-        "error_history": {
-            "max_entries_per_module": 50,
-            "max_total_entries": 1000,
-        },
-        "events": {
-            "enabled": False,
-            "thresholds": {
-                "error_rate": 0.1,
-                "latency_p99_ms": 5000.0,
-            },
-            "subscribers": [],
-        },
     },
     "stream": {
         "max_merge_depth": 32,
@@ -1596,8 +1595,19 @@ Config.register_namespace(
             "bucketing_strategy": "hourly",
         },
         "control": {"enabled": True},
+        # `error_history` and `events.subscribers` are declared with defaults by
+        # schemas/sys-modules.schema.json and were missing here, so this
+        # namespace answered for eleven of its own schema's fourteen keys.
+        # `control.overrides_path` is the one deliberate omission: its declared
+        # default is null, which a namespace default cannot express distinctly
+        # from absence (sync finding A-D-021).
+        "error_history": {
+            "max_entries_per_module": 50,
+            "max_total_entries": 1000,
+        },
         "events": {
             "enabled": False,
+            "subscribers": [],
             "thresholds": {"error_rate": 0.1, "latency_p99_ms": 5000.0},
         },
     },

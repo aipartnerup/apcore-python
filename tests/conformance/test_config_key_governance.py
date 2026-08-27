@@ -22,6 +22,7 @@ import pytest
 import yaml
 
 from apcore.config import (
+    _GLOBAL_NS_REGISTRY,
     Config,
     _collect_unknown_framework_keys,
     _CONSTRAINTS,
@@ -485,3 +486,94 @@ def test_every_section_the_schema_closes_is_enforced() -> None:
     assert (
         open_sections == []
     ), f"these sections are enforced as closed but the canonical schema leaves them open: {open_sections}"
+
+
+def _schema_defaults(node: Any, prefix: str = "") -> dict[str, Any]:
+    """Every `default:` the schema declares, as full dot-paths."""
+    out: dict[str, Any] = {}
+    for key, value in (node.get("properties") or {}).items():
+        path = f"{prefix}.{key}" if prefix else key
+        if "default" in value:
+            out[path] = value["default"]
+        if value.get("properties"):
+            out.update(_schema_defaults(value, path))
+    return out
+
+
+def test_legacy_default_table_mirrors_defaults_schema_exactly() -> None:
+    """`_DEFAULTS` must be `defaults.schema.json`, key for key and value for value.
+
+    Not "a subset of what some schema allows" — that is
+    `test_default_table_declares_no_undeclared_key`, and it passes on a table
+    with extra keys because `sys-modules.schema.json` allows them too. The
+    contract this pins is narrower: `defaults.schema.json` IS the legacy default
+    table, and it is `additionalProperties: false`.
+
+    apcore-typescript's `DEFAULTS` and apcore-rust's `CONFIG_DEFAULTS` mirror it
+    exactly. apcore-python carried six extra `sys_modules` leaves, so
+    `get("sys_modules.error_history.max_entries_per_module")` answered 50 here
+    and undefined/None in both peers over the same call (sync finding A-D-021).
+    """
+    schemas = fixtures_dir().parent.parent / "schemas"
+    canonical = _schema_defaults(json.loads((schemas / "defaults.schema.json").read_text()))
+
+    def _leaves(node: Any, prefix: str = "") -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                out.update(_leaves(value, path))
+            else:
+                out[path] = value
+        return out
+
+    actual = _leaves(_DEFAULTS)
+    assert actual.keys() == canonical.keys(), (
+        "_DEFAULTS has drifted from defaults.schema.json.\n"
+        f"  declared by the schema but missing here: {sorted(canonical.keys() - actual.keys())}\n"
+        f"  present here but not declared: {sorted(actual.keys() - canonical.keys())}"
+    )
+    mismatched = {k: (actual[k], canonical[k]) for k in canonical if not _values_equal(actual[k], canonical[k])}
+    assert mismatched == {}, f"_DEFAULTS values disagree with the schema: {mismatched}"
+
+
+def test_sys_modules_namespace_supplies_every_declared_default() -> None:
+    """The other half: what the legacy table does not carry, the namespace must.
+
+    §9.15.3 gives `sys-modules.schema.json` ownership of this namespace, and it
+    declares fourteen defaults. Trimming `_DEFAULTS` to the single key
+    `defaults.schema.json` declares is only correct because the namespace
+    registration answers for the rest — it did not, for `error_history` and
+    `events.subscribers`, so removing them from the legacy table alone would
+    have made them unreachable in BOTH modes.
+
+    `control.overrides_path` is excluded: its declared default is null, which a
+    namespace default cannot express distinctly from absence.
+    """
+    schemas = fixtures_dir().parent.parent / "schemas"
+    declared = _schema_defaults(json.loads((schemas / "sys-modules.schema.json").read_text()))
+    expected = {k: v for k, v in declared.items() if v is not None}
+    assert len(expected) >= 13, f"the schema's default set looks wrong: {expected}"
+
+    registration = _GLOBAL_NS_REGISTRY["sys_modules"]
+
+    def _leaves(node: Any, prefix: str = "") -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                out.update(_leaves(value, path))
+            else:
+                out[path] = value
+        return out
+
+    supplied = _leaves(registration.defaults or {})
+    missing = sorted(expected.keys() - supplied.keys())
+    assert missing == [], (
+        "the sys_modules namespace does not supply defaults its own schema "
+        f"declares: {missing}"
+    )
+    mismatched = {
+        k: (supplied[k], expected[k]) for k in expected if not _values_equal(supplied[k], expected[k])
+    }
+    assert mismatched == {}, f"namespace defaults disagree with the schema: {mismatched}"

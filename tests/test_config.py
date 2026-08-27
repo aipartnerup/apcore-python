@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -310,17 +311,44 @@ class TestSysModulesConfig:
         config = Config(data=dict(_DEFAULTS))
         assert config.get("sys_modules.enabled") is False
 
-    def test_config_sys_modules_error_history_defaults(self) -> None:
+    def test_default_table_carries_only_what_the_defaults_schema_declares(self) -> None:
+        # Same rule as `test_config_declares_no_project_defaults` below:
+        # `schemas/defaults.schema.json` declares `sys_modules.enabled` and
+        # nothing else, and it is `additionalProperties: false`. The thirteen
+        # other `sys_modules` defaults belong to
+        # `schemas/sys-modules.schema.json` and reach a Config through the
+        # namespace registration, not through this table.
+        #
+        # They used to sit here too, which made these keys readable in legacy
+        # mode from apcore-python alone — apcore-typescript and apcore-rust
+        # answer undefined/None over the same call, because their default
+        # tables mirror `defaults.schema.json` exactly (sync finding A-D-021).
         config = Config(data=dict(_DEFAULTS))
+        for key in (
+            "sys_modules.error_history.max_entries_per_module",
+            "sys_modules.error_history.max_total_entries",
+            "sys_modules.events.enabled",
+            "sys_modules.events.thresholds.error_rate",
+            "sys_modules.events.thresholds.latency_p99_ms",
+            "sys_modules.events.subscribers",
+        ):
+            assert config.get(key) is None, (
+                f"{key} is not declared by defaults.schema.json, so the legacy "
+                "default table must not answer for it"
+            )
+
+    def test_namespace_mode_still_supplies_the_sys_modules_defaults(self, tmp_path: Path) -> None:
+        # The other half of the rule above: dropping those keys from the legacy
+        # table must not make them unreachable, because §9.15.3 registers
+        # `sys_modules` as a namespace that declares all fourteen.
+        path = tmp_path / "apcore.json"
+        path.write_text(json.dumps({"apcore": {"version": "1.0"}}))
+        config = Config.load(path)
         assert config.get("sys_modules.error_history.max_entries_per_module") == 50
         assert config.get("sys_modules.error_history.max_total_entries") == 1000
-
-    def test_config_sys_modules_events_defaults(self) -> None:
-        config = Config(data=dict(_DEFAULTS))
         assert config.get("sys_modules.events.enabled") is False
         assert config.get("sys_modules.events.thresholds.error_rate") == 0.1
         assert config.get("sys_modules.events.thresholds.latency_p99_ms") == 5000.0
-        assert config.get("sys_modules.events.subscribers") == []
 
     def test_config_declares_no_project_defaults(self) -> None:
         # `schemas/defaults.schema.json` declares no `project` subtree, so
