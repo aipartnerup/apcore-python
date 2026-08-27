@@ -23,9 +23,12 @@ required but no ApprovalHandler is configured.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apcore.utils.pattern import calculate_specificity, match_pattern
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard, types only
+    from apcore.context import Context
 
 __all__ = ["PolicyRule", "PolicyDecision", "ExecutionPolicy"]
 
@@ -181,19 +184,54 @@ class ExecutionPolicy:
         """The policy's rules as an immutable tuple."""
         return self._rules
 
-    def resolve(self, module_id: str, annotations: Any = None) -> PolicyDecision:
+    def resolve(
+        self,
+        module_id: str,
+        annotations: Any = None,
+        *,
+        arguments: dict[str, Any] | None = None,
+        context: Context | None = None,
+    ) -> PolicyDecision:
         """Compute the effective governance decision for a module.
+
+        PROTOCOL_SPEC §7.9.6 requires policy resolution to *receive* the call
+        site — the invocation arguments and the :class:`~apcore.context.Context`
+        — alongside the module ID and annotations. Governance keyed on the
+        module alone forces an operator to gate every call to a module in order
+        to gate some of them, which weakens ``requires_approval`` from "this
+        needs approval" to "this might".
+
+        The built-in pattern rules of §7.9.1 deliberately **do not consult**
+        ``arguments`` or ``context``: a rule set's verdict stays a function of
+        the module ID and the annotations alone, so it remains statically
+        auditable and reproducible from the policy document, and adding the call
+        site cannot change the verdict any existing policy produces. They are
+        here so that a host-supplied policy — a subclass overriding this method
+        — can decide on them, and so an implementation can carry them into the
+        audit trail.
 
         Args:
             module_id: Canonical module ID being invoked.
             annotations: The module's annotations (ModuleAnnotations, dict,
                 or None). Only ``requires_approval`` and ``destructive``
                 are consulted.
+            arguments: The invocation's arguments, when available. These have
+                **NOT** been schema-validated — the approval gate is pipeline
+                Step 5 and input validation is Step 7 (PROTOCOL_SPEC §12.8) —
+                so an override MUST NOT assume them well-formed, present, or of
+                the declared type. Keyword-only, and optional, so every existing
+                caller keeps working unchanged.
+            context: The execution context of the call, when available. Same
+                keyword-only, optional treatment.
 
         Returns:
             A :class:`PolicyDecision` carrying the effective values, the
             final ``needs_approval`` verdict, and audit metadata.
         """
+        # Read, deliberately unused by the built-in rules (§7.9.6 rule 2).
+        # A host-supplied policy overriding resolve() receives them and may.
+        _ = (arguments, context)
+
         base_requires_approval = _read_annotation_bool(annotations, "requires_approval")
         base_destructive = _read_annotation_bool(annotations, "destructive")
 

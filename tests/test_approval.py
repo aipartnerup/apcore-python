@@ -251,3 +251,81 @@ class TestCallbackApprovalHandler:
 
         handler = CallbackApprovalHandler(noop)
         assert isinstance(handler, ApprovalHandler)
+
+
+class TestCallbackApprovalHandlerRejectsSyncCallbacks:
+    """apcore#104: a synchronous callback must fail with an actionable message.
+
+    ``CallbackApprovalHandler`` declares an async callback, but nothing checked.
+    A plain function reached ``await self._callback(request)`` and died with
+    ``TypeError: object ApprovalResult can't be used in 'await' expression`` —
+    which names neither the callback nor the fix, and is emitted at the approval
+    gate rather than where the handler was constructed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sync_callback_raises_a_named_error(self) -> None:
+        def sync_callback(request: ApprovalRequest) -> ApprovalResult:
+            return ApprovalResult(status="approved")
+
+        handler = CallbackApprovalHandler(sync_callback)  # type: ignore[arg-type]
+        request = ApprovalRequest(
+            module_id="test.mod",
+            arguments={},
+            context=Context.create(),
+            annotations=ModuleAnnotations(requires_approval=True),
+        )
+        with pytest.raises(TypeError) as excinfo:
+            await handler.request_approval(request)
+
+        message = str(excinfo.value)
+        assert "CallbackApprovalHandler" in message
+        assert "sync_callback" in message, "the message must name the offending callback"
+        assert "ApprovalResult" in message, "the message must name what was returned"
+        assert "async def" in message, "the message must name the fix"
+        assert "can't be used in 'await' expression" not in message
+
+    @pytest.mark.asyncio
+    async def test_a_callback_returning_a_non_result_is_also_named(self) -> None:
+        handler = CallbackApprovalHandler(lambda request: None)  # type: ignore[arg-type,return-value]
+        request = ApprovalRequest(
+            module_id="test.mod",
+            arguments={},
+            context=Context.create(),
+            annotations=ModuleAnnotations(requires_approval=True),
+        )
+        with pytest.raises(TypeError, match="requires an async callback"):
+            await handler.request_approval(request)
+
+    @pytest.mark.asyncio
+    async def test_an_async_callback_is_unaffected(self) -> None:
+        async def async_callback(request: ApprovalRequest) -> ApprovalResult:
+            return ApprovalResult(status="approved", approved_by="cb")
+
+        handler = CallbackApprovalHandler(async_callback)
+        request = ApprovalRequest(
+            module_id="test.mod",
+            arguments={},
+            context=Context.create(),
+            annotations=ModuleAnnotations(requires_approval=True),
+        )
+        result = await handler.request_approval(request)
+        assert result.approved_by == "cb"
+
+    @pytest.mark.asyncio
+    async def test_a_callable_object_with_async_call_is_accepted(self) -> None:
+        """Detection is on the returned value, not on ``iscoroutinefunction``."""
+
+        class AsyncCallable:
+            async def __call__(self, request: ApprovalRequest) -> ApprovalResult:
+                return ApprovalResult(status="rejected", reason="nope")
+
+        handler = CallbackApprovalHandler(AsyncCallable())
+        request = ApprovalRequest(
+            module_id="test.mod",
+            arguments={},
+            context=Context.create(),
+            annotations=ModuleAnnotations(requires_approval=True),
+        )
+        result = await handler.request_approval(request)
+        assert result.status == "rejected"

@@ -656,7 +656,15 @@ class Executor:
             if self._policy is not None:
                 # Policy overrides win over declared annotations (apcore#76),
                 # so preflight reports the same verdict the gate will enforce.
-                requires_approval = self._policy.resolve(module_id, annotations).needs_approval
+                # The call site travels here too (PROTOCOL_SPEC §7.9.6), so a
+                # host-supplied policy reports in preflight the same verdict it
+                # will enforce at the gate.
+                requires_approval = self._policy.resolve(
+                    module_id,
+                    annotations,
+                    arguments=pipe_ctx.inputs,
+                    context=pipe_ctx.context,
+                ).needs_approval
 
         # Module-level introspection is gated on TWO conditions, not one.
         #

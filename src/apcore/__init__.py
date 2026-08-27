@@ -142,7 +142,7 @@ from apcore.errors import (
 )
 
 # ACL
-from apcore.acl import ACL, ACLRule, AuditEntry
+from apcore.acl import ACL, ACLRule, AuditEntry, ConditionOutcome, ConditionValidationFinding
 
 # Execution-time governance policy (apcore#76 RFC pilot)
 from apcore.policy import ExecutionPolicy, PolicyDecision, PolicyRule
@@ -723,6 +723,8 @@ __all__ = [
     "ACL",
     "ACLRule",
     "AuditEntry",
+    "ConditionOutcome",
+    "ConditionValidationFinding",
     # Execution-time governance policy (apcore#76 RFC pilot)
     "ExecutionPolicy",
     "PolicyDecision",

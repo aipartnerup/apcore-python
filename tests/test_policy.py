@@ -633,3 +633,145 @@ class TestGovernanceFlagsAreNotCoerced:
         # "unset" and take the documented default of False, not an error.
         assert getattr(ExecutionPolicy.from_dict({}), key) is False
         assert getattr(ExecutionPolicy.from_dict({key: None}), key) is False
+
+
+# ---------------------------------------------------------------------------
+# §7.9.6 — call-site inputs to policy resolution (apcore#102)
+# ---------------------------------------------------------------------------
+
+
+class _CallSiteRecordingPolicy(ExecutionPolicy):
+    """Host-supplied policy that records the call site it was handed."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.seen: list[tuple[str, dict[str, Any] | None, Context | None]] = []
+
+    def resolve(
+        self,
+        module_id: str,
+        annotations: Any = None,
+        *,
+        arguments: dict[str, Any] | None = None,
+        context: Context | None = None,
+    ) -> PolicyDecision:
+        self.seen.append((module_id, arguments, context))
+        return super().resolve(module_id, annotations, arguments=arguments, context=context)
+
+
+class TestPolicyCallSite:
+    """PROTOCOL_SPEC §7.9.6: resolution receives the call site but rules ignore it."""
+
+    def test_resolve_accepts_the_call_site(self) -> None:
+        decision = ExecutionPolicy().resolve(
+            "a.b",
+            ModuleAnnotations(requires_approval=True),
+            arguments={"amount": 1000},
+            context=Context.create(),
+        )
+        assert decision.needs_approval is True
+
+    def test_existing_positional_callers_keep_working(self) -> None:
+        """§7.9.6 rule 5 in Python idiom: the new inputs are keyword-only and optional."""
+        assert ExecutionPolicy().resolve("a.b", ModuleAnnotations()).needs_approval is False
+        assert ExecutionPolicy().resolve("a.b").needs_approval is False
+
+    @pytest.mark.parametrize(
+        "policy",
+        [
+            ExecutionPolicy(),
+            ExecutionPolicy([PolicyRule("orders.*", requires_approval=True)]),
+            ExecutionPolicy([PolicyRule("orders.delete_*", destructive=True)], gate_destructive=True),
+            ExecutionPolicy([PolicyRule("*", requires_approval=False)]),
+        ],
+        ids=["empty", "forces", "gate_destructive", "exempts"],
+    )
+    @pytest.mark.parametrize(
+        "annotations",
+        [None, ModuleAnnotations(), ModuleAnnotations(requires_approval=True), ModuleAnnotations(destructive=True)],
+        ids=["none", "plain", "requires_approval", "destructive"],
+    )
+    def test_built_in_rules_do_not_consult_the_call_site(self, policy: ExecutionPolicy, annotations: Any) -> None:
+        """§7.9.6 rule 2 + the compatibility guarantee: verdicts are bit-for-bit unchanged.
+
+        A rule set's verdict MUST stay a function of the module ID and the
+        annotations alone, so it remains reproducible from the policy document.
+        """
+        baseline = policy.resolve("orders.delete_order", annotations)
+        with_call_site = policy.resolve(
+            "orders.delete_order",
+            annotations,
+            arguments={"order_id": "x", "force": True},
+            context=Context.create(identity=None),
+        )
+        assert with_call_site == baseline
+
+    def test_malformed_arguments_do_not_disturb_resolution(self) -> None:
+        """§7.9.6 rule 4: the arguments have NOT been schema-validated at Step 5."""
+        policy = ExecutionPolicy([PolicyRule("a.b", requires_approval=True)])
+        baseline = policy.resolve("a.b", ModuleAnnotations())
+        for bogus in ({"amount": object()}, {}, {"": None}):
+            assert policy.resolve("a.b", ModuleAnnotations(), arguments=bogus) == baseline
+
+    def test_the_approval_gate_passes_the_call_site(self, registry: Registry) -> None:
+        policy = _CallSiteRecordingPolicy([PolicyRule("admin.reset", requires_approval=True)])
+        executor = Executor(registry=registry, approval_handler=AutoApproveHandler(), policy=policy)
+        context = Context.create()
+        executor.call("admin.reset", {"scope": "all"}, context=context)
+
+        gate_calls = [c for c in policy.seen if c[0] == "admin.reset"]
+        assert gate_calls, "the approval gate must consult the policy"
+        _, arguments, seen_context = gate_calls[-1]
+        assert arguments == {"scope": "all"}
+        # The pipeline hands the step a derived Context (call_chain extended),
+        # so identity is not the assertion — provenance is.
+        assert seen_context is not None
+        assert seen_context.trace_id == context.trace_id
+        assert seen_context.call_chain == ["admin.reset"]
+
+    def test_the_gate_never_shows_the_policy_a_protocol_level_key(self, registry: Registry) -> None:
+        """``_approval_token`` is stripped before Step 5's policy resolution."""
+        policy = _CallSiteRecordingPolicy([PolicyRule("admin.reset", requires_approval=True)])
+        executor = Executor(registry=registry, approval_handler=AutoApproveHandler(), policy=policy)
+        executor.call("admin.reset", {"scope": "all", "_approval_token": "tok"})
+        assert all("_approval_token" not in (args or {}) for _, args, _ in policy.seen)
+
+    def test_preflight_passes_the_call_site_too(self, registry: Registry) -> None:
+        """§7.9.5 reports the verdict the gate will enforce, from the same inputs."""
+        policy = _CallSiteRecordingPolicy([PolicyRule("admin.reset", requires_approval=True)])
+        executor = Executor(registry=registry, policy=policy)
+        executor.validate("admin.reset", {"scope": "all"})
+        assert any(args == {"scope": "all"} for _, args, _ in policy.seen)
+
+    def test_a_host_policy_may_decide_on_arguments(self, registry: Registry) -> None:
+        """The point of §7.9.6: gate *some* calls to a module rather than all of them."""
+
+        class AmountPolicy(ExecutionPolicy):
+            def resolve(
+                self,
+                module_id: str,
+                annotations: Any = None,
+                *,
+                arguments: dict[str, Any] | None = None,
+                context: Context | None = None,
+            ) -> PolicyDecision:
+                base = super().resolve(module_id, annotations, arguments=arguments, context=context)
+                # Arguments are NOT schema-validated here — treat them defensively.
+                amount = (arguments or {}).get("amount")
+                if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount > 100:
+                    return PolicyDecision(
+                        module_id=base.module_id,
+                        requires_approval=True,
+                        destructive=base.destructive,
+                        needs_approval=True,
+                        rule=base.rule,
+                        overridden=True,
+                    )
+                return base
+
+        handler = RecordingHandler(status="approved")
+        executor = Executor(registry=registry, approval_handler=handler, policy=AmountPolicy())
+        executor.call("orders.list_orders", {"amount": 5})
+        assert handler.requests == [], "a small call is not gated"
+        executor.call("orders.list_orders", {"amount": 5000})
+        assert len(handler.requests) == 1, "a large call is gated"

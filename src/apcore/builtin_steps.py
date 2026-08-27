@@ -441,7 +441,20 @@ class BuiltinApprovalGate(BaseStep):
 
         decision: PolicyDecision | None = None
         if self._policy is not None:
-            decision = self._policy.resolve(ctx.module_id, getattr(module, "annotations", None))
+            # PROTOCOL_SPEC §7.9.6: policy resolution receives the call site.
+            # The arguments have NOT been schema-validated at this point — this
+            # gate is Step 5 and input validation is Step 7 (§12.8) — and the
+            # built-in pattern rules do not consult them, so the verdict of an
+            # existing policy is unchanged. A host-supplied policy can decide
+            # on them, and an implementation can carry them into the audit
+            # trail. ``ctx.inputs`` has already had ``_approval_token`` stripped
+            # above, so the policy never sees a protocol-level key.
+            decision = self._policy.resolve(
+                ctx.module_id,
+                getattr(module, "annotations", None),
+                arguments=ctx.inputs,
+                context=ctx.context,
+            )
             needs_approval = decision.needs_approval
             effective_destructive = decision.destructive
             if decision.overridden:

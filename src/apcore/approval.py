@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -114,11 +115,31 @@ class AutoApproveHandler:
 
 
 class CallbackApprovalHandler:
-    """Built-in handler that delegates to a user-provided async callback.
+    """Built-in handler that delegates to a user-provided **async** callback.
+
+    The callback must be asynchronous — the same contract apcore-typescript's
+    ``CallbackApprovalHandler`` declares. An approval decision is an I/O-bound
+    round-trip (a Slack message, a ticket, a human), and the
+    :class:`ApprovalHandler` protocol this wraps is async in both directions;
+    a synchronous convenience form would be weaker than the contract it stands
+    in for (apcore#104).
 
     Args:
         callback: Async function that receives an ApprovalRequest and returns
-            an ApprovalResult.
+            an ApprovalResult. A plain (non-async) function raises
+            :class:`TypeError` from :meth:`request_approval` — see below.
+
+    Example::
+
+        async def ask_slack(request: ApprovalRequest) -> ApprovalResult:
+            ok = await slack.ask(request.module_id, request.arguments)
+            return ApprovalResult(status="approved" if ok else "rejected")
+
+        handler = CallbackApprovalHandler(ask_slack)
+
+    To reuse an existing synchronous decision function, wrap it::
+
+        handler = CallbackApprovalHandler(lambda req: asyncio.to_thread(decide, req))
     """
 
     def __init__(
@@ -128,8 +149,25 @@ class CallbackApprovalHandler:
         self._callback = callback
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
-        """Delegate to the user-provided callback."""
-        return await self._callback(request)
+        """Delegate to the user-provided callback.
+
+        Raises:
+            TypeError: When the callback is not asynchronous. Awaiting its
+                return value would otherwise fail with the opaque
+                ``object ApprovalResult can't be used in 'await' expression``
+                (apcore#104), which names neither the callback nor the fix.
+        """
+        result = self._callback(request)
+        if not inspect.isawaitable(result):
+            name = getattr(self._callback, "__qualname__", None) or repr(self._callback)
+            raise TypeError(
+                f"CallbackApprovalHandler requires an async callback, but {name} returned "
+                f"{type(result).__name__!r}, which is not awaitable. Declare the callback with "
+                "'async def', or wrap a synchronous one — "
+                "CallbackApprovalHandler(lambda req: asyncio.to_thread(decide, req)). "
+                "For a fixed verdict use AutoApproveHandler or AlwaysDenyHandler instead."
+            )
+        return await result
 
     async def check_approval(self, approval_id: str) -> ApprovalResult:
         """Default Phase B check: return rejected."""
