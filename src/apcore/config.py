@@ -1487,7 +1487,14 @@ Config.register_namespace(
     "sys_modules",
     env_prefix="APCORE_SYS",
     defaults={
-        "enabled": True,
+        # Activation is off by default: PROTOCOL_SPEC 6.6.3 states
+        # `sys_modules.enabled = false (default)` -> 0 modules registered, and
+        # schemas/sys-modules.schema.json declares `default: false`. Registering
+        # `True` here made namespace-mode projects stand up the six read modules
+        # without asking — an information-disclosure surface 6.6.3 calls out by
+        # name. The per-module sub-flags stay True: they select WHICH modules
+        # register once activation has happened.
+        "enabled": False,
         "health": {"enabled": True},
         "manifest": {"enabled": True},
         "usage": {
