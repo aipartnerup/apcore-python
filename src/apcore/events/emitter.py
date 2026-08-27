@@ -8,7 +8,8 @@ import inspect
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
@@ -74,8 +75,46 @@ def _get_event_pattern(subscriber: Any) -> str:
 
 
 def _get_retry_config(subscriber: Any) -> EventRetryConfig:
+    """Resolve a subscriber's ``retry`` attribute into an EventRetryConfig.
+
+    A plain mapping is accepted and merged over the defaults. This used to be a
+    bare ``isinstance(retry, EventRetryConfig)`` check that silently substituted
+    the default policy for anything else — including the exact form
+    ``docs/features/event-system.md`` shows in its own Python example::
+
+        retry = {"max_attempts": 5, "initial_backoff_ms": 250}
+
+    A subscriber copied from the spec therefore retried 3 times at 100 ms
+    instead of 5 at 250 ms, with no error and no log line, while
+    apcore-typescript's ``resolveRetry`` spread the equivalent object over its
+    defaults and honoured it. The failure was invisible because
+    ``event_pattern`` on the same class IS read by a plain ``getattr`` and
+    works, so the subscriber looked correctly wired.
+    """
     retry = getattr(subscriber, "retry", None)
-    return retry if isinstance(retry, EventRetryConfig) else EventRetryConfig()
+    if isinstance(retry, EventRetryConfig):
+        return retry
+    if isinstance(retry, Mapping):
+        known = {f.name for f in fields(EventRetryConfig)}
+        unknown = set(retry) - known
+        if unknown:
+            # Warn rather than drop silently: a typo'd key is exactly how a
+            # declared policy quietly becomes the default one.
+            logger.warning(
+                "Subscriber %r declares unknown retry key(s) %s — ignored; valid keys are %s",
+                _get_subscriber_id(subscriber),
+                sorted(unknown),
+                sorted(known),
+            )
+        return EventRetryConfig(**{k: v for k, v in retry.items() if k in known})
+    if retry is not None:
+        logger.warning(
+            "Subscriber %r declares a `retry` of type %s; expected EventRetryConfig or a "
+            "mapping — falling back to the default policy",
+            _get_subscriber_id(subscriber),
+            type(retry).__name__,
+        )
+    return EventRetryConfig()
 
 
 def _matches_event(subscriber: Any, event_type: str, *, is_dlq: bool) -> bool:

@@ -249,3 +249,97 @@ class TestDeclaredPolicyTakesEffect:
         register_subscriber_type("custom_sink", lambda cfg: _CustomSink(_parse_retry_config(cfg)))
         sub = create_subscriber_from_config({"type": "custom_sink", "retry": NON_DEFAULT_RETRY})
         _assert_non_default_policy(sub.retry)
+
+
+class TestRetryAttributeCoercion:
+    """A subscriber's ``retry`` attribute declared as a plain dict must be honoured.
+
+    Sync finding A-D-024. ``_get_retry_config`` was
+    ``retry if isinstance(retry, EventRetryConfig) else EventRetryConfig()`` —
+    a dict failed the isinstance check and the declared policy was silently
+    replaced by the defaults. ``docs/features/event-system.md`` shows exactly
+    that dict form in its own Python example, so a subscriber copied from the
+    spec retried 3x/100ms instead of the declared 5x/250ms.
+
+    Values below differ from every default so the assertions cannot pass by
+    coincidence.
+    """
+
+    def test_spec_example_dict_is_honoured(self) -> None:
+        from apcore.events.emitter import _get_retry_config
+
+        class HealthAlertSubscriber:
+            event_pattern = "apcore.health.*"
+            retry = {"max_attempts": 5, "initial_backoff_ms": 250}
+
+            async def on_event(self, event: Any) -> None: ...
+
+        cfg = _get_retry_config(HealthAlertSubscriber())
+        assert cfg.max_attempts == 5
+        assert cfg.initial_backoff_ms == 250
+
+    def test_partial_dict_merges_over_defaults(self) -> None:
+        from apcore.events.emitter import _get_retry_config
+        from apcore.events.retry import EventRetryConfig
+
+        class S:
+            retry = {"max_attempts": 7}
+
+            async def on_event(self, event: Any) -> None: ...
+
+        cfg = _get_retry_config(S())
+        assert cfg.max_attempts == 7
+        # Unspecified keys keep their defaults, matching TypeScript resolveRetry.
+        assert cfg.initial_backoff_ms == EventRetryConfig().initial_backoff_ms
+        assert cfg.backoff_multiplier == EventRetryConfig().backoff_multiplier
+
+    def test_typed_config_still_passes_through(self) -> None:
+        from apcore.events.emitter import _get_retry_config
+        from apcore.events.retry import EventRetryConfig
+
+        declared = EventRetryConfig(max_attempts=9, initial_backoff_ms=500)
+
+        class S:
+            retry = declared
+
+            async def on_event(self, event: Any) -> None: ...
+
+        assert _get_retry_config(S()) is declared
+
+    def test_absent_retry_uses_defaults(self) -> None:
+        from apcore.events.emitter import _get_retry_config
+        from apcore.events.retry import EventRetryConfig
+
+        class S:
+            async def on_event(self, event: Any) -> None: ...
+
+        assert _get_retry_config(S()) == EventRetryConfig()
+
+    def test_unknown_key_warns_and_is_ignored(self, caplog: Any) -> None:
+        from apcore.events.emitter import _get_retry_config
+
+        class S:
+            subscriber_id = "typo-sub"
+            retry = {"max_attempts": 4, "max_attemps": 99}  # typo'd second key
+
+            async def on_event(self, event: Any) -> None: ...
+
+        with caplog.at_level("WARNING"):
+            cfg = _get_retry_config(S())
+        assert cfg.max_attempts == 4
+        assert "max_attemps" in caplog.text, "a typo'd retry key must not vanish silently"
+
+    def test_wrong_type_warns_and_falls_back(self, caplog: Any) -> None:
+        from apcore.events.emitter import _get_retry_config
+        from apcore.events.retry import EventRetryConfig
+
+        class S:
+            subscriber_id = "bad-sub"
+            retry = "5 times please"
+
+            async def on_event(self, event: Any) -> None: ...
+
+        with caplog.at_level("WARNING"):
+            cfg = _get_retry_config(S())
+        assert cfg == EventRetryConfig()
+        assert "bad-sub" in caplog.text
