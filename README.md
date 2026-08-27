@@ -124,6 +124,16 @@ negotiation is honored by all three executors. As of **v0.23.0**, AI error-recov
 metadata (per-code `user_fixable` defaults plus filled `ai_guidance`) is also at parity
 across all three SDKs, verified by the shared `error_recovery_metadata.json` conformance fixture.
 
+As of **v0.27.0**, `validate()` withholds module-level introspection from a caller the
+ACL denied (apcore#96, spec v1.13.0 §12.8.5.1). It previously ran `preflight()` and
+`preview()` on the strength of a module lookup alone, so a denied caller still made
+module-authored code run and still received what it returned — for a command-wrapping
+module, the resolved binary and its argv. All three SDKs did it, and all three now
+suppress it; the failed `acl` check is still reported, so a denied caller still learns
+*why*, and a failed `schema` check does **not** suppress introspection. Pinned by
+`preflight_disclosure.json`, whose control case exists so an implementation that never
+introspects at all cannot pass the denial cases for the wrong reason.
+
 Intentional cross-language differences (e.g. Python's synchronous `call()` ergonomics,
 the legacy/deprecated `RetryPolicy`/`BackoffStrategy` aliases that exist only in Python,
 and the module-level convenience functions) are documented inline in the relevant feature
