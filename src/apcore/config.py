@@ -205,39 +205,113 @@ _DEFAULTS: dict[str, Any] = {
 #: The check is one level deep, matching §9.14 step 2 ("each key present in
 #: ``apcore_data[section]``"), so only each section's direct child names are
 #: needed here.
-_FRAMEWORK_SECTION_KEYS: dict[str, frozenset[str]] = {
-    # Config Bus meta-configuration (§9.6.3). Declared at the schema root, which
-    # is additionalProperties: false — without it a legacy apcore.yaml enabling
-    # strict mode would fail its own canonical schema, and `_config.strcit` is
-    # exactly the typo one least wants silently ignored.
-    "_config": frozenset({"allow_unknown", "strict"}),
-    "acl": frozenset({"audit", "default_effect", "root"}),
-    "bindings": frozenset({"dir", "pattern"}),
-    "executor": frozenset({"default_timeout", "global_timeout", "max_call_depth", "max_module_repeat"}),
-    "extensions": frozenset(
-        {
-            "auto_discover",
-            "follow_symlinks",
-            "ignore_patterns",
-            "lazy_load",
-            "max_depth",
-            "namespace",
-            "root",
-            "roots",
-        }
-    ),
-    "id_map": frozenset({"auto_detect", "overrides"}),
-    "logging": frozenset({"format", "level"}),
-    "middleware": frozenset({"disabled"}),
-    "obs": frozenset({"redaction"}),
-    "observability": frozenset({"metrics", "tracing"}),
-    "pipeline": frozenset({"configure", "remove", "steps"}),
-    "project": frozenset({"name", "version"}),
-    "schema": frozenset({"max_ref_depth", "root", "strategy"}),
-    "stream": frozenset({"max_merge_depth"}),
-    "sys_modules": frozenset({"control", "enabled", "error_history", "events", "health", "manifest", "usage"}),
-    "validation": frozenset({"binding", "pipeline"}),
-}
+_FRAMEWORK_CONFIG_KEYS: frozenset[str] = frozenset({
+    "$schema",
+    "_config.allow_unknown",
+    "_config.strict",
+    "acl.audit.enabled",
+    "acl.audit.include_denied",
+    "acl.audit.log_level",
+    "acl.default_effect",
+    "acl.root",
+    "bindings.dir",
+    "bindings.pattern",
+    "executor.default_timeout",
+    "executor.global_timeout",
+    "executor.max_call_depth",
+    "executor.max_module_repeat",
+    "extensions.auto_discover",
+    "extensions.follow_symlinks",
+    "extensions.ignore_patterns",
+    "extensions.lazy_load",
+    "extensions.max_depth",
+    "extensions.namespace",
+    "extensions.root",
+    "extensions.roots",
+    "id_map.auto_detect",
+    "id_map.overrides",
+    "logging.format",
+    "logging.level",
+    "middleware.disabled",
+    "obs.redaction.regex_patterns",
+    "obs.redaction.replacement",
+    "obs.redaction.sensitive_keys",
+    "observability.metrics.enabled",
+    "observability.metrics.exporter",
+    "observability.tracing.enabled",
+    "observability.tracing.exporter",
+    "observability.tracing.sampling_rate",
+    "pipeline.configure",
+    "pipeline.remove",
+    "pipeline.steps",
+    "project.name",
+    "project.version",
+    "schema.max_ref_depth",
+    "schema.root",
+    "schema.strategy",
+    "stream.max_merge_depth",
+    "sys_modules.control.enabled",
+    "sys_modules.control.overrides_path",
+    "sys_modules.enabled",
+    "sys_modules.error_history.max_entries_per_module",
+    "sys_modules.error_history.max_total_entries",
+    "sys_modules.events.enabled",
+    "sys_modules.events.subscribers",
+    "sys_modules.events.thresholds.error_rate",
+    "sys_modules.events.thresholds.latency_p99_ms",
+    "sys_modules.health.enabled",
+    "sys_modules.manifest.enabled",
+    "sys_modules.usage.bucketing_strategy",
+    "sys_modules.usage.enabled",
+    "sys_modules.usage.retention_hours",
+    "validation.binding.description_max_length",
+    "validation.binding.documentation_max_length",
+    "validation.binding.tags_pattern",
+    "validation.binding.version_require_semver",
+    "validation.pipeline.step_name_max_length",
+    "validation.pipeline.timeout_ms_max",
+    "version",
+})
+"""Every key the canonical schemas declare, as full dot-paths.
+
+Generated from ``schemas/*.schema.json`` and pinned by
+``conformance/fixtures/config_key_governance.json``; the
+``generate_config_key_governance.py`` CI step fails when the two drift.
+
+This replaced a ``section -> direct child names`` mapping. Those schemas are
+``additionalProperties: false`` at EVERY level, not only at the section root —
+``observability.tracing``, ``acl.audit``, ``validation.binding`` and
+``obs.redaction`` are each closed in their own right — so a one-level check left
+strict mode blind exactly where a typo is hardest to spot:
+``observability.tracing.sampling_rat`` passed it (its parent ``tracing`` IS
+declared) while the canonical schema rejects it, and the misspelled sampling
+rate silently fell back to its default (sync finding A-D-020).
+"""
+
+
+def _build_surface_trie(dot_paths: frozenset[str]) -> dict[str, object]:
+    """Compile dot-paths into a nested dict; leaves are ``None``."""
+    trie: dict[str, object] = {}
+    for path in dot_paths:
+        node = trie
+        parts = path.split(".")
+        for part in parts[:-1]:
+            child = node.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                node[part] = child
+            node = child
+        node.setdefault(parts[-1], None)
+    return trie
+
+
+_SURFACE_TRIE: dict[str, object] = _build_surface_trie(_FRAMEWORK_CONFIG_KEYS)
+
+#: Framework section names — the trie's container entries. Derived rather than
+#: listed so a section added to the schemas appears here automatically.
+_FRAMEWORK_SECTION_KEYS: frozenset[str] = frozenset(
+    name for name, node in _SURFACE_TRIE.items() if isinstance(node, dict)
+)
 
 # =============================================================================
 # Namespace registry (global, class-level, thread-safe)
@@ -609,6 +683,11 @@ def _collect_unknown_framework_keys(apcore_data: dict[str, Any], prefix: str = "
     never just the first. An operator who opted into strict deserves to see the
     whole problem in one restart rather than one typo per restart.
 
+    The walk is RECURSIVE: the canonical schemas are ``additionalProperties:
+    false`` at every level, so a nested typo such as
+    ``observability.tracing.sampling_rat`` is rejected too. It used to check one
+    level only, which let exactly that case through (sync finding A-D-020).
+
     Callers run this only when ``_config.strict`` is true. Without it the keys
     are retained and readable through ``get()``: this SDK stores the parsed
     document as an untyped dict, so nothing is dropped at parse time, and
@@ -619,14 +698,28 @@ def _collect_unknown_framework_keys(apcore_data: dict[str, Any], prefix: str = "
     granularities would make its meaning depend on where it is read.
     """
     errors: list[str] = []
+
+    def walk(data: dict[str, Any], node: dict[str, Any], path_prefix: str) -> None:
+        for key in sorted(data):
+            path = f"{path_prefix}.{key}"
+            if key not in node:
+                errors.append(f"Unknown key '{prefix}{path}' (strict mode enabled)")
+                continue  # do not descend into an undeclared subtree
+            child = node[key]
+            value = data[key]
+            if isinstance(child, dict) and isinstance(value, dict):
+                walk(value, child, path)
+            # A declared leaf ends the walk whatever its value is; a declared
+            # container holding a non-object is a type error the A12 constraint
+            # table owns, not an undeclared key.
+
     for section in sorted(_FRAMEWORK_SECTION_KEYS):
         section_data = apcore_data.get(section)
         if not isinstance(section_data, dict):
             continue
-        declared = _FRAMEWORK_SECTION_KEYS[section]
-        for key in sorted(section_data):
-            if key not in declared:
-                errors.append(f"Unknown key '{prefix}{section}.{key}' (strict mode enabled)")
+        node = _SURFACE_TRIE[section]
+        if isinstance(node, dict):
+            walk(section_data, node, section)
     return errors
 
 

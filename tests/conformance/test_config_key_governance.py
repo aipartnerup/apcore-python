@@ -21,7 +21,14 @@ from typing import Any
 import pytest
 import yaml
 
-from apcore.config import Config, _CONSTRAINTS, _DEFAULTS, _FRAMEWORK_SECTION_KEYS
+from apcore.config import (
+    Config,
+    _collect_unknown_framework_keys,
+    _CONSTRAINTS,
+    _DEFAULTS,
+    _FRAMEWORK_CONFIG_KEYS,
+    _FRAMEWORK_SECTION_KEYS,
+)
 from apcore.errors import ConfigError
 
 from .canonical_fixtures import fixtures_dir, load_fixture
@@ -382,34 +389,83 @@ def _declared_keys(node: Any, doc: dict[str, Any]) -> set[str]:
     return keys
 
 
-def test_framework_section_map_is_derived_from_the_canonical_schema() -> None:
-    """`_FRAMEWORK_SECTION_KEYS` must equal what the canonical schemas declare.
+def test_framework_key_surface_is_derived_from_the_canonical_schema() -> None:
+    """`_FRAMEWORK_CONFIG_KEYS` must equal what the canonical schemas declare.
 
-    This is the drift guard the runtime table depends on: the schema files ship
-    with the spec repo, not with this package, so the enforcement in
-    `_collect_unknown_framework_keys` reads a mirror. A section added to
+    This is the drift guard the runtime enforcement depends on: the schema files
+    ship with the spec repo, not with this package, so
+    `_collect_unknown_framework_keys` reads a mirror. A key added to
     `apcore-config.schema.json` must fail here rather than go unenforced.
+
+    Compared as full dot-paths at every depth. It used to compare a
+    `section -> direct child names` map, which could not express — and therefore
+    could not guard — the nested closedness those schemas actually declare
+    (sync finding A-D-020).
     """
-    schemas = fixtures_dir().parent.parent / "schemas"
-    config_schema = json.loads((schemas / "apcore-config.schema.json").read_text())
-
-    derived = {}
-    for section, node in config_schema["properties"].items():
-        keys = _declared_keys(node, config_schema)
-        if keys:  # `version` / `$schema` are scalars, not sections
-            derived[section] = keys
-
-    sys_modules_schema = json.loads((schemas / "sys-modules.schema.json").read_text())
-    derived["sys_modules"] = derived.get("sys_modules", set()) | set(sys_modules_schema.get("properties") or {})
-
-    actual = {section: set(keys) for section, keys in _FRAMEWORK_SECTION_KEYS.items()}
-    assert actual == derived, (
-        "_FRAMEWORK_SECTION_KEYS has drifted from schemas/apcore-config.schema.json.\n"
-        f"  sections only in the schema: {sorted(set(derived) - set(actual))}\n"
-        f"  sections only in the table:  {sorted(set(actual) - set(derived))}\n"
-        "  key differences: "
-        + str({s: sorted(derived[s] ^ actual[s]) for s in set(derived) & set(actual) if derived[s] != actual[s]})
+    fixture = json.loads(
+        (fixtures_dir() / "config_key_governance.json").read_text()
     )
+
+    def _find_allowed(node: object) -> list[str] | None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "allowed_keys" and isinstance(value, list):
+                    return value
+                found = _find_allowed(value)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = _find_allowed(item)
+                if found is not None:
+                    return found
+        return None
+
+    declared = _find_allowed(fixture)
+    assert declared, "config_key_governance.json must carry an allowed_keys list"
+
+    expected = set(declared)
+    actual = set(_FRAMEWORK_CONFIG_KEYS)
+    assert actual == expected, (
+        "_FRAMEWORK_CONFIG_KEYS has drifted from the canonical schemas.\n"
+        f"  declared by the schemas but not enforced here: {sorted(expected - actual)}\n"
+        f"  enforced here but not declared by the schemas: {sorted(actual - expected)}"
+    )
+
+
+def test_nested_typo_is_rejected_under_strict() -> None:
+    """A misspelling one level below a section MUST be rejected.
+
+    The canonical schemas are `additionalProperties: false` at every level, so
+    `observability.tracing.sampling_rat` is invalid — but a one-level check
+    passed it, because its parent `tracing` IS declared. The misspelled sampling
+    rate then fell back to its default silently, which is the failure strict
+    mode exists to prevent.
+    """
+    errors = _collect_unknown_framework_keys(
+        {"observability": {"tracing": {"enabled": True, "sampling_rat": 1.0}}}
+    )
+    assert any("observability.tracing.sampling_rat" in e for e in errors), errors
+
+
+def test_declared_nested_keys_are_accepted() -> None:
+    """The recursion must not over-reach into rejecting declared nested keys."""
+    errors = _collect_unknown_framework_keys(
+        {
+            "observability": {"tracing": {"enabled": True, "sampling_rate": 1.0}},
+            "acl": {"audit": {"enabled": True, "log_level": "info"}},
+        }
+    )
+    assert errors == [], errors
+
+
+def test_undeclared_subtree_reports_once_not_per_leaf() -> None:
+    """An unknown container is one error, not one per key beneath it."""
+    errors = _collect_unknown_framework_keys(
+        {"observability": {"tracin": {"enabled": True, "sampling_rate": 1.0}}}
+    )
+    assert len(errors) == 1, errors
+    assert "observability.tracin" in errors[0]
 
 
 def test_every_section_the_schema_closes_is_enforced() -> None:
