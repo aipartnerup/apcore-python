@@ -1682,3 +1682,63 @@ class TestRegisterInternalParity:
         reg = Registry()
         reg.register_internal("system.health", _ValidModule())
         assert reg.has("system.health")
+
+
+class TestRegisterVersionArgumentReachesDescriptor:
+    """`register(id, module, version=...)` must reach `get_definition().version`.
+
+    Sync finding A-D-002. `merge_module_metadata` was called with the caller's
+    `metadata` mapping alone, so the `version` ARGUMENT never entered the merged
+    view and `get_definition()` reported the module attribute (or "1.0.0")
+    instead. apcore-typescript and apcore-rust both surfaced "2.0.0" for the
+    same call.
+
+    A second-order effect rode along: `get_definition` looked the versioned
+    metadata up under `getattr(module, "version")` rather than the version the
+    module was registered with, so when `version=` named a version the module
+    object does not carry, the caller's metadata was dropped from the descriptor
+    too.
+    """
+
+    class _Mod:
+        description = "d"
+        input_schema = {"type": "object"}
+        output_schema = {"type": "object"}
+
+        async def execute(self, inputs, ctx):  # noqa: ANN001, ANN201
+            return {}
+
+    def test_version_argument_reaches_get_definition(self) -> None:
+        from apcore import Registry
+
+        registry = Registry()
+        registry.register("math.add", self._Mod(), version="2.0.0")
+        assert registry.get_definition("math.add").version == "2.0.0"
+
+    def test_metadata_survives_alongside_an_explicit_version(self) -> None:
+        from apcore import Registry
+
+        registry = Registry()
+        registry.register("math.add", self._Mod(), version="2.0.0", metadata={"foo": 1})
+        descriptor = registry.get_definition("math.add")
+        assert descriptor.version == "2.0.0"
+        assert descriptor.metadata.get("foo") == 1, (
+            "the caller's metadata must not vanish when `version=` is supplied"
+        )
+
+    def test_module_attribute_still_wins_when_no_version_argument(self) -> None:
+        from apcore import Registry
+
+        class Versioned(self._Mod):
+            version = "3.1.0"
+
+        registry = Registry()
+        registry.register("math.sub", Versioned())
+        assert registry.get_definition("math.sub").version == "3.1.0"
+
+    def test_default_when_neither_is_supplied(self) -> None:
+        from apcore import Registry
+
+        registry = Registry()
+        registry.register("math.mul", self._Mod())
+        assert registry.get_definition("math.mul").version == "1.0.0"

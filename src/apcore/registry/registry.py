@@ -1194,7 +1194,16 @@ class Registry:
         # _module_meta even for the manual register() path, matching
         # apcore-typescript Registry.register() so get_definition()
         # never has to fall back to the raw module object.
-        merged_meta = merge_module_metadata(module, metadata or {})
+        # The `version` ARGUMENT must reach the merged view, not just the
+        # versioned store. `merge_module_metadata` resolves `version` from the
+        # meta mapping and falls back to the module attribute, so omitting it
+        # here made `get_definition(module_id).version` report "1.0.0" for
+        # `register(module_id, module, version="2.0.0")` while apcore-typescript
+        # and apcore-rust both reported "2.0.0" (sync finding A-D-002).
+        merge_input = dict(metadata or {})
+        if version is not None:
+            merge_input["version"] = version
+        merged_meta = merge_module_metadata(module, merge_input)
 
         # Phase 1: conflict detection + mark in-flight (DEFERRED-PUBLISH, apcore #65).
         # The module is NOT inserted into _modules/_versioned_modules until after on_load
@@ -1512,8 +1521,15 @@ class Registry:
 
         with self._lock:
             meta = dict(self._module_meta.get(module_id, {}))
-            # Resolve versioned metadata
-            version_str = getattr(module, "version", None) or DEFAULT_MODULE_VERSION
+            # Resolve versioned metadata under the version the module was
+            # REGISTERED with, which `_module_meta` now carries. Keying off
+            # `getattr(module, "version")` missed the versioned store whenever
+            # `register(..., version=...)` supplied a version the module object
+            # does not carry itself — so the caller's metadata silently vanished
+            # from the descriptor alongside the version (sync finding A-D-002).
+            version_str = (
+                meta.get("version") or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
+            )
             versioned_meta = self._versioned_meta.get(module_id, version_str)
             if versioned_meta:
                 meta["metadata"] = {**meta.get("metadata", {}), **versioned_meta}
