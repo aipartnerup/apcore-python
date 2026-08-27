@@ -1421,6 +1421,23 @@ class ErrorCodes:
     TASK_LIMIT_EXCEEDED = "TASK_LIMIT_EXCEEDED"
     PIPELINE_STEP_ERROR = "PIPELINE_STEP_ERROR"
     PIPELINE_STEP_NOT_FOUND = "PIPELINE_STEP_NOT_FOUND"
+    # The pipeline/step/strategy codes below are raised from `apcore.pipeline`,
+    # not from this module, which is why they were absent here. `ErrorCodes` is
+    # the sole input to `_FRAMEWORK_CODES` — the exact-code half of the A17
+    # collision guard — so a user module could register them as its own. See the
+    # note above FRAMEWORK_ERROR_CODE_PREFIXES: the reserved-prefix set was
+    # narrowed to 14 precisely because this exact-code check was believed to
+    # cover the specific codes under CIRCUIT_/PIPELINE_/STREAMING_/CONTEXT_.
+    # apcore-rust derives its set from the exhaustive `ErrorCode` enum and
+    # rejects all eight; this map must be equally complete.
+    PIPELINE_ABORT = "PIPELINE_ABORT"
+    PIPELINE_CONFIGURATION_ERROR = "PIPELINE_CONFIGURATION_ERROR"
+    PIPELINE_DEPENDENCY_ERROR = "PIPELINE_DEPENDENCY_ERROR"
+    STEP_NAME_DUPLICATE = "STEP_NAME_DUPLICATE"
+    STEP_NOT_FOUND = "STEP_NOT_FOUND"
+    STEP_NOT_REMOVABLE = "STEP_NOT_REMOVABLE"
+    STEP_NOT_REPLACEABLE = "STEP_NOT_REPLACEABLE"
+    STRATEGY_NOT_FOUND = "STRATEGY_NOT_FOUND"
     MODULE_ID_CONFLICT = "MODULE_ID_CONFLICT"
     INVALID_SEGMENT = "INVALID_SEGMENT"
     ID_TOO_LONG = "ID_TOO_LONG"
