@@ -573,7 +573,11 @@ class TestReloadWithPathFilter:
 
         reload_order: list[str] = []
 
-        with patch.object(mod, "_reload_one", side_effect=reload_order.append):
+        # side_effect must tolerate the method's full signature, not just its
+        # first argument — see the note on the dependency-bearing case below.
+        with patch.object(
+            mod, "_reload_one", side_effect=lambda mid, *_a, **_kw: reload_order.append(mid)
+        ):
             mod.execute(dict(case["action"]["input"]), _make_context())
 
         # The contract value is the dispatch key; the checker takes only the
@@ -593,7 +597,14 @@ class TestReloadWithPathFilter:
         mod = _make_reload_module(registry)
 
         reload_order: list[str] = []
-        with patch.object(mod, "_reload_one", side_effect=reload_order.append):
+        # `_reload_one(module_id, context)` — record only the id. `side_effect`
+        # must accept every argument the real method takes, so a bare
+        # `reload_order.append` breaks the moment the signature grows (it did,
+        # when `context` was threaded through for A-D-017) and the resulting
+        # TypeError is swallowed upstream, leaving `order` silently empty.
+        with patch.object(
+            mod, "_reload_one", side_effect=lambda mid, *_a, **_kw: reload_order.append(mid)
+        ):
             mod.execute({"path_filter": "executor.*", "reason": "topo test"}, _make_context())
 
         _assert_topological_order(reload_order, modules, declared_dependencies=declared)
@@ -1077,3 +1088,62 @@ class TestFixtureCoverage:
         module = sys.modules[__name__]
         missing = [cls for cls in self.COVERED.values() if not hasattr(module, cls)]
         assert missing == [], f"claimed driver class(es) not defined: {missing}"
+
+
+class TestBulkReloadCarriesCallerIdentity:
+    """A bulk reload's `apcore.module.reloaded` must name the real caller.
+
+    Sync finding A-D-017. `_execute_bulk` passes `context` into the AuditStore
+    entry but `_reload_one` omitted it at the `_emit_module_reloaded` call, so
+    `_audit_payload_extras(None)` fell back to `caller_id="@external"`. Two
+    records of the same action — the audit entry and the event — disagreed
+    about who performed it, and only the event was wrong.
+    """
+
+    def test_bulk_reload_event_carries_the_real_caller(self) -> None:
+        from apcore.events import EventEmitter
+
+        events: list[Any] = []
+
+        class Recorder:
+            subscriber_id = "rec"
+            event_pattern = "apcore.module.*"
+
+            async def on_event(self, event: Any) -> None:
+                events.append(event)
+
+        registry = self._registry_with(["executor.alpha"])
+        emitter = EventEmitter()
+        emitter.subscribe(Recorder())
+        mod = ReloadModule(registry=registry, event_emitter=emitter)
+
+        with patch.object(mod, "_rediscover_module", side_effect=lambda mid: self._fresh_module()):
+            mod.execute({"path_filter": "executor.*", "reason": "deploy"}, _make_context())
+        emitter.flush(2.0)
+
+        reloaded = [e for e in events if e.event_type == "apcore.module.reloaded"]
+        assert reloaded, f"a bulk reload must emit the event; got {[e.event_type for e in events]}"
+        caller = reloaded[0].data.get("caller_id")
+        assert caller != "@external", (
+            "an authenticated bulk reload must not be attributed to @external — "
+            f"got {caller!r}"
+        )
+
+    @staticmethod
+    def _registry_with(module_ids: list[str]) -> Any:
+        registry = Registry()
+        for mid in module_ids:
+            dummy = MagicMock()
+            dummy.input_schema = {"type": "object", "properties": {}}
+            dummy.output_schema = {"type": "object", "properties": {}}
+            dummy.version = "1.0.0"
+            registry.register(mid, dummy)
+        return registry
+
+    @staticmethod
+    def _fresh_module() -> Any:
+        m = MagicMock()
+        m.input_schema = {"type": "object", "properties": {}}
+        m.output_schema = {"type": "object", "properties": {}}
+        m.version = "1.0.0"
+        return m

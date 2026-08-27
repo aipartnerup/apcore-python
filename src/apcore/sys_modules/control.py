@@ -501,7 +501,7 @@ class ReloadModule:
         reloaded: list[str] = []
         for mid in topo_order:
             try:
-                self._reload_one(mid)
+                self._reload_one(mid, context)
                 reloaded.append(mid)
             except Exception as exc:
                 logger.error("Bulk reload: failed to reload '%s': %s", mid, exc)
@@ -554,8 +554,18 @@ class ReloadModule:
             )
             return sorted(module_ids)
 
-    def _reload_one(self, module_id: str) -> None:
-        """Reload a single module without emitting events (used in bulk mode)."""
+    def _reload_one(self, module_id: str, context: Any = None) -> None:
+        """Reload a single module as part of a bulk (path_filter) reload.
+
+        ``context`` is threaded through so the emitted ``apcore.module.reloaded``
+        carries the real caller identity. It used to be omitted at the
+        ``_emit_module_reloaded`` call below, which made
+        ``_audit_payload_extras(None)`` fall back to ``caller_id="@external"`` —
+        so an authenticated bulk reload was attributed to an anonymous caller on
+        the event bus while the AuditStore entry (built in ``_execute_bulk``,
+        which does pass ``context``) recorded the real one. Two records of the
+        same action disagreeing about who performed it (sync finding A-D-017).
+        """
         old_module = self._registry.get(module_id)
         if old_module is None:
             return
@@ -575,7 +585,7 @@ class ReloadModule:
 
         new_version = getattr(new_module, "version", "1.0.0")
         prev_version = getattr(old_module, "version", "1.0.0")
-        self._emit_module_reloaded(module_id, str(prev_version), str(new_version))
+        self._emit_module_reloaded(module_id, str(prev_version), str(new_version), context)
 
     # ------------------------------------------------------------------
     # Shared helpers
