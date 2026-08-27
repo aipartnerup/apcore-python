@@ -17,6 +17,7 @@ from apcore.config import Config
 from apcore.errors import (
     ErrorCodes,
     InvalidInputError,
+    ModuleError,
     ModuleNotFoundError,
     StreamingInterfaceError,
 )
@@ -374,6 +375,46 @@ class _ModuleChangeHandler:
         reg = self._registry()
         if reg is not None:
             reg._handle_file_deletion(path)
+
+
+def _run_on_load(module: Any, module_id: str) -> None:
+    """Invoke ``module.on_load()``, refusing an awaitable rather than dropping it.
+
+    ``on_load`` is synchronous in this SDK and in apcore-rust, where the trait
+    signature enforces it. apcore-typescript accepts an async ``onLoad`` and has
+    ``register`` return a promise that resolves once it completes.
+
+    A module author following the TypeScript shape used to get silence here: the
+    coroutine was created, never awaited, and discarded, so the module was
+    published and callable with none of its initialisation having run. The only
+    trace was a ``RuntimeWarning`` on the next garbage collection, attributed to
+    whatever code happened to be running then. That is exactly the
+    half-initialised module the deferred-publish design exists to prevent, and it
+    arrived through the one path that skipped the check (sync finding A-C-002).
+
+    Raising is the smaller change it looks like: an ``async def on_load`` has
+    never once run, so nothing can depend on it having done so.
+    """
+    result = module.on_load()
+    if inspect.isawaitable(result):
+        # Close it so the refusal does not also produce the "never awaited"
+        # warning, attributed to an unrelated call site.
+        if inspect.iscoroutine(result):
+            result.close()
+        raise ModuleError(
+            code=ErrorCodes.MODULE_LOAD_ERROR,
+            message=(
+                f"Module '{module_id}' defines an async on_load(); apcore-python "
+                "invokes on_load synchronously, so an awaitable one never runs. "
+                "Make it a regular def, or move the async work into execute()."
+            ),
+            ai_guidance=(
+                "Change `async def on_load(self)` to `def on_load(self)`. If the "
+                "initialisation genuinely needs an event loop, do it lazily on "
+                "first execute() instead — Registry.register is a synchronous API "
+                "and cannot await."
+            ),
+        )
 
 
 class Registry:
@@ -1106,7 +1147,7 @@ class Registry:
         if not (hasattr(module, "on_load") and callable(module.on_load)):
             return True
         try:
-            module.on_load()
+            _run_on_load(module, mod_id)
         except Exception as e:
             logger.error("on_load() failed for module '%s': %s", mod_id, e)
             with self._lock:
@@ -1248,7 +1289,7 @@ class Registry:
         # registrations will see module_id in _in_flight and raise DUPLICATE_MODULE_ID.
         if hasattr(module, "on_load") and callable(module.on_load):
             try:
-                module.on_load()
+                _run_on_load(module, module_id)
             except Exception as exc:
                 with self._lock:
                     self._in_flight.discard(module_id)
@@ -2338,7 +2379,7 @@ class Registry:
         # re-raise the original exception unchanged (no wrapping).
         if hasattr(module, "on_load") and callable(module.on_load):
             try:
-                module.on_load()
+                _run_on_load(module, module_id)
             except Exception as exc:
                 with self._lock:
                     self._in_flight.discard(module_id)
