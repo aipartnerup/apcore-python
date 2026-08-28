@@ -1,7 +1,7 @@
 """Unevaluable ACL conditions, load-time validation, and ACL introspection.
 
-Covers PROTOCOL_SPEC v1.22.0 §6.1.1 / §6.1.2 / §6.1.3 / §6.3 / §6.3.1 / §6.5
-(apcore#100) and v1.23.0 §6.8 (apcore#101).
+Covers PROTOCOL_SPEC §6.1.1 / §6.1.2 / §6.1.3 / §6.1.4 / §6.1.4.1 / §6.3 /
+§6.3.1 / §6.5 (apcore#100, #106) and §6.8 (apcore#101).
 
 The defect these lock down: ``evaluate_conditions`` returned a plain boolean, so
 "a handler answered no" and "no answer was obtainable" arrived at the rule loop
@@ -21,8 +21,9 @@ from typing import Any
 
 import pytest
 
-from apcore.acl import ACL, ACLRule, AuditEntry, ConditionOutcome, ConditionValidationFinding
+from apcore.acl import ACL, ACLRule, AuditEntry, ConditionOutcome, RuleValidationFinding
 from apcore.context import Context, Identity
+from apcore.errors import ACLRuleError
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +355,7 @@ class TestWarnings:
         with caplog.at_level(logging.WARNING):
             acl.check("caller", "target", _ctx())
         joined = "\n".join(r.message for r in caplog.records)
-        assert "'mispelled'" in joined
+        assert "mispelled" in joined
         assert "effect=deny" in joined
         assert "rule 0" in joined
 
@@ -370,7 +371,7 @@ class TestWarnings:
         joined = "\n".join(r.message for r in caplog.records)
         assert "ACL rule 1" in joined
         assert "effect=deny" in joined
-        assert "'mispelled'" in joined
+        assert "mispelled" in joined
 
     def test_construction_does_not_raise_for_an_unregistered_key(self) -> None:
         """§6.1.2 rule 1: loading MUST NOT fail — handler registration is runtime."""
@@ -393,7 +394,7 @@ class TestWarnings:
             acl = ACL.load(str(path))
         assert len(acl.rules) == 1
         joined = "\n".join(r.message for r in caplog.records)
-        assert "ACL rule 0" in joined and "'mispelled'" in joined
+        assert "ACL rule 0" in joined and "mispelled" in joined
 
     def test_add_rule_warns_naming_index_zero(self, caplog: pytest.LogCaptureFixture) -> None:
         """§6.1.2 rule 4: runtime insertion is an entry point that MUST be covered."""
@@ -404,14 +405,14 @@ class TestWarnings:
         joined = "\n".join(r.message for r in caplog.records)
         assert "ACL rule 0" in joined
         assert "effect=deny" in joined
-        assert "'mispelled'" in joined
+        assert "mispelled" in joined
 
     def test_add_rule_does_not_warn_for_a_registered_key(self, caplog: pytest.LogCaptureFixture) -> None:
         acl = ACL(default_effect="allow")
         caplog.clear()
         with caplog.at_level(logging.WARNING):
             acl.add_rule(callers=["*"], targets=["*"], effect="deny", conditions={"roles": ["admin"]})
-        assert not [r for r in caplog.records if "condition key" in r.message]
+        assert not [r for r in caplog.records if "precheck" in r.message]
 
     def test_nested_keys_are_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING):
@@ -426,7 +427,8 @@ class TestWarnings:
                 ]
             )
         joined = "\n".join(r.message for r in caplog.records)
-        assert "'deeply_mispelled'" in joined
+        # §6.1.4: the warning names the nested path, not a bare key.
+        assert "$or[1].$not.deeply_mispelled" in joined
 
     def test_a_conditional_rule_skipped_for_want_of_context_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         """§6.5: not an unevaluable condition, but the consequence must be visible."""
@@ -442,11 +444,11 @@ class TestWarnings:
 
 
 # ---------------------------------------------------------------------------
-# §6.1.2 rule 3 / §6.1.3 — validate_conditions()
+# §6.1.2 rule 3 / §6.1.3 — validate_rules()
 # ---------------------------------------------------------------------------
 
 
-class TestValidateConditions:
+class TestValidateRules:
     def test_empty_when_every_key_resolves(self) -> None:
         acl = ACL(
             rules=[
@@ -454,7 +456,7 @@ class TestValidateConditions:
                 ACLRule(callers=["*"], targets=["*"], effect="allow"),
             ]
         )
-        assert acl.validate_conditions() == ()
+        assert acl.validate_rules() == ()
 
     def test_reports_rule_index_key_and_effect(self) -> None:
         acl = ACL(
@@ -463,13 +465,14 @@ class TestValidateConditions:
                 ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={"mispelled": True}),
             ]
         )
-        assert acl.validate_conditions() == (
-            ConditionValidationFinding(
+        assert acl.validate_rules() == (
+            RuleValidationFinding(
                 rule_index=1,
+                condition_path="mispelled",
                 condition_key="mispelled",
                 effect="deny",
-                sync_registered=False,
-                async_registered=False,
+                sync_resolvable=False,
+                async_resolvable=False,
             ),
         )
 
@@ -484,14 +487,18 @@ class TestValidateConditions:
                 )
             ]
         )
-        assert [f.condition_key for f in acl.validate_conditions()] == ["nested_typo"]
+        findings = acl.validate_rules()
+        assert [f.condition_key for f in findings] == ["nested_typo"]
+        # §6.1.4: the path locates the fault, since a key can occur at several
+        # positions in one tree.
+        assert [f.condition_path for f in findings] == ["$or[1].$not.nested_typo"]
 
     def test_the_builtin_compound_operators_are_never_findings(self) -> None:
         acl = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={"$not": {"roles": ["a"]}})])
-        assert acl.validate_conditions() == ()
+        assert acl.validate_rules() == ()
 
     def test_an_async_only_key_is_reported_with_both_flags(self, registered) -> None:
-        """§6.1.3 rule 2: a finding is emitted whenever sync_registered is false.
+        """§6.1.3 rule 2: a finding is emitted whenever sync_resolvable is false.
 
         check() consults only the sync registry, so an async-only key is a
         working condition under async_check() and an UNEVALUABLE one under
@@ -499,16 +506,16 @@ class TestValidateConditions:
         """
         key = registered("_t_async_only", _Answers(True), asynchronous=True)
         acl = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={key: True})])
-        findings = acl.validate_conditions()
+        findings = acl.validate_rules()
         assert len(findings) == 1
-        assert findings[0].sync_registered is False
-        assert findings[0].async_registered is True
+        assert findings[0].sync_resolvable is False
+        assert findings[0].async_resolvable is True
 
     def test_a_sync_only_key_resolves_on_both_paths(self, registered) -> None:
         """The built-ins are sync-only and resolve on async_check via fallback."""
         key = registered("_t_sync_only", _Answers(True))
         acl = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={key: True})])
-        assert acl.validate_conditions() == ()
+        assert acl.validate_rules() == ()
 
     def test_an_async_only_key_really_is_unevaluable_on_the_sync_path(self, registered) -> None:
         """The finding is not cosmetic: it predicts a real behavioural difference."""
@@ -519,7 +526,7 @@ class TestValidateConditions:
 
     def test_rules_without_conditions_are_never_reported(self) -> None:
         acl = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny")])
-        assert acl.validate_conditions() == ()
+        assert acl.validate_rules() == ()
 
     def test_is_a_pure_read(self) -> None:
         captured: list[AuditEntry] = []
@@ -528,29 +535,56 @@ class TestValidateConditions:
             audit_logger=captured.append,
         )
         before = acl.rules
-        acl.validate_conditions()
+        acl.validate_rules()
         assert acl.rules == before
         assert acl.default_effect == "deny"
-        assert captured == [], "validate_conditions() MUST NOT emit an audit event"
+        assert captured == [], "validate_rules() MUST NOT emit an audit event"
 
     def test_reflects_a_key_registered_after_construction(self, registered) -> None:
         acl = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={"_t_late": True})])
-        assert len(acl.validate_conditions()) == 1
+        assert len(acl.validate_rules()) == 1
         registered("_t_late", _Answers(True))
-        assert acl.validate_conditions() == ()
+        assert acl.validate_rules() == ()
 
-    def test_findings_are_ordered_by_rule_then_by_key_position(self) -> None:
+    def test_findings_are_ordered_by_rule_then_lexicographically_by_path(self) -> None:
+        """§6.1.2 rule 3 — by path, not by insertion order and not by key."""
         acl = ACL(
             rules=[
                 ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={"b_typo": 1, "a_typo": 1}),
                 ACLRule(callers=["*"], targets=["*"], effect="allow", conditions={"c_typo": 1}),
             ]
         )
-        assert [(f.rule_index, f.condition_key) for f in acl.validate_conditions()] == [
-            (0, "b_typo"),
+        assert [(f.rule_index, f.condition_path) for f in acl.validate_rules()] == [
             (0, "a_typo"),
+            (0, "b_typo"),
             (1, "c_typo"),
         ]
+
+    def test_reports_a_malformed_conditions_block(self) -> None:
+        """The gap the narrower name hid: `$` is a fault the validator must see."""
+        acl = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions="oops")])  # type: ignore[arg-type]
+        findings = acl.validate_rules()
+        assert [(f.condition_path, f.effect) for f in findings] == [("$", "deny")]
+
+    def test_reports_a_malformed_compound_operand(self) -> None:
+        acl = ACL(
+            rules=[
+                ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={"$or": "not-a-list"}),
+                ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={"$not": 3}),
+            ]
+        )
+        assert [(f.rule_index, f.condition_path) for f in acl.validate_rules()] == [(0, "$or"), (1, "$not")]
+
+    def test_reports_malformed_callers_and_targets(self) -> None:
+        """§6.1.4.1 — the reason the method could not stay named validate_conditions."""
+        acl = ACL(rules=[ACLRule(callers="admin.*", targets=5, effect="allow")])  # type: ignore[arg-type]
+        findings = acl.validate_rules()
+        assert [f.condition_path for f in findings] == ["callers", "targets"]
+        assert all(f.sync_resolvable is False and f.async_resolvable is False for f in findings)
+
+    def test_a_well_formed_rule_with_no_conditions_is_never_reported(self) -> None:
+        acl = ACL(rules=[ACLRule(callers=["a"], targets=["b"], effect="allow")])
+        assert acl.validate_rules() == ()
 
 
 # ---------------------------------------------------------------------------
@@ -719,16 +753,15 @@ class TestMalformedConditionsValue:
         )
         assert acl.check("user", "service.op", _ctx(roles=["dev"])) is False
 
-    def test_the_diagnostic_uses_a_reserved_synthetic_key(self) -> None:
-        """No real condition key exists to name, so a `$`-prefixed one stands in.
+    def test_the_diagnostic_uses_the_jsonpath_root(self) -> None:
+        """No real condition key exists to name, so the root path `$` stands in.
 
-        ``$`` is reserved by §6.1 for compound operators, so it cannot collide
-        with a key a deployment registered a handler for. Parity with
-        apcore-typescript's ``MALFORMED_CONDITIONS_KEY``.
+        §6.1.4 settles on ``$`` — the JSONPath root — which keeps the notation
+        consistent with ``$or[1].$not.k``, where no root token otherwise appears.
         """
         acl, captured = _acl("oops", effect="deny", default_effect="allow")
         acl.check("user", "service.op", _ctx())
-        assert captured[0].handler_error == "$conditions: ACL conditions must be a mapping, got str"
+        assert captured[0].handler_error == "$: ACL conditions must be a mapping, got str"
 
     def test_it_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         acl, _ = _acl(["roles"], effect="deny", default_effect="allow")
@@ -753,21 +786,308 @@ class TestMalformedConditionsValue:
             assert captured[0].handler_error is None
 
     @pytest.mark.parametrize(
-        "conditions",
-        [{"$or": "not-a-list"}, {"$or": 5}, {"$or": ["not-a-dict"]}, {"$not": 3}, {"$not": "x"}],
-        ids=["or-str", "or-int", "or-list-of-str", "not-int", "not-str"],
+        ("conditions", "path"),
+        [
+            ({"$or": "not-a-list"}, "$or"),
+            ({"$or": 5}, "$or"),
+            ({"$not": 3}, "$not"),
+            ({"$not": "x"}, "$not"),
+        ],
+        ids=["or-str", "or-int", "not-int", "not-str"],
     )
-    def test_malformed_compound_operands_keep_their_current_classification(self, conditions: dict[str, Any]) -> None:
-        """Deliberately NOT changed here — pinned so this pass cannot drift it.
+    def test_a_malformed_compound_operand_is_unevaluable(self, conditions: dict[str, Any], path: str) -> None:
+        """§6.1.1 case 4, INVERTED at spec v1.25.0.
 
-        ``$or: "not-a-list"`` and ``$not: 3`` evaluate to UNSATISFIED in all three
-        SDKs today. They are being handled in a coordinated spec revision that all
-        three act on together; reclassifying one SDK ahead of it would recreate
-        the divergence the guard above was measured against. The compound handlers
-        reject a malformed operand before recursing, so the new non-mapping guard
-        is unreachable from them.
+        Through v1.24.0 all three SDKs classified this UNSATISFIED, because
+        §6.1.1 enumerated exactly three unevaluable situations and a handler
+        handed a malformed value does run to completion. The consequence was
+        that a ``deny`` rule carrying ``$or: "typo"`` stayed inert — the v1.22.0
+        defect reached through a second door. "Unevaluable" is now a principle:
+        the implementation cannot answer the condition **as written**.
         """
         acl, captured = _acl(conditions, effect="deny", default_effect="allow")
-        assert acl.check("user", "service.op", _ctx()) is True, "UNSATISFIED: the deny rule does not match"
+        assert acl.check("user", "service.op", _ctx()) is False, "the deny rule must take effect"
+        assert captured[0].handler_error is not None
+        assert captured[0].handler_error.startswith(f"{path}: ")
+
+        acl2, captured2 = _acl(conditions, effect="deny", default_effect="allow")
+        assert asyncio.run(acl2.async_check("user", "service.op", _ctx())) is False
+        assert captured2[0].handler_error is not None
+
+    @pytest.mark.parametrize(
+        ("conditions", "path"),
+        [
+            ({"$or": "not-a-list"}, "$or"),
+            ({"$not": 3}, "$not"),
+        ],
+        ids=["or", "not"],
+    )
+    def test_a_malformed_compound_operand_on_an_allow_rule_does_not_grant(
+        self, conditions: dict[str, Any], path: str
+    ) -> None:
+        acl, captured = _acl(conditions, effect="allow", default_effect="deny")
+        assert acl.check("user", "service.op", _ctx()) is False
+        assert captured[0].reason == "default_effect"
+        assert captured[0].handler_error is not None
+
+    def test_a_non_mapping_or_element_is_unevaluable(self) -> None:
+        """Not a fixture case, and not one the spec names explicitly.
+
+        §6.1.1 case 4 lists "`$or` whose value is not a list" and "`$not` whose
+        value is not an object", but the section is explicit that the list is
+        non-exhaustive and that an implementation meeting an unlisted case MUST
+        classify it by the principle rather than defaulting it to UNSATISFIED.
+        An `$or` element that is not a condition object asks no question, so it
+        is unevaluable — otherwise `$or: ["typo"]` on a `deny` rule is inert,
+        which is the same failure one level down. Flagged for a fixture case so
+        all three SDKs agree.
+        """
+        acl, captured = _acl({"$or": ["not-a-dict"]}, effect="deny", default_effect="allow")
+        assert acl.check("user", "service.op", _ctx()) is False
+        assert captured[0].handler_error is not None
+        assert captured[0].handler_error.startswith("$or[0]: ")
+
+    def test_a_well_formed_or_still_composes_normally(self) -> None:
+        """The guard must not swallow a legitimately unsatisfied `$or`."""
+        acl, captured = _acl(
+            {"$or": [{"roles": ["admin"]}, {"identity_types": ["service"]}]},
+            effect="deny",
+            default_effect="allow",
+        )
+        assert acl.check("user", "service.op", _ctx(roles=["viewer"])) is True
         assert captured[0].handler_error is None
-        assert asyncio.run(acl.async_check("user", "service.op", _ctx())) is True
+
+
+# ---------------------------------------------------------------------------
+# §6.1.4 — the structural and registry precheck
+# ---------------------------------------------------------------------------
+
+
+class TestPrecheckOrdering:
+    """The precheck is context-free and runs BEFORE §6.5's no-context check.
+
+    That ordering is the whole design. It closes the bypass where
+    ``conditions: {mispelled: true}`` on a `deny` rule passed traffic simply
+    because the caller carried no identity — measured in all three SDKs — while
+    leaving §6.5 itself untouched for rules that are merely unanswerable *by
+    this caller*.
+    """
+
+    def test_a_misspelled_key_denies_even_without_a_context(self) -> None:
+        acl, captured = _acl({"mispelled": True}, effect="deny", default_effect="allow")
+        assert acl.check("user", "service.op", None) is False
+        assert captured[0].decision == "deny"
+        assert captured[0].handler_error is not None
+        assert captured[0].handler_error.startswith("mispelled: ")
+
+    async def test_a_misspelled_key_denies_without_a_context_on_the_async_path(self) -> None:
+        acl, captured = _acl({"mispelled": True}, effect="deny", default_effect="allow")
+        assert await acl.async_check("user", "service.op", None) is False
+        assert captured[0].handler_error is not None
+
+    def test_a_malformed_conditions_block_denies_even_without_a_context(self) -> None:
+        acl, captured = _acl("oops", effect="deny", default_effect="allow")
+        assert acl.check("user", "service.op", None) is False
+        assert captured[0].handler_error == "$: ACL conditions must be a mapping, got str"
+
+    def test_a_well_formed_conditional_rule_still_takes_the_no_context_path(self) -> None:
+        """§6.1.4 rule 2 — the control, and the line the design turns on.
+
+        ``roles`` is registered and well formed, so the rule PASSES the precheck
+        and then finds no context: it does not match, the call is allowed, and
+        no ``handler_error`` is recorded. A registered, context-dependent
+        condition is NOT unevaluable merely because this caller sent nothing.
+        """
+        acl, captured = _acl({"roles": ["admin"]}, effect="deny", default_effect="allow")
+        assert acl.check("user", "service.op", None) is True
+        assert captured[0].reason == "default_effect"
+        assert captured[0].handler_error is None, "a question this caller did not answer is not a fault"
+
+    async def test_the_control_holds_on_the_async_path(self) -> None:
+        acl, captured = _acl({"roles": ["admin"]}, effect="deny", default_effect="allow")
+        assert await acl.async_check("user", "service.op", None) is True
+        assert captured[0].handler_error is None
+
+    def test_a_non_matching_rule_is_never_prechecked_for_conditions(self) -> None:
+        """A rule whose patterns do not match does not apply, so its typo is not this call's problem.
+
+        Prechecking conditions on every rule regardless of pattern match would
+        make one misspelled key in one unrelated `deny` rule deny the entire
+        registry. §6.3's loop only evaluates conditions inside the
+        caller-and-target-matched branch, and §6.1.4 does not restructure it.
+        """
+        captured: list[AuditEntry] = []
+        acl = ACL(
+            rules=[ACLRule(callers=["someone.else"], targets=["*"], effect="deny", conditions={"mispelled": True})],
+            default_effect="allow",
+            audit_logger=captured.append,
+        )
+        assert acl.check("user", "service.op", _ctx()) is True
+        assert captured[0].handler_error is None
+
+    def test_the_precheck_does_not_short_circuit(self) -> None:
+        """§6.1.4 rule 3 — completeness is what makes handler_error deterministic."""
+        acl, captured = _acl(
+            {"zeta_typo": True, "alpha_typo": True, "mu_typo": True},
+            effect="deny",
+            default_effect="allow",
+        )
+        assert acl.check("user", "service.op", _ctx()) is False
+        assert captured[0].handler_error is not None
+        assert _reported_paths(captured[0].handler_error) == ["alpha_typo", "mu_typo", "zeta_typo"]
+
+    def test_two_faults_in_one_or_report_both_ordered_by_path(self) -> None:
+        """The fixture case that pins diagnostics across languages."""
+        acl, captured = _acl(
+            {"$or": [{"b_typo": True}, {"a_typo": True}]},
+            effect="deny",
+            default_effect="allow",
+        )
+        assert acl.check("user", "service.op", _ctx()) is False
+        assert captured[0].handler_error is not None
+        assert _reported_paths(captured[0].handler_error) == ["$or[0].b_typo", "$or[1].a_typo"]
+
+    def test_a_repeated_key_at_two_positions_gets_two_paths(self) -> None:
+        """Why ordering is by path and not by key: one key, two positions."""
+        acl, captured = _acl(
+            {"$or": [{"dup_typo": 1}, {"$not": {"dup_typo": 2}}]},
+            effect="deny",
+            default_effect="allow",
+        )
+        assert acl.check("user", "service.op", _ctx()) is False
+        assert captured[0].handler_error is not None
+        assert _reported_paths(captured[0].handler_error) == ["$or[0].dup_typo", "$or[1].$not.dup_typo"]
+
+    def test_an_execution_origin_fault_still_carries_its_nested_path(self, registered) -> None:
+        key = registered("_t_nested_raise", _Raising())
+        acl, captured = _acl({"$or": [{key: True}]}, effect="deny", default_effect="allow")
+        assert acl.check("user", "service.op", _ctx()) is False
+        assert captured[0].handler_error is not None
+        assert captured[0].handler_error.startswith(f"$or[0].{key}: ")
+
+
+def _reported_paths(handler_error: str) -> list[str]:
+    """Split a ``handler_error`` into the condition paths it names, in order."""
+    return [part.split(": ", 1)[0] for part in handler_error.split("; ")]
+
+
+# ---------------------------------------------------------------------------
+# §6.1.4.1 — malformed `callers` / `targets` (apcore#106)
+# ---------------------------------------------------------------------------
+
+
+class TestMalformedPatternFields:
+    """A `callers`/`targets` that is not a list of strings is unevaluable.
+
+    The failure this closes fails **open**. A bare string is iterable, so
+    ``callers: "admin.*"`` written where ``callers: ["admin.*"]`` was meant is
+    read character by character, and ``*`` is a valid pattern matching
+    everything — so an `allow` rule carrying that typo granted access to every
+    caller. Whether a given typo was dangerous depended only on whether the
+    mistyped string happened to contain a `*`.
+    """
+
+    def test_string_callers_on_an_allow_rule_does_not_grant(self) -> None:
+        captured: list[AuditEntry] = []
+        acl = ACL(
+            rules=[ACLRule(callers="admin.*", targets=["*"], effect="allow")],  # type: ignore[arg-type]
+            default_effect="deny",
+            audit_logger=captured.append,
+        )
+        assert acl.check("attacker", "service.op", _ctx()) is False, "the pre-#106 fail-open"
+        assert captured[0].handler_error is not None
+        assert _reported_paths(captured[0].handler_error) == ["callers"]
+
+    def test_string_callers_on_a_deny_rule_takes_effect(self) -> None:
+        acl = ACL(
+            rules=[ACLRule(callers="admin.*", targets=["*"], effect="deny")],  # type: ignore[arg-type]
+            default_effect="allow",
+        )
+        assert acl.check("attacker", "service.op", _ctx()) is False
+
+    @pytest.mark.parametrize(
+        "value",
+        [5, None, {"a": 1}, "admin.*", ["ok", 5], (("a",)), 0.5, True],
+        ids=["int", "none", "dict", "str", "list-with-int", "tuple", "float", "bool"],
+    )
+    def test_no_shape_escapes_check_as_an_exception(self, value: Any) -> None:
+        """`check` MUST NOT raise; `callers=5` used to raise TypeError, `{"a":1}` KeyError."""
+        for field in ("callers", "targets"):
+            kwargs: dict[str, Any] = {"callers": ["*"], "targets": ["*"], "effect": "deny"}
+            kwargs[field] = value
+            acl = ACL(rules=[ACLRule(**kwargs)], default_effect="allow")
+            assert acl.check("attacker", "service.op", _ctx()) is False
+            assert asyncio.run(acl.async_check("attacker", "service.op", _ctx())) is False
+
+    def test_both_fields_are_reported_without_short_circuiting(self) -> None:
+        captured: list[AuditEntry] = []
+        acl = ACL(
+            rules=[ACLRule(callers="a", targets=5, effect="deny")],  # type: ignore[arg-type]
+            default_effect="allow",
+            audit_logger=captured.append,
+        )
+        assert acl.check("attacker", "service.op", _ctx()) is False
+        assert captured[0].handler_error is not None
+        assert _reported_paths(captured[0].handler_error) == ["callers", "targets"]
+
+    def test_an_empty_list_is_well_formed_and_simply_never_matches(self) -> None:
+        """§6.5 keeps this a plain non-match — it is a valid list of strings."""
+        captured: list[AuditEntry] = []
+        acl = ACL(
+            rules=[ACLRule(callers=[], targets=["*"], effect="deny")],
+            default_effect="allow",
+            audit_logger=captured.append,
+        )
+        assert acl.check("attacker", "service.op", _ctx()) is True
+        assert captured[0].handler_error is None
+
+    def test_a_malformed_pattern_field_is_caught_before_the_patterns_are_read(self) -> None:
+        """`callers: "*"` matched everything by iterating characters; now it is a fault."""
+        acl = ACL(
+            rules=[ACLRule(callers="*", targets=["*"], effect="allow")],  # type: ignore[arg-type]
+            default_effect="deny",
+        )
+        assert acl.check("attacker", "service.op", _ctx()) is False
+
+
+# ---------------------------------------------------------------------------
+# ACL.load rejects a non-mapping `conditions` (parity with apcore-typescript)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadRejectsMalformedConditions:
+    def test_load_raises_for_a_non_mapping_conditions(self, tmp_path: Path) -> None:
+        path = tmp_path / "acl.yaml"
+        path.write_text(
+            "default_effect: allow\n"
+            "rules:\n"
+            "  - callers: ['*']\n"
+            "    targets: ['*']\n"
+            "    effect: deny\n"
+            "    conditions: oops\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ACLRuleError, match="'conditions' must be a mapping"):
+            ACL.load(str(path))
+
+    def test_load_still_accepts_an_absent_conditions(self, tmp_path: Path) -> None:
+        path = tmp_path / "acl.yaml"
+        path.write_text(
+            "default_effect: allow\nrules:\n  - callers: ['*']\n    targets: ['*']\n    effect: deny\n",
+            encoding="utf-8",
+        )
+        assert ACL.load(str(path)).rules[0].conditions is None
+
+    def test_load_still_accepts_a_mapping_conditions(self, tmp_path: Path) -> None:
+        path = tmp_path / "acl.yaml"
+        path.write_text(
+            "default_effect: allow\n"
+            "rules:\n"
+            "  - callers: ['*']\n"
+            "    targets: ['*']\n"
+            "    effect: deny\n"
+            "    conditions:\n"
+            "      roles: [admin]\n",
+            encoding="utf-8",
+        )
+        assert ACL.load(str(path)).rules[0].conditions == {"roles": ["admin"]}

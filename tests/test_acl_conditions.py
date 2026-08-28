@@ -284,7 +284,18 @@ class TestOrHandler:
         acl = _make_acl_with_condition("$or", "invalid")
         assert acl.check("caller", "target", context=ctx) is False
 
-    def test_or_skips_non_dict_elements(self) -> None:
+    def test_or_element_that_is_not_a_mapping_is_unevaluable(self) -> None:
+        """CHANGED at spec v1.25.0 — this used to skip the element and return True.
+
+        §6.1.1 made "unevaluable" a principle rather than a closed list, and an
+        `$or` element that is not a condition object asks no question. §6.1.4's
+        precheck therefore records a fault at `$or[0]` and the rule is
+        unevaluable, so this `allow` rule does not grant even though its second
+        branch would have been satisfied. See
+        `test_a_non_mapping_or_element_is_unevaluable` in
+        tests/test_acl_unevaluable_conditions.py for the reasoning and the
+        cross-SDK caveat.
+        """
         ctx = _make_context(roles=["admin"])
         acl = _make_acl_with_condition(
             "$or",
@@ -293,7 +304,7 @@ class TestOrHandler:
                 {"roles": ["admin"]},
             ],
         )
-        assert acl.check("caller", "target", context=ctx) is True
+        assert acl.check("caller", "target", context=ctx) is False
 
 
 class TestNotHandler:
@@ -350,7 +361,9 @@ class TestFailClosed:
         with caplog.at_level(logging.WARNING):
             result = acl.check("caller", "target", context=ctx)
         assert result is False
-        assert any("Unknown ACL condition" in r.message for r in caplog.records)
+        # §6.1.4's precheck now reports this before evaluation, so the wording
+        # differs by case between the precheck and the evaluator's own path.
+        assert any("unknown acl condition" in r.message.lower() for r in caplog.records)
 
     def test_genuine_async_handler_suspends_fails_closed(self, caplog: pytest.LogCaptureFixture) -> None:
         """AC-014: Sync check() fails-closed when async handler genuinely suspends.

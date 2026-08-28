@@ -730,7 +730,14 @@ class TestPolicyCallSite:
         assert seen_context.call_chain == ["admin.reset"]
 
     def test_the_gate_never_shows_the_policy_a_protocol_level_key(self, registry: Registry) -> None:
-        """``_approval_token`` is stripped before Step 5's policy resolution."""
+        """§7.9.6 rule 5 (normative at spec v1.25.0): strip ``_approval_token`` first.
+
+        §7.4's existing "remove before passing to subsequent steps" does not
+        reach this: policy resolution happens *inside* Step 5, ahead of any
+        subsequent step, so an implementation can satisfy §7.4 literally and
+        still hand the token to the policy — putting it into the audit trail and
+        the ``apcore.policy.override`` payload.
+        """
         policy = _CallSiteRecordingPolicy([PolicyRule("admin.reset", requires_approval=True)])
         executor = Executor(registry=registry, approval_handler=AutoApproveHandler(), policy=policy)
         executor.call("admin.reset", {"scope": "all", "_approval_token": "tok"})
@@ -743,8 +750,15 @@ class TestPolicyCallSite:
         executor.validate("admin.reset", {"scope": "all"})
         assert any(args == {"scope": "all"} for _, args, _ in policy.seen)
 
-    def test_a_host_policy_may_decide_on_arguments(self, registry: Registry) -> None:
-        """The point of §7.9.6: gate *some* calls to a module rather than all of them."""
+    def test_a_subclass_can_decide_on_arguments(self, registry: Registry) -> None:
+        """The point of §7.9.6: gate *some* calls to a module rather than all of them.
+
+        Note this is NOT a specified extension point — §7.9.6 rule 3(b) was
+        withdrawn in spec v1.25.0 because ``ExecutionPolicy`` is a concrete type
+        in all three SDKs and ``set_policy`` takes that concrete type, so no host
+        can supply an implementation. Subclassing works in Python; the test
+        exists to show the call site genuinely arrives, not to bless the shape.
+        """
 
         class AmountPolicy(ExecutionPolicy):
             def resolve(

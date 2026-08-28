@@ -4,12 +4,18 @@ Defines the ACLConditionHandler protocol (sync and async variants), the
 three-valued :class:`ConditionOutcome` of PROTOCOL_SPEC §6.1.1, three basic
 handlers (identity_types, roles, max_call_depth), and two compound operators
 ($or, $not) with both sync and async variants.
+
+The compound operators are **path-aware** (§6.1.4): they receive the condition
+path they sit at so a fault nested inside them can be reported as
+``$or[1].$not.k`` rather than as a bare key. A key can occur at several
+positions in one tree, which is why diagnostics are ordered by path and not by
+key.
 """
 
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Awaitable, Callable, Protocol, Union, runtime_checkable
+from typing import Any, Awaitable, Callable, ClassVar, Protocol, Union, runtime_checkable
 
 from apcore.context import Context
 
@@ -49,6 +55,23 @@ class ConditionOutcome(Enum):
     UNEVALUABLE = "unevaluable"
 
 
+#: Path of the ``conditions`` object itself (PROTOCOL_SPEC §6.1.4). The JSONPath
+#: root, used when the fault is the whole block rather than a key inside it —
+#: it is the only path with no key component, and it keeps the notation
+#: consistent with ``$or[1].$not.k``.
+ROOT_CONDITION_PATH = "$"
+
+
+def join_condition_path(prefix: str, key: str) -> str:
+    """Compose a §6.1.4 condition path from a prefix and a key.
+
+    ``("", "roles")`` -> ``roles``; ``("$or[1]", "k")`` -> ``$or[1].k``;
+    ``("$not", "k")`` -> ``$not.k``. Paths nest, so a key inside ``$not`` inside
+    the second ``$or`` branch is ``$or[1].$not.k``.
+    """
+    return f"{prefix}.{key}" if prefix else key
+
+
 def _as_outcome(value: Any) -> ConditionOutcome:
     """Coerce a handler return value to a :class:`ConditionOutcome`.
 
@@ -80,8 +103,8 @@ ACLConditionHandler = Union[SyncACLConditionHandler, AsyncACLConditionHandler]
 # Compound operators recurse through the three-valued evaluator so that an
 # unevaluable sub-condition propagates per §6.1.1's composition table rather
 # than being flattened into "false" one nesting level down.
-_EvalFn = Callable[[dict[str, Any], Context], ConditionOutcome]
-_AsyncEvalFn = Callable[[dict[str, Any], Context], Awaitable[ConditionOutcome]]
+_EvalFn = Callable[[dict[str, Any], Context, str], ConditionOutcome]
+_AsyncEvalFn = Callable[[dict[str, Any], Context, str], Awaitable[ConditionOutcome]]
 
 
 # ---------------------------------------------------------------------------
@@ -157,24 +180,67 @@ class _MaxCallDepthHandler:
 #
 # Short-circuiting is permitted on the decisive child (SATISFIED for $or) but
 # MUST NOT happen on an UNEVALUABLE one: a later sibling may still decide it.
+# Short-circuiting applies to handler *execution* only — §6.1.4's precheck walks
+# the whole tree first, so a malformed operator or a misspelled key is always
+# found and always reported, whatever the execution order turns out to be.
+#
+# A malformed operand — `$or` that is not a list, `$not` that is not an object,
+# an `$or` element that is not an object — is UNEVALUABLE, not UNSATISFIED
+# (§6.1.1 case 4). A handler handed `$or: "not-a-list"` can return false and
+# look exactly like one that answered "no"; recording that as UNSATISFIED puts a
+# `deny` rule carrying `$or: "typo"` back into the inert state §6.1.1 exists to
+# end. In practice §6.1.4's precheck catches these before any handler runs;
+# the guards below are the same rule applied where the evaluator is entered
+# directly.
 
 
-class _OrHandler:
+class _CompoundHandler:
+    """Base for the built-in compound operators, which are **path-aware**.
+
+    An ordinary handler answers about one key and needs no path. ``$or`` and
+    ``$not`` recurse, so a fault beneath them has to be reported at its position
+    in the tree (``$or[1].k``) rather than as a bare key. The evaluator detects
+    the capability through :attr:`path_aware` and calls :meth:`evaluate_at`.
+    """
+
+    path_aware: ClassVar[bool] = True
+
+    def evaluate_at(self, value: Any, context: Context, path: str) -> ConditionOutcome:
+        raise NotImplementedError
+
+    def evaluate(self, value: Any, context: Context) -> ConditionOutcome:
+        """Path-less entry point, for a caller invoking the handler directly."""
+        return self.evaluate_at(value, context, "")
+
+
+class _AsyncCompoundHandler:
+    """Async counterpart of :class:`_CompoundHandler`."""
+
+    path_aware: ClassVar[bool] = True
+
+    async def evaluate_at(self, value: Any, context: Context, path: str) -> ConditionOutcome:
+        raise NotImplementedError
+
+    async def evaluate(self, value: Any, context: Context) -> ConditionOutcome:
+        return await self.evaluate_at(value, context, "")
+
+
+class _OrHandler(_CompoundHandler):
     """$or: list of condition dicts. SATISFIED if ANY sub-set is satisfied."""
 
     def __init__(self, evaluate_fn: _EvalFn) -> None:
         self._evaluate = evaluate_fn
 
-    def evaluate(self, value: Any, context: Context) -> ConditionOutcome:
-        # A malformed ``$or`` value is not one of §6.1.1's three unevaluable
-        # situations — the handler ran to completion and answered "no".
+    def evaluate_at(self, value: Any, context: Context, path: str) -> ConditionOutcome:
         if not isinstance(value, list):
-            return ConditionOutcome.UNSATISFIED
+            return ConditionOutcome.UNEVALUABLE
         saw_unevaluable = False
-        for sub in value:
+        for index, sub in enumerate(value):
             if not isinstance(sub, dict):
+                # An element that is not a condition object asks no question.
+                saw_unevaluable = True
                 continue
-            outcome = self._evaluate(sub, context)
+            outcome = self._evaluate(sub, context, f"{path}[{index}]")
             if outcome is ConditionOutcome.SATISFIED:
                 return ConditionOutcome.SATISFIED
             if outcome is ConditionOutcome.UNEVALUABLE:
@@ -182,7 +248,7 @@ class _OrHandler:
         return ConditionOutcome.UNEVALUABLE if saw_unevaluable else ConditionOutcome.UNSATISFIED
 
 
-class _NotHandler:
+class _NotHandler(_CompoundHandler):
     """$not: single condition dict. SATISFIED if the sub-set is UNSATISFIED.
 
     ``$not`` of an UNEVALUABLE child is UNEVALUABLE, never SATISFIED: negating
@@ -193,10 +259,10 @@ class _NotHandler:
     def __init__(self, evaluate_fn: _EvalFn) -> None:
         self._evaluate = evaluate_fn
 
-    def evaluate(self, value: Any, context: Context) -> ConditionOutcome:
+    def evaluate_at(self, value: Any, context: Context, path: str) -> ConditionOutcome:
         if not isinstance(value, dict):
-            return ConditionOutcome.UNSATISFIED
-        outcome = self._evaluate(value, context)
+            return ConditionOutcome.UNEVALUABLE
+        outcome = self._evaluate(value, context, path)
         if outcome is ConditionOutcome.UNEVALUABLE:
             return ConditionOutcome.UNEVALUABLE
         # An empty object evaluates to SATISFIED, so ``$not: {}`` is UNSATISFIED
@@ -209,7 +275,7 @@ class _NotHandler:
 # ---------------------------------------------------------------------------
 
 
-class _OrHandlerAsync:
+class _OrHandlerAsync(_AsyncCompoundHandler):
     """Async $or: list of condition dicts. SATISFIED if ANY sub-set is satisfied.
 
     Mirrors TypeScript's OrHandlerAsync — uses the async evaluation path so
@@ -219,14 +285,15 @@ class _OrHandlerAsync:
     def __init__(self, evaluate_fn: _AsyncEvalFn) -> None:
         self._evaluate = evaluate_fn
 
-    async def evaluate(self, value: Any, context: Context) -> ConditionOutcome:
+    async def evaluate_at(self, value: Any, context: Context, path: str) -> ConditionOutcome:
         if not isinstance(value, list):
-            return ConditionOutcome.UNSATISFIED
+            return ConditionOutcome.UNEVALUABLE
         saw_unevaluable = False
-        for sub in value:
+        for index, sub in enumerate(value):
             if not isinstance(sub, dict):
+                saw_unevaluable = True
                 continue
-            outcome = await self._evaluate(sub, context)
+            outcome = await self._evaluate(sub, context, f"{path}[{index}]")
             if outcome is ConditionOutcome.SATISFIED:
                 return ConditionOutcome.SATISFIED
             if outcome is ConditionOutcome.UNEVALUABLE:
@@ -234,7 +301,7 @@ class _OrHandlerAsync:
         return ConditionOutcome.UNEVALUABLE if saw_unevaluable else ConditionOutcome.UNSATISFIED
 
 
-class _NotHandlerAsync:
+class _NotHandlerAsync(_AsyncCompoundHandler):
     """Async $not: single condition dict. SATISFIED if the sub-set is UNSATISFIED.
 
     Mirrors TypeScript's NotHandlerAsync — uses the async evaluation path so
@@ -245,10 +312,10 @@ class _NotHandlerAsync:
     def __init__(self, evaluate_fn: _AsyncEvalFn) -> None:
         self._evaluate = evaluate_fn
 
-    async def evaluate(self, value: Any, context: Context) -> ConditionOutcome:
+    async def evaluate_at(self, value: Any, context: Context, path: str) -> ConditionOutcome:
         if not isinstance(value, dict):
-            return ConditionOutcome.UNSATISFIED
-        outcome = await self._evaluate(value, context)
+            return ConditionOutcome.UNEVALUABLE
+        outcome = await self._evaluate(value, context, path)
         if outcome is ConditionOutcome.UNEVALUABLE:
             return ConditionOutcome.UNEVALUABLE
         return ConditionOutcome.UNSATISFIED if outcome is ConditionOutcome.SATISFIED else ConditionOutcome.SATISFIED

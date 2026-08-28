@@ -14,7 +14,6 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Iterator
 from typing import Any, Callable, ClassVar
 
 import yaml
@@ -22,6 +21,7 @@ import yaml
 from apcore.acl_handlers import (
     ACLConditionHandler,
     ConditionOutcome,
+    ROOT_CONDITION_PATH,
     _as_outcome,
     _IdentityTypesHandler,
     _MaxCallDepthHandler,
@@ -30,6 +30,7 @@ from apcore.acl_handlers import (
     _OrHandler,
     _OrHandlerAsync,
     _RolesHandler,
+    join_condition_path,
 )
 from apcore.config import Config
 from apcore.context import Context
@@ -41,16 +42,18 @@ __all__ = [
     "AuditEntry",
     "ACL",
     "ConditionOutcome",
-    "ConditionValidationFinding",
+    "RuleValidationFinding",
 ]
 
 _logger = logging.getLogger(__name__)
 
 # Surfaces unevaluable conditions (PROTOCOL_SPEC §6.1.1) into the AuditEntry
 # built for the current check() / async_check() invocation, keyed by condition
-# key so the audit message can be ordered lexicographically as §6.1.1 rule 2
-# requires. Installed fresh at the start of each public check so nested calls do
-# not leak diagnostics across audit entries.
+# **path** (§6.1.4) so the audit message can be ordered lexicographically as
+# §6.1.1 rule 2 requires. By path and not by key, because a key may occur at
+# several positions in a nested $or / $not tree, which leaves ordering by key
+# undefined. Installed fresh at the start of each public check so nested calls
+# do not leak diagnostics across audit entries.
 #
 # The dict is mutated in place rather than re-``set``: a ContextVar assignment
 # made inside a coroutine does not necessarily propagate back to the caller's
@@ -60,39 +63,38 @@ _handler_error_var: contextvars.ContextVar[dict[str, str] | None] = contextvars.
 )
 
 
-# Synthetic ``handler_error`` key used when a rule's ``conditions`` value is not
-# a mapping at all, so no real condition key exists to name. Mirrors
-# apcore-typescript's ``MALFORMED_CONDITIONS_KEY``. The ``$`` prefix is reserved
-# by PROTOCOL_SPEC §6.1 for compound operators, so it cannot collide with a key
-# a deployment registered a handler for, and it sorts ahead of ordinary keys —
-# a malformed block dominates any per-key diagnostic beside it.
-_MALFORMED_CONDITIONS_KEY = "$conditions"
+# Condition paths for the rule's pattern fields (PROTOCOL_SPEC §6.1.4).
+_CALLERS_PATH = "callers"
+_TARGETS_PATH = "targets"
 
 
-def _record_handler_error(key: str, reason: str) -> None:
+def _record_handler_error(path: str, reason: str) -> None:
     """Record an unevaluable condition for the in-flight check(), if any.
 
-    The first reason recorded for a key wins: the same key can be reached by
-    several rules in one check, and a stable diagnostic beats a last-writer one.
-    A no-op when no check is in flight, so the evaluator stays usable directly.
+    Keyed by §6.1.4 condition path. The first reason recorded for a path wins:
+    the same path can be reached by several rules in one check, and a stable
+    diagnostic beats a last-writer one. A no-op when no check is in flight, so
+    the evaluator stays usable directly.
     """
     errors = _handler_error_var.get()
-    if errors is not None and key not in errors:
-        errors[key] = f"{key}: {reason}"
+    if errors is not None and path not in errors:
+        errors[path] = f"{path}: {reason}"
 
 
 def _handler_error_message() -> str | None:
     """Render the recorded diagnostics for the AuditEntry, or None.
 
     PROTOCOL_SPEC §6.1.1 rule 2: every unevaluable condition MUST be reported,
-    ordered **lexicographically by condition key** and separated by ``"; "``.
-    Lexicographic rather than evaluation order because the two differ across
-    languages, and the same rule set must produce the same audit line in each.
+    ordered **lexicographically by condition path** and separated by ``"; "``.
+    By path rather than evaluation order because the two differ across languages
+    (``serde_json``'s map is ordered; Python dicts and JS objects preserve
+    insertion order), and by path rather than key because a nested ``$or`` may
+    carry one key at several positions.
     """
     errors = _handler_error_var.get()
     if not errors:
         return None
-    return "; ".join(errors[key] for key in sorted(errors))
+    return "; ".join(errors[path] for path in sorted(errors))
 
 
 @dataclass
@@ -136,31 +138,48 @@ class AuditEntry:
 
 
 @dataclass(frozen=True)
-class ConditionValidationFinding:
-    """One rule/condition-key pair that does not resolve on the sync path.
+class RuleValidationFinding:
+    """One structural or registry fault found by the §6.1.4 precheck.
 
-    Returned by :meth:`ACL.validate_conditions` (PROTOCOL_SPEC §6.1.2 rule 3).
+    Returned by :meth:`ACL.validate_rules` (PROTOCOL_SPEC §6.1.2 rule 3).
 
     Attributes:
         rule_index: Index of the offending rule in definition order.
-        condition_key: The condition key that does not resolve.
+        condition_path: Where the fault sits (§6.1.4) — ``roles``,
+            ``$or[1].mispelled``, ``$`` for a non-mapping ``conditions``, or
+            ``callers`` / ``targets`` for a malformed pattern field.
+        condition_key: The key itself, for readers who do not need the path.
         effect: The rule's effect. A finding on a ``deny`` rule is the
             consequential one — that rule now denies every call it matches.
-        sync_registered: Whether the key resolves for :meth:`ACL.check`.
-        async_registered: Whether the key resolves for :meth:`ACL.async_check`.
+        sync_resolvable: Whether the condition resolves for :meth:`ACL.check`.
+        async_resolvable: Whether it resolves for :meth:`ACL.async_check`.
 
-    ``sync_registered`` and ``async_registered`` are reported separately and
-    MUST NOT be collapsed into one boolean (§6.1.3): a finding with
-    ``sync_registered=False, async_registered=True`` is an async-only handler —
-    a working condition under ``async_check()`` and an unevaluable one under
-    ``check()``.
+    The two flags are reported separately and MUST NOT be collapsed into one
+    boolean (§6.1.3). They mean **resolvable on that evaluation path**, not
+    "present in that registry": ``async_check()`` falls back to the sync
+    registry, so ``async_resolvable`` is the union of both and every built-in
+    leaf handler is resolvable on both paths. A finding with
+    ``sync_resolvable=False, async_resolvable=True`` is an async-only handler —
+    usable under ``async_check()``, unevaluable under ``check()``.
     """
 
     rule_index: int
+    condition_path: str
     condition_key: str
     effect: str
-    sync_registered: bool
-    async_registered: bool
+    sync_resolvable: bool
+    async_resolvable: bool
+
+
+@dataclass(frozen=True)
+class _Fault:
+    """An internal precheck finding, before it is bound to a rule index."""
+
+    path: str
+    key: str
+    reason: str
+    sync_resolvable: bool = False
+    async_resolvable: bool = False
 
 
 class ACL:
@@ -172,8 +191,8 @@ class ACL:
         :meth:`check` / :meth:`async_check` — the decision.
         :meth:`add_rule`, :meth:`remove_rule`, :meth:`reload` — mutation.
         :attr:`default_effect`, :attr:`rules` — read-only introspection (§6.8).
-        :meth:`validate_conditions` — diagnostics for unregistered condition
-        keys, to run once handler registration is complete (§6.1.2).
+        :meth:`validate_rules` — diagnostics for malformed rules and unregistered
+        condition keys, to run once handler registration is complete (§6.1.2).
 
     Thread safety:
         Internally synchronized. All public methods (check, add_rule,
@@ -209,17 +228,20 @@ class ACL:
         """
         cls._async_condition_handlers[key] = handler
 
+    # -- Evaluation (PROTOCOL_SPEC §6.1.1) ---------------------------------
+
     @classmethod
     def _evaluate_conditions(
         cls,
         conditions: dict[str, Any],
         context: Context,
+        path_prefix: str = "",
     ) -> ConditionOutcome:
         """Evaluate a ``conditions`` object on the sync path (PROTOCOL_SPEC §6.1.1).
 
         Returns one of three outcomes, not a boolean. A key whose handler
-        answered "no" is ``UNSATISFIED``; a key for which no answer could be
-        obtained at all is ``UNEVALUABLE``. Collapsing the two is the defect
+        answered "no" is ``UNSATISFIED``; a key the implementation cannot answer
+        **as written** is ``UNEVALUABLE``. Collapsing the two is the defect
         §6.1.1 exists to prevent: it made a ``deny`` rule with a misspelled
         condition key fail **open**.
 
@@ -231,21 +253,23 @@ class ACL:
         circuiting on an ``UNEVALUABLE`` child is NOT, because a later sibling
         may still produce the decisive answer.
 
-        When a handler returns an awaitable that completes synchronously (no
-        actual ``await`` is hit before completion — e.g., an ``async def``
-        whose body is a single ``return`` statement), the result is consumed
-        and used. A handler that genuinely suspends is ``UNEVALUABLE``;
-        callers needing true async handlers should use :meth:`async_check`.
+        Structural and registry faults are normally caught by :meth:`_precheck_conditions`
+        before this runs (§6.1.4), which is what makes those diagnostics
+        deterministic across implementations. The guards here are the same rules
+        applied where the evaluator is entered directly.
 
-        Cross-language parity with apcore-rust ``ACL::evaluate_conditions``
-        which polls the future once with a noop waker (sync finding A-D-023).
+        Args:
+            conditions: The condition object to evaluate.
+            context: The execution context.
+            path_prefix: §6.1.4 path of the enclosing node, so a nested fault is
+                reported as ``$or[1].k`` rather than as a bare key.
         """
         if not isinstance(conditions, dict):
-            return cls._malformed_conditions(conditions)
+            return cls._malformed_conditions(conditions, path_prefix)
 
         saw_unevaluable = False
         for key, value in conditions.items():
-            outcome = cls._evaluate_condition(key, value, context)
+            outcome = cls._evaluate_condition(key, value, context, join_condition_path(path_prefix, key))
             if outcome is ConditionOutcome.UNSATISFIED:
                 # Decisive: an outright "no" wins the AND. Remaining keys are
                 # not evaluated, and therefore record nothing.
@@ -255,36 +279,29 @@ class ACL:
         return ConditionOutcome.UNEVALUABLE if saw_unevaluable else ConditionOutcome.SATISFIED
 
     @classmethod
-    def _malformed_conditions(cls, conditions: Any) -> ConditionOutcome:
-        """Classify a non-mapping ``conditions`` value as UNEVALUABLE.
+    def _malformed_conditions(cls, conditions: Any, path_prefix: str = "") -> ConditionOutcome:
+        """Classify a non-mapping ``conditions`` value as UNEVALUABLE (§6.1.1 case 5).
 
         ``ACLRule.conditions`` is annotated ``dict[str, Any] | None``, but the
         annotation binds nobody: ``ACL(rules=[...])`` and ``add_rule()`` build
-        rules programmatically and never reach the YAML parser, so a scalar or a
-        list arrives here intact. Iterating it raised ``AttributeError`` straight
-        out of ``check()``, which the ``ACL.check`` contract forbids — ``check``
-        MUST NOT raise to indicate a deny, and a malformed rule supplied by the
-        host is not the unrecoverable internal failure that raising is reserved
-        for.
+        rules programmatically and never reach ``ACL.load``'s parser, so a scalar
+        or a list arrives here intact. Iterating it raised ``AttributeError``
+        straight out of ``check()``, which the ``ACL.check`` contract forbids.
 
-        It is UNEVALUABLE rather than UNSATISFIED, and that is the whole point:
-        a malformed block is a misconfiguration, not a handler answering "no", so
-        calling it UNSATISFIED would let a ``deny`` rule fall through to the next
-        rule and then to ``default_effect`` — exactly the bypass §6.1.1 exists to
-        close. Parity with apcore-typescript, which records the same synthetic
-        key. (apcore-rust currently returns ``true`` here — an inert ``deny``
-        rule — and is corrected in a later round.)
+        It is UNEVALUABLE rather than UNSATISFIED because a malformed block is a
+        misconfiguration, not a handler answering "no": calling it UNSATISFIED
+        would let a ``deny`` rule fall through to ``default_effect``, which is
+        the bypass §6.1.1 exists to close.
         """
+        path = path_prefix or ROOT_CONDITION_PATH
         type_name = type(conditions).__name__
         _logger.warning(
-            "ACL conditions must be a mapping, got %s — unevaluable (PROTOCOL_SPEC §6.1.1): "
+            "ACL conditions at %s must be a mapping, got %s — unevaluable (PROTOCOL_SPEC §6.1.1): "
             "a 'deny' rule takes effect, an 'allow' rule does not grant",
+            path,
             type_name,
         )
-        _record_handler_error(
-            _MALFORMED_CONDITIONS_KEY,
-            f"ACL conditions must be a mapping, got {type_name}",
-        )
+        _record_handler_error(path, f"ACL conditions must be a mapping, got {type_name}")
         return ConditionOutcome.UNEVALUABLE
 
     @classmethod
@@ -293,31 +310,26 @@ class ACL:
         key: str,
         value: Any,
         context: Context,
+        path: str,
     ) -> ConditionOutcome:
-        """Evaluate one condition key on the sync path.
-
-        The three ``UNEVALUABLE`` exits here are exactly PROTOCOL_SPEC §6.1.1's
-        three situations: no registered handler, the handler raised, and an
-        asynchronous handler that could not be resolved synchronously.
-        """
+        """Evaluate one condition key on the sync path, at *path* (§6.1.4)."""
         handler = cls._condition_handlers.get(key)
         if handler is None:
             # A typo'd key (`role:` for `roles:`) is not "condition not met" —
-            # no answer was obtainable, so the rule resolves toward refusing
+            # no answer is obtainable, so the rule resolves toward refusing
             # access and `AuditEntry.handler_error` says why.
-            _logger.warning(
-                "Unknown ACL condition %r — unevaluable (PROTOCOL_SPEC §6.1.1): "
-                "a 'deny' rule takes effect, an 'allow' rule does not grant",
-                key,
-            )
-            _record_handler_error(key, "unknown ACL condition")
+            cls._record_unresolvable_key(key, path)
             return ConditionOutcome.UNEVALUABLE
 
+        # Snapshot before invoking so a compound operator that merely *propagates*
+        # a child's UNEVALUABLE does not also record a generic entry of its own —
+        # the child already named the precise path.
+        before = cls._recorded_condition_paths()
         try:
-            result = handler.evaluate(value, context)
+            result = cls._invoke_handler(handler, value, context, path)
         except Exception as exc:
-            _logger.exception("Handler for condition %r raised — unevaluable (PROTOCOL_SPEC §6.1.1)", key)
-            _record_handler_error(key, f"{type(exc).__name__}: {exc}")
+            _logger.exception("Handler for condition %s raised — unevaluable (PROTOCOL_SPEC §6.1.1)", path)
+            _record_handler_error(path, f"{type(exc).__name__}: {exc}")
             return ConditionOutcome.UNEVALUABLE
 
         if inspect.isawaitable(result):
@@ -326,52 +338,51 @@ class ACL:
             # body wrapped in async fn), StopIteration carries the value.
             # Otherwise it suspends — unevaluable on this path.
             try:
-                result.send(None)  # type: ignore[union-attr]
+                result.send(None)  # type: ignore[attr-defined]
             except StopIteration as stop:
-                return _as_outcome(stop.value)
+                return cls._coerce(stop.value, path, before)
             except Exception as exc:
                 _logger.exception(
-                    "Handler for condition %r raised during sync resolution — " "unevaluable (PROTOCOL_SPEC §6.1.1)",
-                    key,
+                    "Handler for condition %s raised during sync resolution — unevaluable (PROTOCOL_SPEC §6.1.1)",
+                    path,
                 )
-                _record_handler_error(key, f"{type(exc).__name__}: {exc}")
+                _record_handler_error(path, f"{type(exc).__name__}: {exc}")
                 return ConditionOutcome.UNEVALUABLE
             else:
                 # Coroutine suspended — genuinely async, can't run in sync path.
                 # This is a *configuration* fault, not an unmet condition, so it
-                # is one of §6.1.1's three unevaluable situations (parity with
+                # is one of §6.1.1's unevaluable situations (parity with
                 # apcore-typescript's "Async condition … in sync context" and
                 # apcore-rust's ``Poll::Pending`` arm).
-                result.close()  # type: ignore[union-attr]
+                result.close()  # type: ignore[attr-defined]
                 _logger.warning(
-                    "Async condition %r suspended in sync context — unevaluable "
+                    "Async condition %s suspended in sync context — unevaluable "
                     "(PROTOCOL_SPEC §6.1.1). Use async_check() for handlers needing await.",
-                    key,
+                    path,
                 )
-                _record_handler_error(key, "async condition suspended in sync context — use async_check()")
+                _record_handler_error(path, "async condition suspended in sync context — use async_check()")
                 return ConditionOutcome.UNEVALUABLE
 
-        return _as_outcome(result)
+        return cls._coerce(result, path, before)
 
     @classmethod
     async def _evaluate_conditions_async(
         cls,
         conditions: dict[str, Any],
         context: Context,
+        path_prefix: str = "",
     ) -> ConditionOutcome:
         """Async variant. Uses async handler if registered, falls back to sync.
 
         Same three-valued contract and same composition rules as
-        :meth:`_evaluate_conditions`. Only two of §6.1.1's three unevaluable
-        situations can arise here: an unregistered key and a raising handler.
-        The third is specific to the sync path.
+        :meth:`_evaluate_conditions`.
         """
         if not isinstance(conditions, dict):
-            return cls._malformed_conditions(conditions)
+            return cls._malformed_conditions(conditions, path_prefix)
 
         saw_unevaluable = False
         for key, value in conditions.items():
-            outcome = await cls._evaluate_condition_async(key, value, context)
+            outcome = await cls._evaluate_condition_async(key, value, context, join_condition_path(path_prefix, key))
             if outcome is ConditionOutcome.UNSATISFIED:
                 return ConditionOutcome.UNSATISFIED
             if outcome is ConditionOutcome.UNEVALUABLE:
@@ -384,104 +395,219 @@ class ACL:
         key: str,
         value: Any,
         context: Context,
+        path: str,
     ) -> ConditionOutcome:
-        """Evaluate one condition key on the async path."""
+        """Evaluate one condition key on the async path, at *path* (§6.1.4)."""
         # Prefer async-specific handler (e.g., _OrHandlerAsync) so compound
         # operators recurse through the async path and properly await. Falls
         # back to the sync registry per PROTOCOL_SPEC §6.1.3.
         handler = cls._async_condition_handlers.get(key) or cls._condition_handlers.get(key)
         if handler is None:
-            # Same diagnostic as the sync path — an unknown key must not deny
-            # silently on either one.
-            _logger.warning(
-                "Unknown ACL condition %r — unevaluable (PROTOCOL_SPEC §6.1.1): "
-                "a 'deny' rule takes effect, an 'allow' rule does not grant",
-                key,
-            )
-            _record_handler_error(key, "unknown ACL condition")
+            cls._record_unresolvable_key(key, path)
             return ConditionOutcome.UNEVALUABLE
+        before = cls._recorded_condition_paths()
         try:
-            result = handler.evaluate(value, context)
+            result = cls._invoke_handler(handler, value, context, path)
             if inspect.isawaitable(result):
                 result = await result
         except Exception as exc:
-            _logger.exception("Handler for condition %r raised — unevaluable (PROTOCOL_SPEC §6.1.1)", key)
-            _record_handler_error(key, f"{type(exc).__name__}: {exc}")
+            _logger.exception("Handler for condition %s raised — unevaluable (PROTOCOL_SPEC §6.1.1)", path)
+            _record_handler_error(path, f"{type(exc).__name__}: {exc}")
             return ConditionOutcome.UNEVALUABLE
-        return _as_outcome(result)
+        return cls._coerce(result, path, before)
 
-    # -- Load-time validation of condition keys (PROTOCOL_SPEC §6.1.2) ------
+    @staticmethod
+    def _invoke_handler(handler: Any, value: Any, context: Context, path: str) -> Any:
+        """Call a handler, handing the built-in compound operators their path.
 
-    @classmethod
-    def _iter_condition_keys(cls, conditions: Any) -> Iterator[str]:
-        """Yield every condition key a ``conditions`` object references.
-
-        Keys nested inside ``$or`` / ``$not`` sub-objects count: a misspelling
-        one nesting level down is exactly as invisible as one at the top level.
-        The compound operators themselves are yielded too — they are registered
-        handlers, so they never produce a finding.
+        ``$or`` / ``$not`` recurse, so a fault beneath them must be reported at
+        its position in the tree. They advertise the capability with
+        ``path_aware``; every other handler keeps the two-argument protocol.
         """
-        if not isinstance(conditions, dict):
-            return
-        for key, value in conditions.items():
-            yield key
-            if key == "$or" and isinstance(value, list):
-                for sub in value:
-                    yield from cls._iter_condition_keys(sub)
-            elif key == "$not":
-                yield from cls._iter_condition_keys(value)
+        if getattr(handler, "path_aware", False):
+            return handler.evaluate_at(value, context, path)
+        return handler.evaluate(value, context)
 
     @classmethod
-    def _unresolved_condition_keys(cls, conditions: Any) -> list[str]:
-        """Referenced keys with no handler on the sync path, first-seen order."""
-        unresolved: list[str] = []
-        seen: set[str] = set()
-        for key in cls._iter_condition_keys(conditions):
-            if key in seen:
+    def _coerce(cls, result: Any, path: str, before: frozenset[str]) -> ConditionOutcome:
+        """Coerce a handler result, recording a diagnostic if it is UNEVALUABLE.
+
+        A handler may report UNEVALUABLE itself, and that has to reach
+        ``handler_error`` or §6.1.1 rule 2 is not met. But ``$or`` / ``$not``
+        also return UNEVALUABLE when *propagating* a child's, and the child has
+        already recorded the precise path — so a generic entry at the operator's
+        own path would be a duplicate naming a less useful location. ``before``
+        distinguishes the two: anything recorded during the call means the
+        subtree spoke for itself.
+        """
+        outcome = _as_outcome(result)
+        if outcome is ConditionOutcome.UNEVALUABLE and not (cls._recorded_condition_paths() - before):
+            _record_handler_error(path, "handler could not evaluate the condition as written")
+        return outcome
+
+    @staticmethod
+    def _record_unresolvable_key(key: str, path: str) -> None:
+        """Warn and record an unresolvable condition key at *path*."""
+        _logger.warning(
+            "Unknown ACL condition %s (key %r) — unevaluable (PROTOCOL_SPEC §6.1.1): "
+            "a 'deny' rule takes effect, an 'allow' rule does not grant",
+            path,
+            key,
+        )
+        _record_handler_error(path, "unknown ACL condition")
+
+    # -- Structural and registry precheck (PROTOCOL_SPEC §6.1.4) -----------
+
+    @classmethod
+    def _precheck_patterns(cls, rule: ACLRule) -> list[_Fault]:
+        """Check that ``callers`` and ``targets`` are each a list of strings (§6.1.4.1).
+
+        A value that is not a list of strings is a malformed rule, not a pattern
+        set. A bare string is iterable, so ``callers: "admin.*"`` written where
+        ``callers: ["admin.*"]`` was meant is read character by character — and
+        ``*`` is a valid pattern matching everything, so an ``allow`` rule
+        carrying that typo granted access to **every caller**. A non-subscriptable
+        scalar raised ``TypeError`` out of ``check()``, which its contract forbids.
+
+        Both fields are examined; the check does not stop at the first fault, so
+        the finding set is a pure function of the rule (§6.1.4 determinism).
+        """
+        faults: list[_Fault] = []
+        for path, value in ((_CALLERS_PATH, rule.callers), (_TARGETS_PATH, rule.targets)):
+            if isinstance(value, list) and all(isinstance(pattern, str) for pattern in value):
                 continue
-            seen.add(key)
-            if key not in cls._condition_handlers:
-                unresolved.append(key)
-        return unresolved
+            faults.append(
+                _Fault(
+                    path=path,
+                    key=path,
+                    reason=f"{path} must be a list of strings, got {type(value).__name__}",
+                )
+            )
+        return faults
+
+    @classmethod
+    def _precheck_conditions(cls, conditions: Any, *, async_path: bool, path_prefix: str = "") -> list[_Fault]:
+        """Walk the whole ``conditions`` tree for structural and registry faults (§6.1.4).
+
+        Context-independent, invokes no handler, and **does not short-circuit** —
+        its completeness is what makes §6.1.1 rule 2's deterministic
+        ``handler_error`` achievable across implementations. It determines:
+
+        - whether ``conditions`` is a mapping (§6.1.1 case 5);
+        - for each key, whether a handler is resolvable on the evaluation path in
+          use (§6.1.1 case 1, §6.1.3);
+        - for each compound operator, whether its value has the required shape
+          (§6.1.1 case 4).
+
+        Args:
+            conditions: The condition object (or malformed value) to examine.
+            async_path: True when the enclosing call is :meth:`async_check`, which
+                resolves against the async registry and falls back to the sync one.
+            path_prefix: §6.1.4 path of the enclosing node.
+        """
+        faults: list[_Fault] = []
+        if not isinstance(conditions, dict):
+            path = path_prefix or ROOT_CONDITION_PATH
+            return [
+                _Fault(
+                    path=path,
+                    key=ROOT_CONDITION_PATH,
+                    reason=f"ACL conditions must be a mapping, got {type(conditions).__name__}",
+                )
+            ]
+
+        for key, value in conditions.items():
+            path = join_condition_path(path_prefix, key)
+            if key == "$or":
+                if not isinstance(value, list):
+                    faults.append(
+                        _Fault(path=path, key=key, reason=f"$or value must be a list, got {type(value).__name__}")
+                    )
+                    continue
+                for index, sub in enumerate(value):
+                    branch = f"{path}[{index}]"
+                    if not isinstance(sub, dict):
+                        faults.append(
+                            _Fault(
+                                path=branch,
+                                key=key,
+                                reason=f"$or element must be a mapping, got {type(sub).__name__}",
+                            )
+                        )
+                        continue
+                    faults.extend(cls._precheck_conditions(sub, async_path=async_path, path_prefix=branch))
+            elif key == "$not":
+                if not isinstance(value, dict):
+                    faults.append(
+                        _Fault(path=path, key=key, reason=f"$not value must be a mapping, got {type(value).__name__}")
+                    )
+                    continue
+                faults.extend(cls._precheck_conditions(value, async_path=async_path, path_prefix=path))
+            else:
+                sync_resolvable = key in cls._condition_handlers
+                async_resolvable = sync_resolvable or key in cls._async_condition_handlers
+                resolvable = async_resolvable if async_path else sync_resolvable
+                if not resolvable:
+                    faults.append(
+                        _Fault(
+                            path=path,
+                            key=key,
+                            reason="unknown ACL condition",
+                            sync_resolvable=sync_resolvable,
+                            async_resolvable=async_resolvable,
+                        )
+                    )
+        return faults
+
+    @classmethod
+    def _precheck_rule(cls, rule: ACLRule, *, async_path: bool) -> list[_Fault]:
+        """Full §6.1.4 precheck for one rule: pattern fields, then conditions."""
+        faults = cls._precheck_patterns(rule)
+        if rule.conditions is not None:
+            faults.extend(cls._precheck_conditions(rule.conditions, async_path=async_path))
+        return faults
 
     @classmethod
     def _warn_unregistered_condition_keys(cls, rules: list[ACLRule], *, base_index: int = 0) -> None:
-        """Warn — never fail — for rules referencing unregistered condition keys.
+        """Warn — never fail — for rules that fail the §6.1.4 precheck.
 
         PROTOCOL_SPEC §6.1.2: ``register_condition`` writes to a runtime,
         process-wide registry and ``acl.root`` discovery commonly runs during
         framework bootstrap, ahead of application code. Loading MUST NOT fail on
-        an unregistered key, but MUST warn, naming the rule index, the key, and
+        an unregistered key, but MUST warn, naming the rule index, the key and
         the rule's ``effect`` — the ``effect`` because a misconfigured ``deny``
-        rule is the consequential case. :meth:`validate_conditions` is the
+        rule is the consequential case. :meth:`validate_rules` is the
         deterministic check to run once registration is complete.
         """
         for offset, rule in enumerate(rules):
-            if not rule.conditions:
-                continue
-            for key in cls._unresolved_condition_keys(rule.conditions):
+            for fault in cls._precheck_rule(rule, async_path=False):
                 _logger.warning(
-                    "ACL rule %d (effect=%s) references condition key %r with no registered "
-                    "handler; on the sync check() path it is unevaluable (PROTOCOL_SPEC §6.1.1), "
-                    "so a 'deny' rule takes effect and an 'allow' rule does not grant. Register a "
-                    "handler with ACL.register_condition(), or call ACL.validate_conditions() "
-                    "after bootstrap to assert on this.",
+                    "ACL rule %d (effect=%s) fails the structural/registry precheck at %s: %s. "
+                    "On the sync check() path the rule is unevaluable (PROTOCOL_SPEC §6.1.1), so a "
+                    "'deny' rule takes effect and an 'allow' rule does not grant. Register a handler "
+                    "with ACL.register_condition(), or call ACL.validate_rules() after bootstrap to "
+                    "assert on this.",
                     base_index + offset,
                     rule.effect,
-                    key,
+                    fault.path,
+                    fault.reason,
                 )
 
-    def validate_conditions(self) -> tuple[ConditionValidationFinding, ...]:
-        """Report every rule referencing a condition key that does not resolve.
+    def validate_rules(self) -> tuple[RuleValidationFinding, ...]:
+        """Report every rule that fails the §6.1.4 structural and registry precheck.
 
         The explicit validation entry point PROTOCOL_SPEC §6.1.2 rule 3
-        requires. Loading an ACL only warns, because handler registration is a
-        runtime, process-wide act that legitimately happens after discovery;
-        this method is what a deployment calls once registration is complete, so
-        it can turn a broken rule into a startup error of its own choosing.
+        requires. It is named ``validate_rules`` rather than
+        ``validate_conditions`` because it reports structural faults in
+        ``callers`` and ``targets`` as well (§6.1.4.1), not only condition keys.
 
-        A finding is emitted whenever ``sync_registered`` is false — **including**
-        when ``async_registered`` is true (§6.1.3 rule 2). An async-only handler
+        Loading an ACL only warns, because handler registration is a runtime,
+        process-wide act that legitimately happens after discovery; this method
+        is what a deployment calls once registration is complete, so it can turn
+        a broken rule into a startup error of its own choosing.
+
+        A finding is emitted whenever ``sync_resolvable`` is false — **including**
+        when ``async_resolvable`` is true (§6.1.3 rule 3). An async-only handler
         is a working condition under :meth:`async_check` and an unevaluable one
         under :meth:`check`; an application that only ever calls ``async_check``
         may ignore such a finding, but that judgement belongs to the caller, not
@@ -491,36 +617,30 @@ class ACL:
         audit event.
 
         Returns:
-            A possibly-empty tuple of :class:`ConditionValidationFinding`, in
-            rule-definition order and then in the order keys appear in each
-            rule's ``conditions`` (nested ``$or`` / ``$not`` keys included).
-            Empty means every referenced key currently resolves on both paths —
-            it is not a guarantee about the future, since a later
-            :meth:`add_rule` can introduce a new one.
+            A possibly-empty tuple of :class:`RuleValidationFinding`, ordered by
+            ``rule_index`` and then lexicographically by ``condition_path`` — by
+            path and not by key, because a nested ``$or`` may carry the same key
+            at several positions, which leaves ordering by key undefined. Empty
+            means every rule currently passes the precheck on the sync path; it
+            is not a guarantee about the future, since a later :meth:`add_rule`
+            can introduce a new fault.
         """
         with self._lock:
             rules = list(self._rules)
 
         cls = type(self)
-        findings: list[ConditionValidationFinding] = []
+        findings: list[RuleValidationFinding] = []
         for index, rule in enumerate(rules):
-            if not rule.conditions:
-                continue
-            for key in cls._unresolved_condition_keys(rule.conditions):
+            faults = cls._precheck_rule(rule, async_path=False)
+            for fault in sorted(faults, key=lambda f: f.path):
                 findings.append(
-                    ConditionValidationFinding(
+                    RuleValidationFinding(
                         rule_index=index,
-                        condition_key=key,
+                        condition_path=fault.path,
+                        condition_key=fault.key,
                         effect=rule.effect,
-                        # _unresolved_condition_keys already filtered on the sync
-                        # registry, so this is False by construction — spelled out
-                        # rather than hard-coded so the two flags read as the
-                        # independent facts §6.1.3 requires them to be.
-                        sync_registered=key in cls._condition_handlers,
-                        # async_check() consults the async registry and falls
-                        # back to the sync one, so "resolves for async" is the
-                        # union of the two.
-                        async_registered=key in cls._async_condition_handlers or key in cls._condition_handlers,
+                        sync_resolvable=fault.sync_resolvable,
+                        async_resolvable=fault.async_resolvable,
                     )
                 )
         return tuple(findings)
@@ -600,7 +720,7 @@ class ACL:
         framework bootstrap ahead of application code, so failing here would
         reject valid configurations on ordering alone (PROTOCOL_SPEC §6.1.2).
         A warning naming the rule index, the key and the rule's ``effect`` is
-        emitted instead; :meth:`validate_conditions` is the deterministic check
+        emitted instead; :meth:`validate_rules` is the deterministic check
         to run once registration is complete.
 
         Returns:
@@ -608,7 +728,10 @@ class ACL:
 
         Raises:
             ConfigNotFoundError: If the file does not exist.
-            ACLRuleError: If the YAML is invalid or has structural errors.
+            ACLRuleError: If the YAML is invalid or has structural errors —
+                including a ``conditions`` value that is not a mapping, which a
+                file has no legitimate reason to carry and which would otherwise
+                surface only as a §6.1.1 case-5 denial at the first ``check()``.
         """
         if not os.path.isfile(yaml_path):
             raise ConfigNotFoundError(config_path=yaml_path)
@@ -652,13 +775,21 @@ class ACL:
             if not isinstance(targets, list):
                 raise ACLRuleError(f"Rule {i} 'targets' must be a list, got {type(targets).__name__}")
 
+            raw_conditions = raw_rule.get("conditions")
+            if raw_conditions is not None and not isinstance(raw_conditions, dict):
+                # A YAML file cannot reach §6.1.1 case 5 — the parser rejects it
+                # here, as apcore-typescript's `_parseAclRule` does. Direct
+                # construction and add_rule() still can, which is what the
+                # runtime precheck (§6.1.4) is for.
+                raise ACLRuleError(f"Rule {i} 'conditions' must be a mapping, got {type(raw_conditions).__name__}")
+
             rules.append(
                 ACLRule(
                     callers=callers,
                     targets=targets,
                     effect=effect,
                     description=raw_rule.get("description", ""),
-                    conditions=raw_rule.get("conditions"),
+                    conditions=raw_conditions,
                 )
             )
 
@@ -977,26 +1108,40 @@ class ACL:
     ) -> ConditionOutcome:
         """Resolve a single rule against the caller and target (three-valued).
 
-        Returns ``SATISFIED`` when the rule matches, ``UNSATISFIED`` when it
-        does not, and ``UNEVALUABLE`` when its conditions could not be
-        evaluated at all (PROTOCOL_SPEC §6.1.1) — which the caller resolves
+        Returns ``SATISFIED`` when the rule matches, ``UNSATISFIED`` when it does
+        not, and ``UNEVALUABLE`` when the rule is malformed or its conditions
+        could not be evaluated (PROTOCOL_SPEC §6.1.1) — which the caller resolves
         toward refusing access.
 
-        All of the following must hold for a ``SATISFIED``:
-        1. Caller patterns match (supports compound operators $or, $not).
-        2. Target patterns match (supports compound operators $or, $not).
-        3. If conditions are present, they must all be satisfied.
+        Order is normative (§6.1.4):
+
+        1. The pattern fields are prechecked before any pattern is read, because
+           reading a malformed one is the §6.1.4.1 fail-open.
+        2. Patterns are matched. A rule whose patterns do not match does not
+           apply to this call, so its conditions are never examined.
+        3. The conditions tree is prechecked in full — context-free, handler-free
+           — **before** §6.5's no-context check. That ordering is what closes the
+           bypass where ``conditions: {mispelled: true}`` on a ``deny`` rule
+           passed traffic simply because the caller carried no identity.
+        4. A rule that *passes* the precheck and then finds no context takes
+           §6.5's path and does not match. ``roles`` is answerable in principle;
+           this caller merely supplied no input for it.
         """
+        pattern_faults = self._precheck_patterns(rule)
+        if pattern_faults:
+            self._report_faults(pattern_faults, rule_index, rule.effect)
+            return ConditionOutcome.UNEVALUABLE
+
         if not self._match_patterns(rule.callers, caller, context):
             return ConditionOutcome.UNSATISFIED
 
         if not self._match_patterns(rule.targets, target, context):
             return ConditionOutcome.UNSATISFIED
 
-        if rule.conditions is not None:
-            return self._check_conditions(rule.conditions, context, rule, rule_index)
+        if rule.conditions is None:
+            return ConditionOutcome.SATISFIED
 
-        return ConditionOutcome.SATISFIED
+        return self._resolve_conditions(rule, context, rule_index, async_path=False)
 
     async def _matches_rule_async(
         self,
@@ -1007,73 +1152,108 @@ class ACL:
         *,
         rule_index: int | None = None,
     ) -> ConditionOutcome:
-        """Async version of :meth:`_matches_rule`, using the async evaluator."""
+        """Async version of :meth:`_matches_rule`, using the async evaluator.
+
+        The precheck resolves against the async registry with a fallback to the
+        sync one (§6.1.3), so an async-only handler is a fault on the sync path
+        and not on this one.
+        """
+        pattern_faults = self._precheck_patterns(rule)
+        if pattern_faults:
+            self._report_faults(pattern_faults, rule_index, rule.effect)
+            return ConditionOutcome.UNEVALUABLE
+
         if not self._match_patterns(rule.callers, caller, context):
             return ConditionOutcome.UNSATISFIED
 
         if not self._match_patterns(rule.targets, target, context):
             return ConditionOutcome.UNSATISFIED
 
-        if rule.conditions is not None:
-            if context is None:
-                self._warn_conditional_rule_without_context(rule_index, rule.effect)
-                return ConditionOutcome.UNSATISFIED
-            before = self._recorded_condition_keys()
-            outcome = await self._evaluate_conditions_async(rule.conditions, context)
-            if outcome is ConditionOutcome.UNEVALUABLE:
-                self._warn_unevaluable_conditions(rule_index, rule.effect, before)
-            return outcome
+        if rule.conditions is None:
+            return ConditionOutcome.SATISFIED
 
-        return ConditionOutcome.SATISFIED
+        faults = self._precheck_conditions(rule.conditions, async_path=True)
+        if faults:
+            self._report_faults(faults, rule_index, rule.effect)
+            return ConditionOutcome.UNEVALUABLE
 
-    def _check_conditions(
+        if context is None:
+            self._warn_conditional_rule_without_context(rule_index, rule.effect)
+            return ConditionOutcome.UNSATISFIED
+
+        before = self._recorded_condition_paths()
+        outcome = await self._evaluate_conditions_async(rule.conditions, context)
+        if outcome is ConditionOutcome.UNEVALUABLE:
+            self._warn_unevaluable_conditions(rule_index, rule.effect, before)
+        return outcome
+
+    def _resolve_conditions(
         self,
-        conditions: dict[str, Any],
+        rule: ACLRule,
         context: Context | None,
-        rule: ACLRule | None = None,
-        rule_index: int | None = None,
+        rule_index: int | None,
+        *,
+        async_path: bool,
     ) -> ConditionOutcome:
-        """Evaluate a rule's conditions against the execution context.
+        """Precheck, then the §6.5 context check, then evaluate — in that order.
 
         A missing context is deliberately NOT one of §6.1.1's unevaluable
         situations: calling with no context is a legitimate shape for external
         entry points, not a misconfiguration, and treating it as a failure would
         flip the decision for every ``@external`` call meeting a conditional
         ``deny`` rule (PROTOCOL_SPEC §6.5). It stays a plain non-match, with a
-        warning so the consequence is at least visible.
+        warning so the consequence is visible. The precheck runs first precisely
+        so that a *malformed* rule does not reach that lenient path.
         """
-        effect = rule.effect if rule is not None else "unknown"
+        assert rule.conditions is not None  # guarded by both callers
+        faults = self._precheck_conditions(rule.conditions, async_path=async_path)
+        if faults:
+            self._report_faults(faults, rule_index, rule.effect)
+            return ConditionOutcome.UNEVALUABLE
+
         if context is None:
-            self._warn_conditional_rule_without_context(rule_index, effect)
+            self._warn_conditional_rule_without_context(rule_index, rule.effect)
             return ConditionOutcome.UNSATISFIED
 
-        before = self._recorded_condition_keys()
-        outcome = self._evaluate_conditions(conditions, context)
+        before = self._recorded_condition_paths()
+        outcome = self._evaluate_conditions(rule.conditions, context)
         if outcome is ConditionOutcome.UNEVALUABLE:
-            self._warn_unevaluable_conditions(rule_index, effect, before)
+            self._warn_unevaluable_conditions(rule_index, rule.effect, before)
         return outcome
 
+    def _report_faults(self, faults: list[_Fault], rule_index: int | None, effect: str) -> None:
+        """Record precheck faults into ``handler_error`` and warn (§6.1.1 rules 2-3)."""
+        for fault in faults:
+            _record_handler_error(fault.path, fault.reason)
+        self._logger.warning(
+            "ACL rule %s (effect=%s) is unevaluable — PROTOCOL_SPEC §6.1.4 precheck failed at %s. "
+            "A 'deny' rule takes effect and the call is denied; an 'allow' rule does not grant.",
+            "?" if rule_index is None else rule_index,
+            effect,
+            "; ".join(f"{f.path}: {f.reason}" for f in sorted(faults, key=lambda f: f.path)),
+        )
+
     @staticmethod
-    def _recorded_condition_keys() -> frozenset[str]:
-        """Snapshot the condition keys already diagnosed in this check()."""
+    def _recorded_condition_paths() -> frozenset[str]:
+        """Snapshot the condition paths already diagnosed in this check()."""
         errors = _handler_error_var.get()
         return frozenset(errors) if errors else frozenset()
 
     def _warn_unevaluable_conditions(self, rule_index: int | None, effect: str, before: frozenset[str]) -> None:
-        """Warn that a rule's conditions were unevaluable (§6.1.1 rule 3).
+        """Warn that a rule's conditions were unevaluable during execution (§6.1.1 rule 3).
 
-        The message names the condition key(s), the rule's index and the rule's
+        The message names the condition path(s), the rule's index and the rule's
         ``effect``; the ``effect`` is required because a misconfigured ``deny``
-        rule is the consequential case. Only keys diagnosed *by this rule* are
+        rule is the consequential case. Only paths diagnosed *by this rule* are
         listed — ``before`` filters out ones an earlier rule already reported.
         """
-        keys = sorted(self._recorded_condition_keys() - before)
+        paths = sorted(self._recorded_condition_paths() - before)
         self._logger.warning(
             "ACL rule %s (effect=%s) has unevaluable condition(s) %s — PROTOCOL_SPEC §6.1.1: "
             "a 'deny' rule takes effect and the call is denied, an 'allow' rule does not grant.",
             "?" if rule_index is None else rule_index,
             effect,
-            ", ".join(repr(k) for k in keys) if keys else "(unreported)",
+            ", ".join(repr(path) for path in paths) if paths else "(unreported)",
         )
 
     def _warn_conditional_rule_without_context(self, rule_index: int | None, effect: str) -> None:

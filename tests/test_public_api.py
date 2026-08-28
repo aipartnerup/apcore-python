@@ -170,10 +170,10 @@ class TestPublicAPIImports:
 
         assert {o.name for o in ConditionOutcome} == {"SATISFIED", "UNSATISFIED", "UNEVALUABLE"}
 
-    def test_condition_validation_finding_importable(self):
-        from apcore import ConditionValidationFinding
+    def test_rule_validation_finding_importable(self):
+        from apcore import RuleValidationFinding
 
-        assert ConditionValidationFinding is not None
+        assert RuleValidationFinding is not None
 
     # -- Middleware --
 
@@ -580,7 +580,7 @@ class TestPublicAPIAll:
         "ACLRule",
         "AuditEntry",
         "ConditionOutcome",
-        "ConditionValidationFinding",
+        "RuleValidationFinding",
         # Execution-time governance policy (apcore#76 RFC pilot)
         "ExecutionPolicy",
         "PolicyDecision",

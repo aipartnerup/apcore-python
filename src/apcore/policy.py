@@ -205,10 +205,24 @@ class ExecutionPolicy:
         ``arguments`` or ``context``: a rule set's verdict stays a function of
         the module ID and the annotations alone, so it remains statically
         auditable and reproducible from the policy document, and adding the call
-        site cannot change the verdict any existing policy produces. They are
-        here so that a host-supplied policy — a subclass overriding this method
-        — can decide on them, and so an implementation can carry them into the
-        audit trail.
+        site cannot change the verdict any existing policy produces (rule 6).
+        They are here so that an implementation can carry the call site into the
+        audit trail and the ``apcore.policy.override`` event — and what it
+        records there **MUST** be the call site's *shape*, which keys were
+        present and their types, never argument values, since rule 4 places this
+        before schema validation and an argument may hold a secret.
+
+        Keyword-only optional parameters are one of the shapes rule 7 names as
+        conforming; what it requires is the **capability**, not one API form.
+
+        .. note:: Rule 3(b) was withdrawn in spec v1.25.0. It promised that "a
+            host-supplied policy implementation can decide on arguments", which
+            no SDK can satisfy: ``ExecutionPolicy`` is a concrete class here and
+            in apcore-typescript and a concrete ``struct`` in apcore-rust, and
+            ``set_policy`` takes that concrete type in all three, so there is no
+            policy interface for a host to implement. Subclassing this class
+            happens to work in Python, but it is not a specified extension point
+            and nothing here builds toward one.
 
         Args:
             module_id: Canonical module ID being invoked.
