@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.28.0] - Unreleased
+
 > **Release note:** this section contains BREAKING changes (input validation now
 > runs for dict-declared schemas, `p99_latency_ms` changes value, and an ACL
 > `deny` rule whose condition cannot be evaluated now denies). It must
