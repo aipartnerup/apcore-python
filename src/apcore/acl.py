@@ -112,6 +112,43 @@ class ACLRule:
     conditions: dict[str, Any] | None = None
 
 
+#: The complete set of keys an ACL rule may carry (PROTOCOL_SPEC §6.1).
+#: Closed on purpose: a key nothing evaluates is otherwise dropped in silence,
+#: which widens an ``allow`` rule with no warning (#107).
+_RULE_KEYS: frozenset[str] = frozenset(
+    {"callers", "targets", "effect", "description", "conditions"}
+)
+
+#: Reserved in earlier revisions of §6.1 and evaluated by no implementation.
+#: Rejected like any other unknown key, but named as reserved in the message:
+#: an operator who wrote ``actions: ["describe"]`` meant to restrict the rule and
+#: is better served by "not implemented" than by "unknown key".
+_RESERVED_RULE_KEYS: frozenset[str] = frozenset({"id", "actions", "priority"})
+
+
+def _reject_unknown_rule_keys(index: int, raw_rule: dict) -> None:
+    """Raise ``ACLRuleError`` for any key outside :data:`_RULE_KEYS`."""
+    unknown = sorted(set(raw_rule) - _RULE_KEYS)
+    if not unknown:
+        return
+    reserved = [k for k in unknown if k in _RESERVED_RULE_KEYS]
+    other = [k for k in unknown if k not in _RESERVED_RULE_KEYS]
+    parts = []
+    if reserved:
+        names = ", ".join(repr(k) for k in reserved)
+        parts.append(
+            f"{names} reserved for a future specification version and evaluated "
+            f"by no implementation"
+        )
+    if other:
+        parts.append(f"{', '.join(repr(k) for k in other)} unrecognised")
+    raise ACLRuleError(
+        f"Rule {index} carries {'; '.join(parts)}. The rule key set is closed "
+        f"({', '.join(sorted(_RULE_KEYS))}); a key nothing evaluates would be "
+        f"dropped silently and leave the rule wider than written."
+    )
+
+
 @dataclass(frozen=True)
 class AuditEntry:
     """Structured record of an ACL check decision."""
@@ -775,6 +812,11 @@ class ACL:
             for key in ("callers", "targets", "effect"):
                 if key not in raw_rule:
                     raise ACLRuleError(f"Rule {i} missing required key '{key}'")
+
+            # A missing key was already rejected above so an omission cannot
+            # render a rule inert; an unknown key is the same hazard pointing
+            # the other way, and was dropped in silence until #107.
+            _reject_unknown_rule_keys(i, raw_rule)
 
             effect = raw_rule["effect"]
             if effect not in ("allow", "deny"):
