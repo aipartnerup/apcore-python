@@ -27,8 +27,16 @@ from typing import Any
 import pytest
 
 from apcore.acl import ACL, ACLRule, AuditEntry
-from apcore.context import Context
+from apcore.context import Context, Identity
 from conformance.canonical_fixtures import load_fixture
+
+# The roles the driver's context carries. Two cases —
+# `structural_fault_gates_even_when_an_or_sibling_is_satisfied` and
+# `execution_fault_does_not_gate_when_an_or_sibling_is_satisfied` — turn on the
+# caller HOLDING `dev`, so that one `$or` branch is genuinely SATISFIED and the
+# gating-vs-composition question actually gets asked. The fixture states that
+# only in the cases' prose notes; no field carries it. Reported upstream.
+_CONTEXT_ROLES = ("dev",)
 
 # Superseded by spec v1.22.0 §6.1.1. Present only in the pre-#100 fixture; the
 # corrected fixture replaces it with ``throwing_handler_on_deny_rule_denies``.
@@ -143,7 +151,11 @@ def test_acl_handler_error(case: dict) -> None:
     # §6.1.4: the precheck is context-independent and runs before §6.5's
     # no-context check, so some cases deliberately supply no context at all.
     # The pre-#100 fixture has no `with_context` key and always wants one.
-    context = Context.create() if case.get("with_context", True) else None
+    context = (
+        Context.create(identity=Identity(id="conformance-caller", type="user", roles=_CONTEXT_ROLES))
+        if case.get("with_context", True)
+        else None
+    )
     decision = acl.check(case["caller_id"], case["target_id"], context)
 
     assert decision is case["expected"], f"expected decision {case['expected']}, got {decision}"

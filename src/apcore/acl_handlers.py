@@ -40,10 +40,14 @@ class ConditionOutcome(Enum):
     Values:
         SATISFIED: A registered handler ran to completion and answered "yes".
         UNSATISFIED: A registered handler ran to completion and answered "no".
-        UNEVALUABLE: No answer was obtainable. Exactly three situations qualify
-            (§6.1.1): the condition key has no registered handler; the handler
-            raised; the handler was asynchronous and could not be resolved on
-            the synchronous ``check()`` path.
+        UNEVALUABLE: The condition cannot be answered **as written**. This is a
+            **principle, not a closed list** (§6.1.1). The situations every
+            implementation meets: the key has no handler resolvable on the path
+            in use; the handler raised; the handler was asynchronous and could
+            not be resolved on the synchronous ``check()`` path; the value is
+            malformed for its key; ``conditions`` itself is not a mapping. An
+            implementation meeting an unlisted case classifies it by the
+            principle, never by defaulting it to UNSATISFIED.
 
     A custom condition handler MAY return a :class:`ConditionOutcome` directly
     to report ``UNEVALUABLE`` for its own reasons; returning a plain ``bool``

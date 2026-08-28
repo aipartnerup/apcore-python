@@ -1091,3 +1091,202 @@ class TestLoadRejectsMalformedConditions:
             encoding="utf-8",
         )
         assert ACL.load(str(path)).rules[0].conditions == {"roles": ["admin"]}
+
+
+# ---------------------------------------------------------------------------
+# §6.1.4 rule 4 — the precheck must not widen a rule's reach
+# ---------------------------------------------------------------------------
+
+
+class TestPrecheckDoesNotWidenReach:
+    """A rule a well-formed pattern field excludes takes no part in the decision.
+
+    Without this, one misspelled key in a narrowly scoped rule would decide
+    calls that rule was never written about — ``callers: ["api.*"]`` with
+    ``conditions: {mispelled: true}`` and ``effect: deny`` denying a ``worker.*``
+    caller — which breaks first-match-wins. The fault is still real;
+    :meth:`ACL.validate_rules` looks at every rule and no call, and is where a
+    scoped rule's typo is meant to surface.
+    """
+
+    @staticmethod
+    def _scoped_deny() -> tuple[ACL, list[AuditEntry]]:
+        captured: list[AuditEntry] = []
+        acl = ACL(
+            rules=[ACLRule(callers=["api.*"], targets=["*"], effect="deny", conditions={"mispelled": True})],
+            default_effect="allow",
+            audit_logger=captured.append,
+        )
+        return acl, captured
+
+    def test_a_caller_the_rule_excludes_is_unaffected(self) -> None:
+        acl, captured = self._scoped_deny()
+        assert acl.check("worker.job", "service.op", _ctx()) is True
+        assert captured[0].handler_error is None, "the excluded rule's fault must not be consulted"
+        assert captured[0].reason == "default_effect"
+
+    def test_a_target_the_rule_excludes_is_unaffected(self) -> None:
+        captured: list[AuditEntry] = []
+        acl = ACL(
+            rules=[ACLRule(callers=["*"], targets=["billing.*"], effect="deny", conditions={"mispelled": True})],
+            default_effect="allow",
+            audit_logger=captured.append,
+        )
+        assert acl.check("api.gateway", "service.op", _ctx()) is True
+        assert captured[0].handler_error is None
+
+    def test_a_caller_the_rule_covers_is_denied(self) -> None:
+        """The other half: in scope, the fault decides."""
+        acl, captured = self._scoped_deny()
+        assert acl.check("api.gateway", "service.op", _ctx()) is False
+        assert captured[0].handler_error is not None
+
+    async def test_the_ruling_holds_on_the_async_path(self) -> None:
+        acl, captured = self._scoped_deny()
+        assert await acl.async_check("worker.job", "service.op", _ctx()) is True
+        assert captured[0].handler_error is None
+
+    def test_first_match_wins_is_preserved(self) -> None:
+        """A scoped, faulty rule must not pre-empt a later rule that does apply."""
+        captured: list[AuditEntry] = []
+        acl = ACL(
+            rules=[
+                ACLRule(callers=["api.*"], targets=["*"], effect="deny", conditions={"mispelled": True}),
+                ACLRule(callers=["worker.*"], targets=["*"], effect="allow", description="worker lane"),
+            ],
+            default_effect="deny",
+            audit_logger=captured.append,
+        )
+        assert acl.check("worker.job", "service.op", _ctx()) is True
+        assert captured[0].matched_rule == "worker lane"
+        assert captured[0].handler_error is None
+
+    def test_validate_rules_still_reports_the_scoped_fault(self) -> None:
+        """The fault does not vanish — it surfaces where it belongs."""
+        acl, _ = self._scoped_deny()
+        assert [(f.rule_index, f.condition_path) for f in acl.validate_rules()] == [(0, "mispelled")]
+
+    def test_a_malformed_pattern_field_still_makes_the_rule_unevaluable(self) -> None:
+        """Rule 4(b): a malformed field is not an exclusion — the scope is unknowable."""
+        acl = ACL(
+            rules=[ACLRule(callers="api.*", targets=["*"], effect="deny")],  # type: ignore[arg-type]
+            default_effect="allow",
+        )
+        assert acl.check("worker.job", "service.op", _ctx()) is False
+
+
+class TestKeylessFaultsReportNoKey:
+    """§6.1.4: a fault not attached to a condition key reports ``condition_key`` as None.
+
+    The two flags mean "can this fault be resolved by evaluating on that path",
+    not "is the key present in that registry" — a structural fault resolves on
+    neither. Read as a registry lookup they would report a malformed ``$or``
+    *value* as resolvable on both paths, because ``$or`` itself has a handler.
+    """
+
+    @pytest.mark.parametrize(
+        ("rule", "path"),
+        [
+            (ACLRule(callers="a", targets=["*"], effect="deny"), "callers"),  # type: ignore[arg-type]
+            (ACLRule(callers=["*"], targets=5, effect="deny"), "targets"),  # type: ignore[arg-type]
+            (ACLRule(callers=["*"], targets=["*"], effect="deny", conditions="oops"), "$"),  # type: ignore[arg-type]
+            (ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={"$or": ["nope"]}), "$or[0]"),
+        ],
+        ids=["callers", "targets", "non-mapping-conditions", "or-element"],
+    )
+    def test_a_keyless_fault_reports_a_null_key_and_both_flags_false(self, rule: ACLRule, path: str) -> None:
+        finding = ACL(rules=[rule]).validate_rules()[0]
+        assert finding.condition_path == path
+        assert finding.condition_key is None
+        assert finding.sync_resolvable is False
+        assert finding.async_resolvable is False
+
+    @pytest.mark.parametrize(
+        ("conditions", "key"),
+        [({"$or": "not-a-list"}, "$or"), ({"$not": 3}, "$not")],
+        ids=["or-value", "not-value"],
+    )
+    def test_a_malformed_operator_value_keeps_its_key_but_resolves_on_neither_path(
+        self, conditions: dict[str, Any], key: str
+    ) -> None:
+        """The fault IS attached to `$or` / `$not`, so the key is reported.
+
+        Both flags stay false all the same: `$or` has a registered handler, so a
+        registry lookup would wrongly call this resolvable on both paths.
+        """
+        finding = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions=conditions)])
+        found = finding.validate_rules()[0]
+        assert found.condition_key == key
+        assert found.sync_resolvable is False
+        assert found.async_resolvable is False
+
+    def test_an_unresolvable_key_still_reports_its_key(self) -> None:
+        finding = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={"typo": 1})])
+        found = finding.validate_rules()[0]
+        assert found.condition_path == "typo"
+        assert found.condition_key == "typo"
+
+    def test_an_async_only_key_reports_the_asymmetry_not_a_registry_lookup(self, registered) -> None:
+        key = registered("_t_flags_async_only", _Answers(True), asynchronous=True)
+        found = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions={key: 1})]).validate_rules()
+        assert (found[0].sync_resolvable, found[0].async_resolvable) == (False, True)
+
+
+# ---------------------------------------------------------------------------
+# §6.1.4 rule 5 — the precheck GATES; §6.1.1's table governs what was evaluated
+# ---------------------------------------------------------------------------
+
+
+class TestGatingVersusComposition:
+    """The split is precheck-vs-execution, not structural-vs-everything.
+
+    §6.1.4 rule 1 says a rule that fails the precheck is unevaluable; §6.1.1's
+    `$or` table says an outright "yes" wins even beside an unevaluable sibling.
+    They only appear to conflict: the table governs conditions that were
+    actually **evaluated**, and a precheck fault means the rule never got that
+    far. An implementation that gates on execution-origin faults too would deny
+    where the table says grant — the second test below is the one that catches it.
+    """
+
+    def test_a_structural_fault_gates_even_when_an_or_sibling_is_satisfied(self) -> None:
+        """The caller HAS `dev`, so composition alone would say SATISFIED."""
+        acl, captured = _acl(
+            {"$or": [{"unregistered_key": True}, {"roles": ["dev"]}]},
+            effect="deny",
+            default_effect="allow",
+        )
+        assert acl.check("user", "service.op", _ctx(roles=["dev"])) is False, "the precheck gates the rule"
+        assert _reported_paths(captured[0].handler_error or "") == ["$or[0].unregistered_key"]
+
+    def test_an_execution_fault_does_not_gate_when_an_or_sibling_is_satisfied(self, registered) -> None:
+        """The mirror image, and the one that catches over-gating.
+
+        The key is REGISTERED, so the precheck passes; it only throws when run,
+        which is execution-origin. §6.1.1's `$or` table therefore applies and the
+        satisfied `roles` branch wins: the `$or` is SATISFIED, the `allow` rule
+        matches, and the call is granted — with a `handler_error` recording the
+        branch that did throw.
+        """
+        key = registered("_t_gate_split_raise", _Raising())
+        acl, captured = _acl(
+            {"$or": [{key: True}, {"roles": ["dev"]}]},
+            effect="allow",
+            default_effect="deny",
+        )
+        assert acl.check("user", "service.op", _ctx(roles=["dev"])) is True, "an execution fault must NOT gate"
+        assert captured[0].handler_error is not None
+        assert captured[0].handler_error.startswith(f"$or[0].{key}: ")
+
+    async def test_the_split_holds_on_the_async_path(self, registered) -> None:
+        key = registered("_t_gate_split_raise_async", _Raising())
+        acl, _ = _acl({"$or": [{key: True}, {"roles": ["dev"]}]}, effect="allow", default_effect="deny")
+        assert await acl.async_check("user", "service.op", _ctx(roles=["dev"])) is True
+
+        acl2, _ = _acl({"$or": [{"nope": 1}, {"roles": ["dev"]}]}, effect="allow", default_effect="deny")
+        assert await acl2.async_check("user", "service.op", _ctx(roles=["dev"])) is False
+
+    def test_an_execution_fault_still_propagates_when_no_sibling_is_satisfied(self, registered) -> None:
+        """Not gating is not the same as ignoring — the table still returns UNEVALUABLE."""
+        key = registered("_t_gate_split_raise2", _Raising())
+        acl, _ = _acl({"$or": [{key: True}, {"roles": ["admin"]}]}, effect="deny", default_effect="allow")
+        assert acl.check("user", "service.op", _ctx(roles=["dev"])) is False

@@ -148,11 +148,15 @@ class RuleValidationFinding:
         condition_path: Where the fault sits (§6.1.4) — ``roles``,
             ``$or[1].mispelled``, ``$`` for a non-mapping ``conditions``, or
             ``callers`` / ``targets`` for a malformed pattern field.
-        condition_key: The key itself, for readers who do not need the path.
+        condition_key: The key itself, for readers who do not need the path, or
+            None for a fault that has no key — a malformed pattern field, a
+            non-mapping ``conditions``, or a malformed ``$or`` element.
         effect: The rule's effect. A finding on a ``deny`` rule is the
             consequential one — that rule now denies every call it matches.
         sync_resolvable: Whether the condition resolves for :meth:`ACL.check`.
+            False for a keyless structural fault.
         async_resolvable: Whether it resolves for :meth:`ACL.async_check`.
+            False for a keyless structural fault.
 
     The two flags are reported separately and MUST NOT be collapsed into one
     boolean (§6.1.3). They mean **resolvable on that evaluation path**, not
@@ -165,7 +169,7 @@ class RuleValidationFinding:
 
     rule_index: int
     condition_path: str
-    condition_key: str
+    condition_key: str | None
     effect: str
     sync_resolvable: bool
     async_resolvable: bool
@@ -173,10 +177,19 @@ class RuleValidationFinding:
 
 @dataclass(frozen=True)
 class _Fault:
-    """An internal precheck finding, before it is bound to a rule index."""
+    """An internal precheck finding, before it is bound to a rule index.
+
+    ``key`` is None for a fault that is not attached to a condition key — a
+    malformed pattern field, a non-mapping ``conditions``, a malformed ``$or``
+    element. The two flags mean "can this fault be resolved by evaluating on
+    that path", not "is the key present in that registry": a structural fault
+    resolves on neither, which is why they default to False. Reading them as a
+    registry lookup would report a malformed ``$or`` *value* as resolvable on
+    both paths, since ``$or`` itself has a handler.
+    """
 
     path: str
-    key: str
+    key: str | None
     reason: str
     sync_resolvable: bool = False
     async_resolvable: bool = False
@@ -479,7 +492,7 @@ class ACL:
             faults.append(
                 _Fault(
                     path=path,
-                    key=path,
+                    key=None,
                     reason=f"{path} must be a list of strings, got {type(value).__name__}",
                 )
             )
@@ -511,7 +524,7 @@ class ACL:
             return [
                 _Fault(
                     path=path,
-                    key=ROOT_CONDITION_PATH,
+                    key=None,
                     reason=f"ACL conditions must be a mapping, got {type(conditions).__name__}",
                 )
             ]
@@ -530,7 +543,7 @@ class ACL:
                         faults.append(
                             _Fault(
                                 path=branch,
-                                key=key,
+                                key=None,
                                 reason=f"$or element must be a mapping, got {type(sub).__name__}",
                             )
                         )
@@ -923,9 +936,10 @@ class ACL:
     ) -> bool:
         """Async ACL check. Supports both sync and async condition handlers.
 
-        Same §6.1.1 three-outcome contract as :meth:`check`. Only two of the
-        three unevaluable situations can arise here — an unregistered key and a
-        raising handler — since this path awaits genuine async handlers.
+        Same §6.1.1 three-outcome contract as :meth:`check`. One situation
+        cannot arise here — an async handler unresolvable on the sync path —
+        since this path awaits genuine async handlers; the async registry is
+        also consulted first, so an async-only key resolves here and not there.
 
         Args:
             caller_id: The calling module ID, or None for external calls.
@@ -1113,19 +1127,29 @@ class ACL:
         could not be evaluated (PROTOCOL_SPEC §6.1.1) — which the caller resolves
         toward refusing access.
 
-        Order is normative (§6.1.4):
+        Order is normative (§6.1.4 rule 4):
 
-        1. The pattern fields are prechecked before any pattern is read, because
-           reading a malformed one is the §6.1.4.1 fail-open.
-        2. Patterns are matched. A rule whose patterns do not match does not
-           apply to this call, so its conditions are never examined.
-        3. The conditions tree is prechecked in full — context-free, handler-free
-           — **before** §6.5's no-context check. That ordering is what closes the
-           bypass where ``conditions: {mispelled: true}`` on a ``deny`` rule
-           passed traffic simply because the caller carried no identity.
-        4. A rule that *passes* the precheck and then finds no context takes
-           §6.5's path and does not match. ``roles`` is answerable in principle;
-           this caller merely supplied no input for it.
+        a. The **structure** of ``callers`` / ``targets`` is prechecked before any
+           pattern is read, because reading a malformed one is the §6.1.4.1
+           fail-open.
+        b. A malformed pattern field makes the rule unevaluable — its scope is
+           unknowable, so it resolves per §6.1.1's effect table.
+        c. Both fields well-formed and either failing to match means the rule
+           **does not apply to this call**. Its conditions are not consulted, its
+           faults do not reach ``handler_error``, and it does not change this
+           decision. Otherwise one misspelled key in a narrowly scoped rule would
+           decide calls it was never written about — ``callers: ["api.*"]`` with
+           a typo'd condition denying a ``worker.*`` caller — which breaks
+           first-match-wins. The fault is still real; :meth:`validate_rules`
+           looks at every rule and no call, and is where it surfaces.
+        d. Only then is the conditions tree prechecked, in full and context-free,
+           **before** §6.5's no-context check. That ordering closes the bypass
+           where ``conditions: {mispelled: true}`` on a ``deny`` rule passed
+           traffic simply because the caller carried no identity.
+
+        A rule that *passes* the precheck and then finds no context takes §6.5's
+        path and does not match. ``roles`` is answerable in principle; this
+        caller merely supplied no input for it.
         """
         pattern_faults = self._precheck_patterns(rule)
         if pattern_faults:
