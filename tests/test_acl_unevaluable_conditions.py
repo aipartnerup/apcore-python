@@ -651,3 +651,123 @@ class TestConditionOutcomeReturnValue:
         key = registered("_t_plain_bool", _Answers(True))
         acl, _ = _acl({key: True}, effect="allow", default_effect="deny")
         assert acl.check("caller", "target", _ctx()) is True
+
+
+# ---------------------------------------------------------------------------
+# A non-mapping `conditions` value
+# ---------------------------------------------------------------------------
+
+
+_NON_MAPPING_CONDITIONS = [
+    pytest.param("oops", "str", id="str"),
+    pytest.param(3, "int", id="int"),
+    pytest.param(0.5, "float", id="float"),
+    pytest.param(True, "bool", id="bool"),
+    pytest.param(["roles"], "list", id="list"),
+    pytest.param([], "list", id="empty-list"),
+    pytest.param((), "tuple", id="tuple"),
+    pytest.param({"a"}, "set", id="set"),
+]
+
+
+class TestMalformedConditionsValue:
+    """A `conditions` value that is not a mapping is UNEVALUABLE, not an exception.
+
+    ``ACLRule.conditions`` is annotated ``dict[str, Any] | None``, but the
+    annotation binds nobody: ``ACL(rules=[...])`` and ``add_rule()`` build rules
+    programmatically and never reach ``ACL.load``'s parser, so a scalar or a list
+    arrives at the evaluator intact. Iterating it raised ``AttributeError``
+    straight out of ``check()`` — which the ``ACL.check`` contract forbids:
+    "check MUST NOT raise to indicate a deny; it MUST return false", with raising
+    reserved for unrecoverable internal failures. A malformed rule supplied by
+    the host is not one of those.
+
+    UNSATISFIED would not do either: it would let a ``deny`` rule fall through to
+    the next rule and then to ``default_effect``, which is the bypass §6.1.1
+    exists to close.
+    """
+
+    @pytest.mark.parametrize(("conditions", "type_name"), _NON_MAPPING_CONDITIONS)
+    def test_deny_rule_takes_effect_instead_of_raising(self, conditions: Any, type_name: str) -> None:
+        acl, captured = _acl(conditions, effect="deny", default_effect="allow")
+        assert acl.check("user", "service.op", _ctx()) is False
+        assert captured[0].decision == "deny"
+        assert captured[0].reason == "rule_match"
+        assert captured[0].handler_error is not None
+        assert type_name in captured[0].handler_error
+
+    @pytest.mark.parametrize(("conditions", "type_name"), _NON_MAPPING_CONDITIONS)
+    async def test_deny_rule_takes_effect_on_the_async_path_too(self, conditions: Any, type_name: str) -> None:
+        acl, captured = _acl(conditions, effect="deny", default_effect="allow")
+        assert await acl.async_check("user", "service.op", _ctx()) is False
+        assert captured[0].decision == "deny"
+        assert captured[0].handler_error is not None
+        assert type_name in captured[0].handler_error
+
+    @pytest.mark.parametrize(("conditions", "type_name"), _NON_MAPPING_CONDITIONS)
+    def test_allow_rule_does_not_grant(self, conditions: Any, type_name: str) -> None:
+        acl, captured = _acl(conditions, effect="allow", default_effect="deny")
+        assert acl.check("user", "service.op", _ctx()) is False
+        assert captured[0].reason == "default_effect"
+        assert captured[0].handler_error is not None
+
+    def test_the_coordinator_reproduction(self) -> None:
+        """The exact probe that escaped as ``AttributeError: 'str' object has no attribute 'items'``."""
+        acl = ACL(
+            rules=[ACLRule(callers=["*"], targets=["*"], effect="deny", conditions="oops")],  # type: ignore[arg-type]
+            default_effect="allow",
+        )
+        assert acl.check("user", "service.op", _ctx(roles=["dev"])) is False
+
+    def test_the_diagnostic_uses_a_reserved_synthetic_key(self) -> None:
+        """No real condition key exists to name, so a `$`-prefixed one stands in.
+
+        ``$`` is reserved by §6.1 for compound operators, so it cannot collide
+        with a key a deployment registered a handler for. Parity with
+        apcore-typescript's ``MALFORMED_CONDITIONS_KEY``.
+        """
+        acl, captured = _acl("oops", effect="deny", default_effect="allow")
+        acl.check("user", "service.op", _ctx())
+        assert captured[0].handler_error == "$conditions: ACL conditions must be a mapping, got str"
+
+    def test_it_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        acl, _ = _acl(["roles"], effect="deny", default_effect="allow")
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            acl.check("user", "service.op", _ctx())
+        joined = "\n".join(r.message for r in caplog.records)
+        assert "must be a mapping" in joined
+        assert "effect=deny" in joined
+
+    def test_add_rule_is_covered_too(self) -> None:
+        """The other entry point that bypasses the parser."""
+        acl = ACL(default_effect="allow")
+        acl.add_rule(callers=["*"], targets=["*"], effect="deny", conditions="oops")  # type: ignore[arg-type]
+        assert acl.check("user", "service.op", _ctx()) is False
+
+    def test_none_and_empty_mapping_are_unaffected(self) -> None:
+        """``None`` means "no conditions"; ``{}`` means "vacuously satisfied"."""
+        for conditions in (None, {}):
+            acl, captured = _acl(conditions, effect="deny", default_effect="allow")
+            assert acl.check("user", "service.op", _ctx()) is False, "the rule matches on patterns alone"
+            assert captured[0].handler_error is None
+
+    @pytest.mark.parametrize(
+        "conditions",
+        [{"$or": "not-a-list"}, {"$or": 5}, {"$or": ["not-a-dict"]}, {"$not": 3}, {"$not": "x"}],
+        ids=["or-str", "or-int", "or-list-of-str", "not-int", "not-str"],
+    )
+    def test_malformed_compound_operands_keep_their_current_classification(self, conditions: dict[str, Any]) -> None:
+        """Deliberately NOT changed here — pinned so this pass cannot drift it.
+
+        ``$or: "not-a-list"`` and ``$not: 3`` evaluate to UNSATISFIED in all three
+        SDKs today. They are being handled in a coordinated spec revision that all
+        three act on together; reclassifying one SDK ahead of it would recreate
+        the divergence the guard above was measured against. The compound handlers
+        reject a malformed operand before recursing, so the new non-mapping guard
+        is unreachable from them.
+        """
+        acl, captured = _acl(conditions, effect="deny", default_effect="allow")
+        assert acl.check("user", "service.op", _ctx()) is True, "UNSATISFIED: the deny rule does not match"
+        assert captured[0].handler_error is None
+        assert asyncio.run(acl.async_check("user", "service.op", _ctx())) is True

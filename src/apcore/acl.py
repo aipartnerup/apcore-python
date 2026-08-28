@@ -60,6 +60,15 @@ _handler_error_var: contextvars.ContextVar[dict[str, str] | None] = contextvars.
 )
 
 
+# Synthetic ``handler_error`` key used when a rule's ``conditions`` value is not
+# a mapping at all, so no real condition key exists to name. Mirrors
+# apcore-typescript's ``MALFORMED_CONDITIONS_KEY``. The ``$`` prefix is reserved
+# by PROTOCOL_SPEC §6.1 for compound operators, so it cannot collide with a key
+# a deployment registered a handler for, and it sorts ahead of ordinary keys —
+# a malformed block dominates any per-key diagnostic beside it.
+_MALFORMED_CONDITIONS_KEY = "$conditions"
+
+
 def _record_handler_error(key: str, reason: str) -> None:
     """Record an unevaluable condition for the in-flight check(), if any.
 
@@ -231,6 +240,9 @@ class ACL:
         Cross-language parity with apcore-rust ``ACL::evaluate_conditions``
         which polls the future once with a noop waker (sync finding A-D-023).
         """
+        if not isinstance(conditions, dict):
+            return cls._malformed_conditions(conditions)
+
         saw_unevaluable = False
         for key, value in conditions.items():
             outcome = cls._evaluate_condition(key, value, context)
@@ -241,6 +253,39 @@ class ACL:
             if outcome is ConditionOutcome.UNEVALUABLE:
                 saw_unevaluable = True
         return ConditionOutcome.UNEVALUABLE if saw_unevaluable else ConditionOutcome.SATISFIED
+
+    @classmethod
+    def _malformed_conditions(cls, conditions: Any) -> ConditionOutcome:
+        """Classify a non-mapping ``conditions`` value as UNEVALUABLE.
+
+        ``ACLRule.conditions`` is annotated ``dict[str, Any] | None``, but the
+        annotation binds nobody: ``ACL(rules=[...])`` and ``add_rule()`` build
+        rules programmatically and never reach the YAML parser, so a scalar or a
+        list arrives here intact. Iterating it raised ``AttributeError`` straight
+        out of ``check()``, which the ``ACL.check`` contract forbids — ``check``
+        MUST NOT raise to indicate a deny, and a malformed rule supplied by the
+        host is not the unrecoverable internal failure that raising is reserved
+        for.
+
+        It is UNEVALUABLE rather than UNSATISFIED, and that is the whole point:
+        a malformed block is a misconfiguration, not a handler answering "no", so
+        calling it UNSATISFIED would let a ``deny`` rule fall through to the next
+        rule and then to ``default_effect`` — exactly the bypass §6.1.1 exists to
+        close. Parity with apcore-typescript, which records the same synthetic
+        key. (apcore-rust currently returns ``true`` here — an inert ``deny``
+        rule — and is corrected in a later round.)
+        """
+        type_name = type(conditions).__name__
+        _logger.warning(
+            "ACL conditions must be a mapping, got %s — unevaluable (PROTOCOL_SPEC §6.1.1): "
+            "a 'deny' rule takes effect, an 'allow' rule does not grant",
+            type_name,
+        )
+        _record_handler_error(
+            _MALFORMED_CONDITIONS_KEY,
+            f"ACL conditions must be a mapping, got {type_name}",
+        )
+        return ConditionOutcome.UNEVALUABLE
 
     @classmethod
     def _evaluate_condition(
@@ -321,6 +366,9 @@ class ACL:
         situations can arise here: an unregistered key and a raising handler.
         The third is specific to the sync path.
         """
+        if not isinstance(conditions, dict):
+            return cls._malformed_conditions(conditions)
+
         saw_unevaluable = False
         for key, value in conditions.items():
             outcome = await cls._evaluate_condition_async(key, value, context)
