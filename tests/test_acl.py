@@ -620,3 +620,70 @@ class TestACLThreadSafety:
             t.join()
 
         assert errors == []
+
+
+# === effect value closure (PROTOCOL_SPEC §6.1.5, spec v1.30.0, apcore#111) ===
+
+
+class TestEffectValueClosure:
+    """`effect` is `allow` or `deny` at every door that accepts a rule.
+
+    The check itself is not new — `ACL.load` has always had it. What was new in
+    spec v1.30.0 is that it is reachable from all three entry points §6.1.6
+    rule 3 names. Before, `effect: "Allow"` failed from a YAML file, was
+    accepted through `ACLRule(...)` and `add_rule()`, and was then read as
+    `deny` at check time: under `default_effect: allow` a rule written to permit
+    denied everything it matched, with nothing said.
+
+    `conformance/fixtures/acl_effect_value_closure.json` drives the cross-
+    language contract; these cover the Python-shaped routes it cannot express.
+    """
+
+    @pytest.mark.parametrize("effect", ["Allow", "DENY", "alow", "", "permit"])
+    def test_direct_construction_rejects_an_out_of_enum_effect(self, effect: str) -> None:
+        with pytest.raises(ACLRuleError, match=f"ACLRule has invalid effect '{effect}'"):
+            ACLRule(callers=["agent.*"], targets=["orders.*"], effect=effect)
+
+    def test_add_rule_rejects_a_pre_built_rule(self) -> None:
+        """The rule cannot be built to hand in, which is the rejection."""
+        acl = ACL(default_effect="deny")
+        with pytest.raises(ACLRuleError):
+            acl.add_rule(ACLRule(callers=["agent.*"], targets=["orders.*"], effect="Allow"))
+        assert acl.rules == ()
+
+    def test_add_rule_rejects_its_own_kwargs_path(self) -> None:
+        """`add_rule` returns None; §6.1.6 rule 3 says that is not an exemption."""
+        acl = ACL(default_effect="deny")
+        with pytest.raises(ACLRuleError, match="invalid effect 'Allow'"):
+            acl.add_rule(callers=["agent.*"], targets=["orders.*"], effect="Allow")
+        assert acl.rules == ()
+
+    def test_the_effect_is_reported_before_the_approval_pairing(self) -> None:
+        """`DENY` is not a `deny` rule, so the pairing rule must not be read off it."""
+        with pytest.raises(ACLRuleError, match="invalid effect 'DENY'"):
+            ACLRule(callers=["agent.*"], targets=["orders.*"], effect="DENY", approval="required")
+
+    def test_a_mutated_effect_is_not_resolved_to_a_decision(self) -> None:
+        """The one door a closed value set cannot shut: assignment after construction.
+
+        `ACLRule` is a plain mutable dataclass, so `rule.effect = "Allow"`
+        reaches the evaluator whatever the constructors check. §6.1.5 forbids
+        resolving an unrecognised effect to a decision, and the old
+        `"allow" if effect == "allow" else "deny"` did exactly that — here
+        against `default_effect: allow`, where the silent reading flips the
+        answer rather than merely agreeing with the default by luck.
+        """
+        rule = ACLRule(callers=["agent.*"], targets=["orders.*"], effect="allow")
+        acl = ACL(rules=[rule], default_effect="allow")
+        assert acl.check("agent.a", "orders.create") is True
+
+        rule.effect = "Allow"
+        with pytest.raises(ACLRuleError, match="Rule 0 has invalid effect 'Allow'"):
+            acl.check("agent.a", "orders.create")
+
+    def test_a_valid_effect_still_decides_both_ways(self) -> None:
+        """Control: closing the set must not disturb the decision it carries."""
+        allow = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="allow")], default_effect="deny")
+        deny = ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="deny")], default_effect="allow")
+        assert allow.check("agent.a", "orders.create") is True
+        assert deny.check("agent.a", "orders.create") is False
