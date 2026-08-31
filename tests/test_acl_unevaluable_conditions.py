@@ -1290,3 +1290,191 @@ class TestGatingVersusComposition:
         key = registered("_t_gate_split_raise2", _Raising())
         acl, _ = _acl({"$or": [{key: True}, {"roles": ["admin"]}]}, effect="deny", default_effect="allow")
         assert acl.check("user", "service.op", _ctx(roles=["dev"])) is False
+
+
+# ---------------------------------------------------------------------------
+# §6.1.1 rule 5 — a pending approval requirement (spec v1.29.0, apcore#109)
+# ---------------------------------------------------------------------------
+
+
+def _approval_acl(
+    *rules: ACLRule,
+    default_effect: str = "deny",
+) -> tuple[ACL, list[AuditEntry]]:
+    captured: list[AuditEntry] = []
+    return ACL(rules=list(rules), default_effect=default_effect, audit_logger=captured.append), captured
+
+
+def _gate(**overrides: Any) -> ACLRule:
+    """The gate: ``allow`` + ``approval: required``, unevaluable as written.
+
+    ``mispelled_key`` is registered nowhere, so the rule reaches §6.1.1 by the
+    §6.1.4 precheck — the same door a misspelled ``arguments`` predicate, an
+    unregistered condition key and a raising handler all arrive through.
+    """
+    fields: dict[str, Any] = {
+        "callers": ["*"],
+        "targets": ["cli.git_push"],
+        "effect": "allow",
+        "approval": "required",
+        "conditions": {"mispelled_key": True},
+    }
+    fields.update(overrides)
+    return ACLRule(**fields)
+
+
+def _broad_allow(target: str = "cli.git_push") -> ACLRule:
+    return ACLRule(callers=["*"], targets=[target], effect="allow")
+
+
+class TestPendingApprovalRequirement:
+    """An unevaluable ``allow`` rule does not take its approval with it.
+
+    §6.1.1 was written when a rule carried one axis, and "MUST NOT grant" was
+    then complete: the rule steps aside, and stepping aside was harmless because
+    whatever granted next also said ``allow``. §6.1.6 gave rules a second axis,
+    and stepping aside began discarding it — on exactly the shape §6.1.7 exists
+    for, a narrow approval rule ahead of a broad allow. ``git push --force`` was
+    authorized with ``approval_required: False`` and ``matched_rule_index``
+    naming a rule that never mentioned approval.
+    """
+
+    def test_a_later_allow_rule_carries_the_requirement(self) -> None:
+        """The driving shape: the gate is unevaluable, rule 1 grants, the human stays."""
+        acl, captured = _approval_acl(_gate(), _broad_allow())
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert decision.access == "allow"
+        assert decision.approval_required is True, "the requirement was discarded with the rule"
+        # The index names the rule that actually DECIDED, not the one that
+        # raised the requirement — they are different rules, deliberately.
+        assert decision.matched_rule_index == 1
+        assert captured[0].approval_required is True, "the audit entry must carry the FINAL value"
+        assert captured[0].handler_error is not None, "rule 2 is untouched by rule 5"
+
+    def test_default_effect_allow_carries_it_with_no_second_rule(self) -> None:
+        """The boundary a "a later rule grants" reading misses: there is no later rule.
+
+        Pins the combination §6.9 row 2 newly makes legal — ``approval_required:
+        True`` with ``matched_rule_index: None``.
+        """
+        acl, captured = _approval_acl(_gate(), default_effect="allow")
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required) == ("allow", True)
+        assert decision.matched_rule_index is None
+        assert decision.reason == "default_effect"
+        assert captured[0].approval_required is True
+
+    def test_a_denial_clears_it(self) -> None:
+        """A denial clears it — "denied *and* put it to a human" is the state §6.1.6
+
+        rejects on a rule.
+
+        The pending requirement must not reconstruct it from two rules.
+        """
+        deny = ACLRule(callers=["*"], targets=["cli.git_push"], effect="deny")
+        acl, captured = _approval_acl(_gate(), deny, default_effect="allow")
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required) == ("deny", False)
+        assert decision.matched_rule_index == 1, "the index names the rule that decided"
+        assert captured[0].approval_required is False
+
+    def test_the_default_deny_clears_it_too(self) -> None:
+        acl, _ = _approval_acl(_gate(), default_effect="deny")
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required) == ("deny", False)
+
+    def test_an_out_of_scope_rule_raises_nothing(self) -> None:
+        """Rule 5's containment, and the assertion that keeps the fix from over-reaching.
+
+        The gate is written about ``cli.deploy``. Its conditions are never
+        consulted (§6.1.4 rule 4) and it must not attach a human to a call it was
+        never written about. An implementation that records the requirement
+        before matching patterns passes every other test here and fails this one.
+        """
+        acl, captured = _approval_acl(_gate(targets=["cli.deploy"]), _broad_allow())
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required) == ("allow", False)
+        assert decision.matched_rule_index == 1
+        assert captured[0].handler_error is None, "an out-of-scope rule's faults are not this call's"
+
+    def test_an_out_of_scope_caller_raises_nothing(self) -> None:
+        """The same containment on the other pattern field."""
+        acl, _ = _approval_acl(_gate(callers=["worker.*"]), _broad_allow())
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required) == ("allow", False)
+
+    def test_a_malformed_pattern_field_does_raise_it(self) -> None:
+        """The one point where a requirement attaches without a demonstrated match.
+
+        ``callers: "*"`` where ``callers: ["*"]`` was meant is unevaluable before
+        any pattern is read (§6.1.4.1), so the rule's SCOPE cannot be read and it
+        cannot be shown not to apply here — the same posture the field already
+        produces under ``deny``, where an unreadable scope denies every call.
+        """
+        acl, captured = _approval_acl(_gate(callers="*", conditions=None), _broad_allow())
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required) == ("allow", True)
+        assert decision.matched_rule_index == 1
+        assert captured[0].handler_error is not None
+
+    def test_an_unevaluable_rule_without_approval_raises_nothing(self) -> None:
+        """Rule 5 is about the second axis only; rule 1 is unchanged for the first."""
+        acl, _ = _approval_acl(_gate(approval="not_required"), _broad_allow())
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required) == ("allow", False)
+
+    def test_a_satisfied_gate_is_not_the_pending_path(self) -> None:
+        """The ordinary v1.28.0 route still reports the rule that matched."""
+        acl, _ = _approval_acl(_gate(conditions={"roles": ["dev"]}), _broad_allow())
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx(roles=["dev"]))
+        assert (decision.access, decision.approval_required) == ("allow", True)
+        assert decision.matched_rule_index == 0
+
+    def test_the_legacy_boolean_fails_closed_on_it(self) -> None:
+        """§6.8.1 as a property of the DECISION, not of the matched rule.
+
+        Before v1.29.0 this returned True: the boolean read a matched rule that
+        carried no approval, and a caller that can only read "let it through /
+        do not" let a gated call through.
+        """
+        acl, _ = _approval_acl(_gate(), _broad_allow())
+        assert acl.check("agent.planner", "cli.git_push", _ctx()) is False
+
+    async def test_the_async_twins_answer_identically(self) -> None:
+        """A governance result MUST NOT depend on which entry point was called."""
+        acl, captured = _approval_acl(_gate(), _broad_allow())
+        decision = await acl.async_check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required, decision.matched_rule_index) == ("allow", True, 1)
+        assert captured[0].approval_required is True
+        assert await acl.async_check("agent.planner", "cli.git_push", _ctx()) is False
+
+    async def test_the_async_twin_contains_it_too(self) -> None:
+        acl, _ = _approval_acl(_gate(targets=["cli.deploy"]), _broad_allow())
+        decision = await acl.async_check_access("agent.planner", "cli.git_push", _ctx())
+        assert decision.approval_required is False
+
+    def test_one_pending_rule_is_enough_and_several_do_not_compound(self) -> None:
+        """Disjunction, so the flag is idempotent — asserted because a naive
+
+        counter or a last-writer assignment would drop it on the second rule.
+        """
+        acl, _ = _approval_acl(_gate(), _gate(approval="not_required"), _gate(), _broad_allow())
+        decision = acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert (decision.access, decision.approval_required, decision.matched_rule_index) == ("allow", True, 3)
+
+    def test_the_warning_says_the_requirement_is_pending(self, caplog) -> None:
+        """§6.1.1 rule 3's warning would otherwise read as "no further effect",
+
+        which is the exact misreading rule 5 corrects.
+        """
+        acl, _ = _approval_acl(_gate(), _broad_allow())
+        with caplog.at_level(logging.WARNING):
+            acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert "PENDING" in caplog.text
+        assert "§6.1.1 rule 5" in caplog.text
+
+    def test_no_such_clause_when_the_rule_carried_no_approval(self, caplog) -> None:
+        acl, _ = _approval_acl(_gate(approval="not_required"), _broad_allow())
+        with caplog.at_level(logging.WARNING):
+            acl.check_access("agent.planner", "cli.git_push", _ctx())
+        assert "PENDING" not in caplog.text

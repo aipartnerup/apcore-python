@@ -1058,12 +1058,15 @@ class ACL:
         handler, a handler that raised, or an async handler on this sync path —
         resolves toward refusing access per PROTOCOL_SPEC §6.1.1: a ``deny``
         rule takes effect and the call is denied, an ``allow`` rule does not
-        match and does not grant. The emitted :class:`AuditEntry` carries a
-        non-null ``handler_error`` naming the key and the reason. An unevaluable
+        match and does not grant — but an ``allow`` rule that carried
+        ``approval: required`` does not take the requirement with it, which
+        becomes **pending** and composes with whatever grants later (§6.1.1
+        rule 5). The emitted :class:`AuditEntry` carries a non-null
+        ``handler_error`` naming the key and the reason. An unevaluable
         condition never raises out of this method.
 
         **This boolean fails closed on an approval requirement** (§6.8.1): a
-        rule resolving to ``allow`` with ``approval: required`` returns
+        *decision* resolving to ``allow`` with an approval requirement returns
         ``False`` here, because a boolean can only be read as "let it through /
         do not" and letting it through would run a call the ACL said needed a
         human. Callers that need the two axes apart use :meth:`check_access`.
@@ -1094,6 +1097,11 @@ class ACL:
         :meth:`check`; the two are the same decision reported at different
         widths, not two decisions.
 
+        ``approval_required`` is the matched rule's own union any requirement
+        left **pending** by an unevaluable ``allow`` rule (§6.1.1 rule 5), so it
+        may originate in a rule that did not match and may accompany
+        ``matched_rule_index: None`` when ``default_effect: allow`` granted.
+
         Args:
             caller_id: The calling module ID, or None for external calls.
             target_id: The target module ID being called.
@@ -1108,12 +1116,16 @@ class ACL:
         token = _handler_error_var.set({})
         try:
             matched: tuple[int, ACLRule] | None = None
+            pending_approval = False
             for idx, rule in enumerate(rules):
                 outcome = self._matches_rule(rule, effective_caller, target_id, context, rule_index=idx)
                 if outcome is ConditionOutcome.UNEVALUABLE:
                     if self._unevaluable_rule_takes_effect(rule):
                         matched = (idx, rule)
                         break
+                    # The rule steps aside (§6.1.1 rule 1) but its approval
+                    # requirement does not go with it (rule 5).
+                    pending_approval = pending_approval or self._raises_pending_approval(rule)
                     continue
                 if outcome is ConditionOutcome.SATISFIED:
                     matched = (idx, rule)
@@ -1127,6 +1139,7 @@ class ACL:
                 rules_present=bool(rules),
                 default_effect=default_effect,
                 matched=matched,
+                pending_approval=pending_approval,
                 audit_logger=audit_logger,
                 context=context,
             )
@@ -1137,8 +1150,14 @@ class ACL:
     def _as_legacy_boolean(decision: AccessDecision) -> bool:
         """Collapse an :class:`AccessDecision` to the legacy boolean, failing closed.
 
-        PROTOCOL_SPEC §6.8.1: a rule resolving to ``allow`` with
+        PROTOCOL_SPEC §6.8.1: a **decision** resolving to ``allow`` with
         ``approval_required: true`` MUST make :meth:`check` return ``False``.
+        The decision and not the matched rule, since spec v1.29.0: the
+        requirement may be a pending one raised by an unevaluable rule that did
+        not itself match, or carried through ``default_effect: allow`` (§6.1.1
+        rule 5), and the boolean fails closed on those identically. Reading
+        :attr:`AccessDecision.approval_required` rather than the rule is what
+        makes that automatic.
 
         ``check()`` is public API consumed by callers that are not the Executor
         — tooling, preflight helpers, third-party integrations — and such a
@@ -1192,12 +1211,16 @@ class ACL:
         token = _handler_error_var.set({})
         try:
             matched: tuple[int, ACLRule] | None = None
+            pending_approval = False
             for idx, rule in enumerate(rules):
                 outcome = await self._matches_rule_async(rule, effective_caller, target_id, context, rule_index=idx)
                 if outcome is ConditionOutcome.UNEVALUABLE:
                     if self._unevaluable_rule_takes_effect(rule):
                         matched = (idx, rule)
                         break
+                    # Same §6.1.1 rule 5 bookkeeping as the sync twin; the two
+                    # entry points MUST NOT drift on a governance result.
+                    pending_approval = pending_approval or self._raises_pending_approval(rule)
                     continue
                 if outcome is ConditionOutcome.SATISFIED:
                     matched = (idx, rule)
@@ -1211,6 +1234,7 @@ class ACL:
                 rules_present=bool(rules),
                 default_effect=default_effect,
                 matched=matched,
+                pending_approval=pending_approval,
                 audit_logger=audit_logger,
                 context=context,
             )
@@ -1233,6 +1257,7 @@ class ACL:
         rules_present: bool,
         default_effect: str,
         matched: tuple[int, ACLRule] | None,
+        pending_approval: bool,
         audit_logger: Callable[[AuditEntry], None] | None,
         context: Context | None,
     ) -> AccessDecision:
@@ -1241,10 +1266,14 @@ class ACL:
         Shared by both check_access() and async_check_access() so that audit +
         logging logic lives in exactly one place.
 
-        The approval requirement comes from the matched rule and from nowhere
-        else (PROTOCOL_SPEC §6.9 rows 1-2): there is no default approval
-        requirement, so no match means ``False``. A ``deny`` rule can never
-        carry one — §6.1.6 rejects that pair at construction.
+        The approval requirement is the matched rule's own **union any pending
+        requirement** raised during the scan (PROTOCOL_SPEC §6.9 rows 1-2 as
+        amended in spec v1.29.0): there is no default approval *source*, so an
+        unremarkable no-match still means ``False``, but a requirement raised by
+        an unevaluable ``allow`` rule composes with whatever granted — including
+        ``default_effect: allow``, which is the one route with no rule to carry
+        it. A ``deny`` rule can never carry one of its own; §6.1.6 rejects that
+        pair at construction.
         """
         if matched is not None:
             matched_idx, matched_rule = matched
@@ -1259,6 +1288,16 @@ class ACL:
             approval_required = False
             rule_label = "default"
             reason = "default_effect" if rules_present else "no_rules"
+
+        # §6.1.1 rule 5 (spec v1.29.0, #109). Composed here rather than inside
+        # either branch above because a pending requirement outlives the rule
+        # that carried it: it rides through a later ``allow`` rule *and* through
+        # ``default_effect: allow``, which is what makes ``approval_required:
+        # True`` with ``matched_rule_index: None`` a legal combination. A denial
+        # clears it — "denied *and* put it to a human" is the same meaningless
+        # state §6.1.6 rejects on a rule — while ``matched_rule_index`` keeps
+        # naming the rule that actually decided, not the unevaluable one.
+        approval_required = access == "allow" and (approval_required or pending_approval)
 
         self._logger.debug(
             "ACL %s: caller_id=%s target_id=%s decision=%s approval_required=%s rule=%s",
@@ -1407,7 +1446,7 @@ class ACL:
         """
         pattern_faults = self._precheck_patterns(rule)
         if pattern_faults:
-            self._report_faults(pattern_faults, rule_index, rule.effect)
+            self._report_faults(pattern_faults, rule_index, rule)
             return ConditionOutcome.UNEVALUABLE
 
         if not self._match_patterns(rule.callers, caller, context):
@@ -1438,7 +1477,7 @@ class ACL:
         """
         pattern_faults = self._precheck_patterns(rule)
         if pattern_faults:
-            self._report_faults(pattern_faults, rule_index, rule.effect)
+            self._report_faults(pattern_faults, rule_index, rule)
             return ConditionOutcome.UNEVALUABLE
 
         if not self._match_patterns(rule.callers, caller, context):
@@ -1452,7 +1491,7 @@ class ACL:
 
         faults = self._precheck_conditions(rule.conditions, async_path=True)
         if faults:
-            self._report_faults(faults, rule_index, rule.effect)
+            self._report_faults(faults, rule_index, rule)
             return ConditionOutcome.UNEVALUABLE
 
         if context is None:
@@ -1462,7 +1501,7 @@ class ACL:
         before = self._recorded_condition_paths()
         outcome = await self._evaluate_conditions_async(rule.conditions, context)
         if outcome is ConditionOutcome.UNEVALUABLE:
-            self._warn_unevaluable_conditions(rule_index, rule.effect, before)
+            self._warn_unevaluable_conditions(rule_index, rule, before)
         return outcome
 
     def _resolve_conditions(
@@ -1486,7 +1525,7 @@ class ACL:
         assert rule.conditions is not None  # guarded by both callers
         faults = self._precheck_conditions(rule.conditions, async_path=async_path)
         if faults:
-            self._report_faults(faults, rule_index, rule.effect)
+            self._report_faults(faults, rule_index, rule)
             return ConditionOutcome.UNEVALUABLE
 
         if context is None:
@@ -1496,19 +1535,20 @@ class ACL:
         before = self._recorded_condition_paths()
         outcome = self._evaluate_conditions(rule.conditions, context)
         if outcome is ConditionOutcome.UNEVALUABLE:
-            self._warn_unevaluable_conditions(rule_index, rule.effect, before)
+            self._warn_unevaluable_conditions(rule_index, rule, before)
         return outcome
 
-    def _report_faults(self, faults: list[_Fault], rule_index: int | None, effect: str) -> None:
+    def _report_faults(self, faults: list[_Fault], rule_index: int | None, rule: ACLRule) -> None:
         """Record precheck faults into ``handler_error`` and warn (§6.1.1 rules 2-3)."""
         for fault in faults:
             _record_handler_error(fault.path, fault.reason)
         self._logger.warning(
             "ACL rule %s (effect=%s) is unevaluable — PROTOCOL_SPEC §6.1.4 precheck failed at %s. "
-            "A 'deny' rule takes effect and the call is denied; an 'allow' rule does not grant.",
+            "A 'deny' rule takes effect and the call is denied; an 'allow' rule does not grant.%s",
             "?" if rule_index is None else rule_index,
-            effect,
+            rule.effect,
             "; ".join(f"{f.path}: {f.reason}" for f in sorted(faults, key=lambda f: f.path)),
+            self._pending_approval_clause(rule),
         )
 
     @staticmethod
@@ -1517,7 +1557,7 @@ class ACL:
         errors = _handler_error_var.get()
         return frozenset(errors) if errors else frozenset()
 
-    def _warn_unevaluable_conditions(self, rule_index: int | None, effect: str, before: frozenset[str]) -> None:
+    def _warn_unevaluable_conditions(self, rule_index: int | None, rule: ACLRule, before: frozenset[str]) -> None:
         """Warn that a rule's conditions were unevaluable during execution (§6.1.1 rule 3).
 
         The message names the condition path(s), the rule's index and the rule's
@@ -1528,10 +1568,27 @@ class ACL:
         paths = sorted(self._recorded_condition_paths() - before)
         self._logger.warning(
             "ACL rule %s (effect=%s) has unevaluable condition(s) %s — PROTOCOL_SPEC §6.1.1: "
-            "a 'deny' rule takes effect and the call is denied, an 'allow' rule does not grant.",
+            "a 'deny' rule takes effect and the call is denied, an 'allow' rule does not grant.%s",
             "?" if rule_index is None else rule_index,
-            effect,
+            rule.effect,
             ", ".join(repr(path) for path in paths) if paths else "(unreported)",
+            self._pending_approval_clause(rule),
+        )
+
+    @classmethod
+    def _pending_approval_clause(cls, rule: ACLRule) -> str:
+        """The tail both §6.1.1 warnings carry when the rule gated a human.
+
+        Without it the message reads as though the rule had no further effect,
+        which is exactly the reading §6.1.1 rule 5 corrects: the requirement it
+        carried is still live, and an operator debugging why a forced push was
+        approved — or why an ordinary one now asks — needs to be told which.
+        """
+        if not cls._raises_pending_approval(rule):
+            return ""
+        return (
+            " The rule carried approval: required, so per §6.1.1 rule 5 that requirement is PENDING "
+            "and composes with whatever grants this call, including default_effect: allow."
         )
 
     def _warn_conditional_rule_without_context(self, rule_index: int | None, effect: str) -> None:
@@ -1559,6 +1616,39 @@ class ACL:
         carries ``handler_error`` and a warning has been emitted.
         """
         return rule.effect == "deny"
+
+    @staticmethod
+    def _raises_pending_approval(rule: ACLRule) -> bool:
+        """Does this unevaluable ``allow`` rule leave a **pending** approval requirement?
+
+        PROTOCOL_SPEC §6.1.1 rule 5 (spec v1.29.0, #109).
+        :meth:`_unevaluable_rule_takes_effect` answers the authorization axis;
+        this answers the second one §6.1.6 added. "MUST NOT grant" was a
+        complete instruction while a rule carried a single axis — the rule steps
+        aside, and stepping aside was harmless because whatever granted next
+        also said ``allow``. It is not complete for a rule that also carried
+        ``approval: required``: the narrow rule gating ``git push --force``
+        steps aside, a broader ``allow`` grants, and the call the operator gated
+        runs with no human asked. So the requirement is recorded and composed by
+        disjunction with whatever grants later, rather than discarded.
+
+        **Scope is a precondition, and the caller has already enforced it.** A
+        rule whose ``callers`` / ``targets`` do not match resolves to
+        UNSATISFIED in :meth:`_matches_rule` and never reaches here (§6.1.4
+        rule 4), so a rule written about one caller cannot attach a human to
+        calls it was never written about. A rule whose pattern field is itself
+        **malformed** does reach here, from the §6.1.4.1 precheck that runs
+        before any pattern is read — deliberately, per rule 5's last clause: its
+        scope cannot be read, so it cannot be shown not to apply here, which is
+        the posture that field already produces under ``deny``, where an
+        unreadable scope denies every call.
+
+        The ``effect == "allow"`` test is not redundant with the caller's
+        ``deny`` branch: :class:`ACLRule` validates the ``approval`` / ``effect``
+        pair but not ``effect`` itself, and :meth:`_finalize_check` reads any
+        other value as ``deny``. Both places must read it the same way.
+        """
+        return rule.effect == "allow" and rule.approval == APPROVAL_REQUIRED
 
     def add_rule(
         self,

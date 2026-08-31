@@ -647,6 +647,47 @@ class TestGovernancePrecedence:
         with pytest.raises(ApprovalDeniedError):
             executor.call("cli.git_push", {"force": True})
 
+    def test_a_pending_requirement_reaches_step_5_too(self) -> None:
+        """§6.1.1 rule 5 on the ordinary Executor pipeline (spec v1.29.0, #109).
+
+        `has_keys` is not a predicate name, so the gate is unevaluable **with the
+        projection present** — §6.1.2 makes an unregistered key a warning rather
+        than a load failure, so `validate_rules()` at deploy time is not a
+        mitigation that can be assumed. Before v1.29.0 the gate stepped aside,
+        the broad rule granted, and one typo turned "ask a human" into "do not":
+        the forced push ran with `seen == []`.
+        """
+        seen: list[ApprovalRequest] = []
+        executor = Executor(
+            registry=_registry(),
+            acl=_acl(
+                _force_rule(conditions={"arguments": {"has_keys": ["force"]}}),
+                ACLRule(callers=["*"], targets=["cli.git_push"], effect="allow"),
+                default_effect="deny",
+            ),
+            approval_handler=_recording_handler(seen),
+        )
+        executor.call("cli.git_push", {"force": True})
+        assert len(seen) == 1, "the pending approval requirement never reached the gate"
+
+    def test_an_out_of_scope_gate_does_not_reach_step_5(self) -> None:
+        """Rule 5's containment at the pipeline level: the gate is written about
+
+        another module, so an ordinary `git push` must not acquire a human.
+        """
+        seen: list[ApprovalRequest] = []
+        executor = Executor(
+            registry=_registry(),
+            acl=_acl(
+                _force_rule(targets=["cli.deploy"], conditions={"arguments": {"has_keys": ["force"]}}),
+                ACLRule(callers=["*"], targets=["cli.git_push"], effect="allow"),
+                default_effect="deny",
+            ),
+            approval_handler=_recording_handler(seen),
+        )
+        executor.call("cli.git_push", {"force": True})
+        assert seen == []
+
     def test_an_acl_denial_still_denies(self) -> None:
         deny = ACLRule(callers=["*"], targets=["cli.git_push"], effect="deny")
         executor = Executor(registry=_registry(), acl=_acl(deny, default_effect="allow"))
