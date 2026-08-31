@@ -32,7 +32,7 @@ from apcore.config import (
 )
 from apcore.errors import ConfigError
 
-from .canonical_fixtures import fixtures_dir, load_fixture
+from .canonical_fixtures import fixtures_dir, schemas_dir, load_fixture
 
 FIXTURE = load_fixture("config_key_governance.json")
 ALLOWED: set[str] = set(FIXTURE["allowed_keys"])
@@ -163,7 +163,7 @@ class TestConfigKeySurfaceGovernance:
         # literal transcription of themselves: a list compared to its own copy
         # cannot fail when a schema is renamed or deleted. (Same tautology
         # shape as apcore-python#32 / aiperceivable/apcore#81.)
-        spec_repo = fixtures_dir().parent.parent
+        spec_repo = schemas_dir().parent
         declared = FIXTURE["canonical_sources"]
         assert declared, "the fixture must name the schemas it was generated from"
         missing = [src for src in declared if not (spec_repo / src).is_file()]
@@ -475,7 +475,7 @@ def test_every_section_the_schema_closes_is_enforced() -> None:
     If a section ever stops being closed, enforcing closedness against it under
     strict becomes a rejection the canonical schema does not back.
     """
-    schemas = fixtures_dir().parent.parent / "schemas"
+    schemas = schemas_dir()
     config_schema = json.loads((schemas / "apcore-config.schema.json").read_text())
     open_sections = []
     for section in _FRAMEWORK_SECTION_KEYS:
@@ -514,7 +514,7 @@ def test_legacy_default_table_mirrors_defaults_schema_exactly() -> None:
     `get("sys_modules.error_history.max_entries_per_module")` answered 50 here
     and undefined/None in both peers over the same call (sync finding A-D-021).
     """
-    schemas = fixtures_dir().parent.parent / "schemas"
+    schemas = schemas_dir()
     canonical = _schema_defaults(json.loads((schemas / "defaults.schema.json").read_text()))
 
     def _leaves(node: Any, prefix: str = "") -> dict[str, Any]:
@@ -550,7 +550,7 @@ def test_sys_modules_namespace_supplies_every_declared_default() -> None:
     `control.overrides_path` is excluded: its declared default is null, which a
     namespace default cannot express distinctly from absence.
     """
-    schemas = fixtures_dir().parent.parent / "schemas"
+    schemas = schemas_dir()
     declared = _schema_defaults(json.loads((schemas / "sys-modules.schema.json").read_text()))
     expected = {k: v for k, v in declared.items() if v is not None}
     assert len(expected) >= 13, f"the schema's default set looks wrong: {expected}"

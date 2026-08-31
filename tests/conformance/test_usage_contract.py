@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -24,7 +23,7 @@ import pytest
 from apcore import ModuleAnnotations, Registry
 from apcore.observability.usage import UsageCollector, UsageMiddleware
 from apcore.sys_modules.usage import UsageModuleModule, UsageSummaryModule
-from conformance.canonical_fixtures import case_ids, fixtures_dir, load_fixture
+from conformance.canonical_fixtures import case_ids, load_fixture, schemas_dir
 
 FIXTURE = load_fixture("usage_contract.json")
 CASES = FIXTURE["test_cases"]
@@ -32,7 +31,9 @@ CASES = FIXTURE["test_cases"]
 # driver_contract.output_validates_against_the_canonical_schema: the same files
 # the spec repo ships, not a copy. `additionalProperties: false` is the point —
 # a field one SDK emits and the others do not fails here.
-_SCHEMAS = Path(fixtures_dir()).parent.parent / "schemas"
+# §8.2.1 rule 4: resolve `schemas/` on its own rather than climbing out of
+# the fixtures root — under CONFORMANCE_FIXTURES there is no repo above it.
+_SCHEMAS = schemas_dir()
 _SCHEMA_FOR = {
     "system.usage.summary": "sys-usage-summary.schema.json",
     "system.usage.module": "sys-usage-module.schema.json",

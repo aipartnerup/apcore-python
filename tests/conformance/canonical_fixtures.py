@@ -29,6 +29,7 @@ import pytest
 
 __all__ = [
     "fixtures_dir",
+    "schemas_dir",
     "fixture_path",
     "load_fixture",
     "case_ids",
@@ -119,6 +120,41 @@ def fixtures_dir() -> Path:
         f"  1. Set ${_SPEC_REPO_ENV} to the apcore spec repo path\n"
         f"  2. Set ${_FIXTURES_ENV} to a conformance/fixtures directory\n"
         "  3. Check out the apcore spec repo beside apcore-python/"
+    )
+
+
+@lru_cache(maxsize=1)
+def schemas_dir() -> Path:
+    """Return the canonical ``schemas`` directory of the apcore spec repo.
+
+    Deliberately does **not** consult ``CONFORMANCE_FIXTURES``
+    (``docs/spec/conformance.md`` §8.2.1 rule 4): that variable names one
+    directory rather than a repo, so there is nothing to append ``schemas/``
+    to. Four call sites used to reach here as ``fixtures_dir().parent.parent /
+    "schemas"``, which is correct only when the fixtures were resolved through
+    a repo root — set ``CONFORMANCE_FIXTURES`` to a bare directory and they read
+    ``<that directory>/../../schemas``, which is somewhere else entirely.
+    """
+    env_repo = spec_repo_env()
+    if env_repo:
+        name, value = env_repo
+        candidate = Path(value) / "schemas"
+        if candidate.is_dir():
+            return candidate
+        pytest.fail(f"${name}={value} does not contain schemas/.")
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    sibling = repo_root.parent / "apcore" / "schemas"
+    if sibling.is_dir():
+        return sibling
+
+    pytest.fail(
+        "Cannot find the canonical apcore schemas.\n\n"
+        "Fix one of:\n"
+        f"  1. Set ${_SPEC_REPO_ENV} to the apcore spec repo path\n"
+        "  2. Check out the apcore spec repo beside apcore-python/\n\n"
+        f"Note: ${_FIXTURES_ENV} does not help here — it names a fixtures "
+        "directory, not a repo (conformance.md §8.2.1 rule 4)."
     )
 
 
