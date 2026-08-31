@@ -105,6 +105,38 @@ APPROVAL_REQUIRED = "required"
 APPROVAL_NOT_REQUIRED = "not_required"
 _APPROVAL_VALUES: frozenset[str] = frozenset({APPROVAL_REQUIRED, APPROVAL_NOT_REQUIRED})
 
+#: The complete set of values PROTOCOL_SPEC §6.1's field table gives ``effect``
+#: — and ``default_effect``, which §6.1.5 closes on the same terms. One set for
+#: both fields on purpose: they are the same two values one level apart, and two
+#: copies of a value set are two things that drift.
+_EFFECT_VALUES: frozenset[str] = frozenset({"allow", "deny"})
+
+
+def _validate_effect(effect: Any, *, where: str) -> None:
+    """Reject an ``effect`` outside :data:`_EFFECT_VALUES` (§6.1.5, spec v1.30.0).
+
+    One function for all three doors §6.1.6 rule 3 names — file loading, direct
+    construction, runtime insertion. Before spec v1.30.0 this check lived inline
+    in :meth:`ACL.load` and nowhere else, so ``effect: "Allow"`` (the
+    capitalisation an operator writes by hand) failed from a YAML file and was
+    *accepted* through ``ACLRule(...)`` and :meth:`ACL.add_rule` — then read as
+    ``deny`` at check time, which under ``default_effect: allow`` turns a rule
+    written to permit into one that denies everything it matches, silently.
+
+    Args:
+        effect: The rule's ``effect`` value.
+        where: How to name the rule in the message — ``"Rule 3"`` from the
+            loader, ``"ACLRule"`` from direct construction. Same convention as
+            :func:`_validate_approval`; the message is byte-identical to the
+            loader's historical one, which apcore-typescript and apcore-rust
+            also emit.
+
+    Raises:
+        ACLRuleError: When *effect* is not ``"allow"`` or ``"deny"``.
+    """
+    if effect not in _EFFECT_VALUES:
+        raise ACLRuleError(f"{where} has invalid effect '{effect}', must be 'allow' or 'deny'")
+
 
 def _validate_approval(approval: Any, effect: Any, *, where: str) -> None:
     """Enforce §6.1.6 on one rule's ``approval`` / ``effect`` pair.
@@ -148,6 +180,10 @@ class ACLRule:
     this particular call be put to a human before it runs. ``approval`` defaults
     to ``"not_required"``, so every rule written before spec v1.28.0 keeps its
     meaning exactly.
+
+    ``effect`` is ``"allow"`` or ``"deny"`` and nothing else (§6.1.5). The
+    annotation says ``str`` because the field is a string, but the set is closed
+    and enforced here, at every door that accepts a rule.
     """
 
     callers: list[str]
@@ -158,13 +194,18 @@ class ACLRule:
     approval: str = APPROVAL_NOT_REQUIRED
 
     def __post_init__(self) -> None:
-        """Reject the meaningless ``deny`` + ``approval: required`` pair (§6.1.6).
+        """Reject an out-of-enum ``effect`` (§6.1.5) and a meaningless ``deny`` + ``approval`` pair (§6.1.6).
 
         Validated on the dataclass rather than only in :meth:`ACL.load` because
         ``ACL(rules=[...])`` and :meth:`ACL.add_rule` never reach the loader's
         parser — the same door §6.1.1 case 5 and §6.1.4.1 exist for. The loader
         still checks first, so a file fault names the rule's index.
+
+        ``effect`` is checked **before** ``approval`` so that ``effect: "DENY"``
+        with ``approval: required`` reports the value that is actually wrong,
+        rather than a pairing rule read off a value the spec does not recognise.
         """
+        _validate_effect(self.effect, where="ACLRule")
         _validate_approval(self.approval, self.effect, where="ACLRule")
 
 
@@ -823,11 +864,23 @@ class ACL:
 
         Args:
             rules: Ordered list of ACL rules (first match wins). Defaults to [].
-            default_effect: Effect when no rule matches ('allow' or 'deny').
+            default_effect: Effect when no rule matches — ``"allow"`` or
+                ``"deny"``, a closed set (PROTOCOL_SPEC §6.1.5).
             audit_logger: Optional callback invoked with an AuditEntry for
                 every check() call. Useful for structured audit trails.
+
+        Raises:
+            ACLRuleError: When *default_effect* is outside ``allow`` / ``deny``.
+                Each rule in *rules* validated its own ``effect`` when it was
+                constructed, which is the same closed set one level down.
         """
-        if default_effect not in {"allow", "deny"}:
+        # PROTOCOL_SPEC §6.1.5 closes ``default_effect`` on the same terms as a
+        # rule's ``effect``, and this constructor is the only writer —
+        # ``load()`` and ``reload()`` both funnel through here — so the value is
+        # in-enum for the lifetime of the object. Reads _EFFECT_VALUES rather
+        # than an inline literal so the two fields cannot drift on which values
+        # are legal; the message stays as it was for cross-language parity.
+        if default_effect not in _EFFECT_VALUES:
             raise ACLRuleError(
                 f"Invalid default_effect '{default_effect}': must be 'allow' or 'deny'. "
                 "Cross-language parity with apcore-typescript constructor validation (sync A-D-025)."
@@ -935,9 +988,12 @@ class ACL:
             # the other way, and was dropped in silence until #107.
             _reject_unknown_rule_keys(i, raw_rule)
 
+            # PROTOCOL_SPEC §6.1.5. Checked here as well as in
+            # ACLRule.__post_init__ so a file fault names the offending rule's
+            # index, which the dataclass cannot know — the same split
+            # _validate_approval already uses.
             effect = raw_rule["effect"]
-            if effect not in ("allow", "deny"):
-                raise ACLRuleError(f"Rule {i} has invalid effect '{effect}', must be 'allow' or 'deny'")
+            _validate_effect(effect, where=f"Rule {i}")
 
             # PROTOCOL_SPEC §6.1.6. Checked here as well as in ACLRule.__post_init__
             # so a file fault names the offending rule's index, which the
@@ -1271,14 +1327,31 @@ class ACL:
         """
         if matched is not None:
             matched_idx, matched_rule = matched
-            access = "allow" if matched_rule.effect == "allow" else "deny"
+            # PROTOCOL_SPEC §6.1.5: read the effect, do not *resolve* it. This
+            # was ``"allow" if effect == "allow" else "deny"``, which resolved
+            # any other string to a decision — the reading §6.1.5 forbids,
+            # because under ``default_effect: allow`` it flips a rule written to
+            # permit into one that denies everything it matches, with no error.
+            # The value set is closed at every door that accepts a rule, so the
+            # only way to arrive here out of enum is to assign ``rule.effect``
+            # on an already-constructed dataclass. That raises rather than
+            # deciding: an unrecognised effect has no decision, and a raised
+            # ACLRuleError is how this SDK already says "not a rule I can act
+            # on". It is not the §6.1.1 "MUST NOT raise" case, which is about a
+            # condition that could not be *evaluated* — this value could not be
+            # *read*.
+            _validate_effect(matched_rule.effect, where=f"Rule {matched_idx}")
+            access = matched_rule.effect
             approval_required = matched_rule.approval == APPROVAL_REQUIRED
             rule_label: str = matched_rule.description or "(no description)"
             reason = "rule_match"
         else:
             matched_idx = None
             matched_rule = None
-            access = "allow" if default_effect == "allow" else "deny"
+            # Same rule one field up (§6.1.5). No guard is needed here: this
+            # value comes from :meth:`__init__`, which is its only writer and
+            # validates it against the same set.
+            access = default_effect
             approval_required = False
             rule_label = "default"
             reason = "default_effect" if rules_present else "no_rules"
@@ -1637,10 +1710,10 @@ class ACL:
         the posture that field already produces under ``deny``, where an
         unreadable scope denies every call.
 
-        The ``effect == "allow"`` test is not redundant with the caller's
-        ``deny`` branch: :class:`ACLRule` validates the ``approval`` / ``effect``
-        pair but not ``effect`` itself, and :meth:`_finalize_check` reads any
-        other value as ``deny``. Both places must read it the same way.
+        The ``effect == "allow"`` test is the exact complement of the caller's
+        ``deny`` branch, and only because §6.1.5 closed the value set at every
+        door in spec v1.30.0: there is no third value for a rule to carry, so
+        "not deny" and "allow" are now the same question.
         """
         return rule.effect == "allow" and rule.approval == APPROVAL_REQUIRED
 
@@ -1661,7 +1734,8 @@ class ACL:
             rule: Optional pre-built ACLRule.
             callers: Caller pattern(s) if *rule* is None.
             targets: Target pattern(s) if *rule* is None.
-            effect: Rule effect if *rule* is None.
+            effect: ``"allow"`` or ``"deny"`` if *rule* is None — the set is
+                closed (PROTOCOL_SPEC §6.1.5).
             description: Rule description if *rule* is None.
             conditions: Rule conditions if *rule* is None.
             approval: ``"required"`` or ``"not_required"`` (default) if *rule*
@@ -1669,8 +1743,14 @@ class ACL:
                 (PROTOCOL_SPEC §6.1.6).
 
         Raises:
-            ACLRuleError: When ``approval="required"`` is combined with
-                ``effect="deny"``, which §6.1.6 makes meaningless.
+            ACLRuleError: When ``effect`` is outside ``allow`` / ``deny``
+                (§6.1.5), or when ``approval="required"`` is combined with
+                ``effect="deny"``, which §6.1.6 makes meaningless. Runtime
+                insertion is one of the three entry points §6.1.6 rule 3
+                requires both checks at; this method returning ``None`` is not
+                an exemption, so it signals the way Python signals a value that
+                cannot be constructed — :class:`ACLRule` raises, whether it is
+                built here from *callers* / *targets* or handed in pre-built.
 
         Note:
             A condition key with no registered handler warns and does not

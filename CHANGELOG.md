@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.28.0] - 2026-08-31
 
 > **Release note:** this section contains BREAKING changes (input validation now
-> runs for dict-declared schemas, `p99_latency_ms` changes value, and an ACL
-> `deny` rule whose condition cannot be evaluated now denies). It must
+> runs for dict-declared schemas, `p99_latency_ms` changes value, an ACL
+> `deny` rule whose condition cannot be evaluated now denies, and an ACL rule
+> carrying an `effect` outside `allow` / `deny` now fails at construction
+> instead of being read as `deny`). It must
 > ship as a **minor** (or major) version bump, never a patch.
 
 ### Added
@@ -106,6 +108,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`period` on `system.usage.summary` / `system.usage.module` is constrained by the schema (spec v1.14.0 §6.7.1.1, apcore#96).** `input_schema` now declares `"pattern": "^[1-9][0-9]*[hd]$"`, so a malformed value is rejected at input validation with `SCHEMA_VALIDATION_ERROR` rather than reaching `_parse_period`. Previously `"0h"`, `"-5d"` and `"+3h"` were accepted and silently produced an empty or negative window — a report that reads as "no traffic" rather than as bad input — while apcore-typescript rejected all three.
 
 ### Fixed
+
+- **BREAKING: a rule's `effect` accepted any string outside `ACL.load()`, and was silently read as `deny` (spec v1.30.0 §6.1.5, apcore#111).** §6.1's field table says `effect` **MUST** be `allow | deny` and `schemas/acl-config.schema.json` declares the enum, but the check lived inline in the YAML loader and nowhere else. `effect: "Allow"` — the capitalisation an operator writes by hand — therefore failed from a file and was **accepted** through `ACLRule(...)` and `add_rule()`, then read as `deny` at check time, because `_finalize_check` resolved any non-`allow` string to a denial. This is the closed-key-set fix ([apcore#107](https://github.com/aiperceivable/apcore/issues/107)) one level down: there an unknown **key** was dropped in silence, here a legal key's **value** is, in the same silence.
+
+  **Not a privilege escalation** — the fallback resolved toward `deny`, so an unknown value could never grant. It was a silent functional break: under `default_effect: allow`, a rule the operator wrote to permit became a rule that **denied everything it matched**, flipping those decisions with no error, no warning and nothing from `validate_rules()`. On a `deny` rule the reading was only *accidentally* right — correct until someone revisited which way the fallback pointed.
+
+  **The inconsistency was internal as well as cross-language.** This SDK already validated `default_effect` — the same two values one field up — in the `ACL` constructor, so the loader guarded one door, `default_effect` guarded all of them, and a rule's `effect` guarded only the file path. apcore-rust rejected the value at all three doors, so one ACL built in code ran here and could not be constructed there.
+
+  `effect` is now rejected with `ACLRuleError` naming the rule index and the offending value at **every** entry point §6.1.6 rule 3 lists — file loading, direct construction and runtime insertion. One `_validate_effect` helper serves all three, carrying the loader's existing message unchanged (apcore-typescript and apcore-rust emit the same one), because two copies of a value set are two things that drift, which is how the loader came to be the only door that checked. `ACLRule.__post_init__` checks it **before** the `approval` pairing rule, so `effect: "DENY"` with `approval: required` reports the value that is actually wrong. `add_rule()` returning `None` is not an exemption — it raises, the way this SDK already signals an unconstructable rule for the `approval`-on-`deny` pair, on both the pre-built and the kwargs path. `default_effect` reads the same closed set rather than an inline literal, so the two fields cannot drift on which values are legal.
+
+  **The evaluation-time fallback is gone.** `_finalize_check` now *reads* the matched rule's effect instead of resolving it, and raises `ACLRuleError` naming the rule index if it is somehow out of enum — §6.1.5 forbids resolving an unrecognised `effect` to a decision, and with every door closed the only way to arrive there is to assign `rule.effect` on an already-constructed dataclass. This is **not** the §6.1.1 "`check` MUST NOT raise" case, which is about a condition that could not be *evaluated*; this value could not be *read*. `conformance/fixtures/acl_effect_value_closure.json` pins the contract with 10 cases across the three doors; 5 of them fail against the previous behaviour.
+
+  **Breaking for a configuration that was never doing what it said:** code that built an ACL rule with an out-of-enum `effect` used to construct and deny; it now raises at construction.
 
 - **Security: an unevaluable `allow` rule discarded the `approval: required` it carried, and a broader rule granted the call unapproved (spec v1.29.0 §6.1.1 rule 5 / §6.8.1 / §6.9 rows 1-2, apcore#109).** §6.1.1 was written when a rule carried one axis, and "an `allow` rule MUST NOT grant" was then a complete instruction: the rule steps aside, and stepping aside was harmless because whatever granted next also said `allow`. The `approval` field above gives a rule a **second** axis, and "does not grant" silently discarded it — so on exactly the shape argument-scoped approval exists for, a narrow approval rule ahead of a broad allow, the gate stepped aside, the broad rule granted, and `git push --force` ran with `approval_required: False` and `matched_rule_index` naming a rule that never mentioned approval. The requirement was not overridden, argued with, or logged away; it ceased to exist.
 
