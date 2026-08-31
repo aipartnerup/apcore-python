@@ -91,7 +91,13 @@ class ModuleAnnotations:
         readonly: Whether the module only reads data (no side effects).
         destructive: Whether the module may irreversibly modify data.
         idempotent: Whether repeated calls produce the same result.
-        requires_approval: Whether human approval is needed before execution.
+        requires_approval: Whether THIS MODULE requires human approval before
+            execution. A module-level declaration, NOT the governance-effective
+            value: ``False`` means this module asks for none, which does not mean
+            none will be required. An ACL rule (PROTOCOL_SPEC §6.1.6), an
+            ``ExecutionPolicy`` override or ``gate_destructive`` may require one
+            for a particular call (§6.9 rows 3-5). The effective value is call-site
+            dependent — read it from :meth:`Executor.validate` (§7.9.5).
         open_world: Whether the module interacts with external systems.
         streaming: Whether the module supports streaming execution.
         cacheable: Whether the module's results can be cached.
@@ -266,7 +272,14 @@ class PreflightResult:
     Attributes:
         valid: True only if all checks passed.
         checks: Per-step check results.
-        requires_approval: True if the module has requires_approval annotation.
+        requires_approval: The GOVERNANCE-EFFECTIVE requirement for this call
+            (PROTOCOL_SPEC §7.9.5) — the union of the module annotation, an ACL
+            rule carrying ``approval``, an ``ExecutionPolicy`` override and
+            ``gate_destructive`` (§6.9 rows 3-5). NOT the annotation alone: since
+            spec v1.28.0 a module declaring ``requires_approval=False`` still
+            reports ``True`` here when the ACL requires a human for the arguments
+            this call carries. That union is by construction the same verdict the
+            approval gate will enforce.
         predicted_changes: Optional structured prediction of state changes the
             call would produce. Populated when ``Executor.validate()`` runs
             against a module that implements ``preview()`` and the method
