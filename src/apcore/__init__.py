@@ -17,7 +17,7 @@ from apcore.approval import (
     CallbackApprovalHandler,
 )
 from apcore.cancel import CancelToken, ExecutionCancelledError
-from apcore.context import Context, ContextFactory, Identity
+from apcore.context import Context, ContextFactory, GovernanceProjection, Identity
 from apcore.context_key import ContextKey
 from apcore.context_keys import (
     LOGGING_START,
@@ -142,7 +142,14 @@ from apcore.errors import (
 )
 
 # ACL
-from apcore.acl import ACL, ACLRule, AuditEntry, ConditionOutcome, RuleValidationFinding
+from apcore.acl import (
+    ACL,
+    AccessDecision,
+    ACLRule,
+    AuditEntry,
+    ConditionOutcome,
+    RuleValidationFinding,
+)
 
 # Execution-time governance policy (apcore#76 RFC pilot)
 from apcore.policy import ExecutionPolicy, PolicyDecision, PolicyRule
@@ -585,6 +592,7 @@ __all__ = [
     "LOGGING_START",
     "REDACTED_OUTPUT",
     "RETRY_COUNT_BASE",
+    "GovernanceProjection",
     "Identity",
     "Registry",
     "Executor",
@@ -722,6 +730,7 @@ __all__ = [
     # ACL
     "ACL",
     "ACLRule",
+    "AccessDecision",
     "AuditEntry",
     "ConditionOutcome",
     "RuleValidationFinding",

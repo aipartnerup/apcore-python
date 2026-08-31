@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, runtime_checkable
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Generic, Mapping, Protocol, TypeVar, runtime_checkable
 
 from apcore.cancel import CancelToken
 
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
     from apcore.trace_context import TraceParent
 
 
-__all__ = ["Context", "Identity", "ContextFactory"]
+__all__ = ["Context", "Identity", "ContextFactory", "GovernanceProjection"]
 
 T = TypeVar("T")
 
@@ -45,6 +46,95 @@ class Identity:
         return self.attrs.get(key, default)
 
 
+#: The framework-owned approval token (PROTOCOL_SPEC §7.4). Excluded from the
+#: governance projection: it is a protocol-level key, not caller input, and its
+#: presence is the one difference between a call and its ``_approval_token``
+#: resume. §7.4's resume semantics re-enter the pipeline from Step 1, so a
+#: projection that carried the token would let the ACL reach a *different*
+#: Step 4 verdict on the resume than on the call a human just approved.
+_APPROVAL_TOKEN_KEY = "_approval_token"
+
+
+def _json_type(value: Any) -> str:
+    """Name *value*'s JSON Schema type, without reading the value itself.
+
+    ``bool`` is tested before ``int`` because Python's ``bool`` is a subclass of
+    ``int``; the other way round every flag would be reported as an integer.
+    A value with no JSON counterpart is ``"unknown"`` rather than a plausible
+    guess — the arguments reaching Step 4 have not been schema-validated
+    (§6.1.7), so they may hold anything at all.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (list, tuple)):
+        return "array"
+    if isinstance(value, Mapping):
+        return "object"
+    return "unknown"
+
+
+@dataclass(frozen=True)
+class GovernanceProjection:
+    """The argument view a governance decision is allowed to see (§6.1.8).
+
+    Computed during module lookup (Step 3) and carried to the ACL check
+    (Step 4), where the built-in ``arguments`` condition (§6.1.7) reads it.
+    It carries the argument **key set** and each key's JSON type, and it
+    **cannot** carry a value: there is no field for one. A projection that
+    structurally cannot hold a value cannot leak one, whatever a future
+    predicate does with it.
+
+    It is deliberately **not** :attr:`Context.redacted_inputs`, which §6.1.8
+    rule 3 forbids substituting. ``redacted_inputs`` is documented as safe
+    *logging*, and it is a raw copy of the inputs when the module declares no
+    input schema — one field serving both "safe to log" and "input to a
+    security decision" will eventually break one of them in a change made for
+    the other.
+
+    Attributes:
+        keys: The argument keys present on this call.
+        types: Each key's JSON Schema type name — ``"string"``, ``"integer"``,
+            ``"number"``, ``"boolean"``, ``"array"``, ``"object"``, ``"null"``,
+            or ``"unknown"`` for a value with no JSON counterpart.
+    """
+
+    keys: frozenset[str]
+    types: Mapping[str, str]
+
+    @classmethod
+    def of(cls, arguments: Mapping[str, Any] | None) -> GovernanceProjection:
+        """Project *arguments* down to keys and types, discarding every value.
+
+        ``_approval_token`` is dropped: see :data:`_APPROVAL_TOKEN_KEY`. A
+        non-string key is dropped too — ACL predicates name keys as strings, so
+        a key that cannot be named is a key no rule can be written about.
+        """
+        if not isinstance(arguments, Mapping):
+            return cls(keys=frozenset(), types=MappingProxyType({}))
+        types = {
+            key: _json_type(value)
+            for key, value in arguments.items()
+            if isinstance(key, str) and key != _APPROVAL_TOKEN_KEY
+        }
+        return cls(keys=frozenset(types), types=MappingProxyType(types))
+
+    def has(self, key: str) -> bool:
+        """Whether *key* was present in the call's arguments."""
+        return key in self.keys
+
+    def type_of(self, key: str) -> str | None:
+        """The JSON type of *key*, or None when the key was absent."""
+        return self.types.get(key)
+
+
 @dataclass
 class Context(Generic[T]):
     """Module execution context."""
@@ -60,6 +150,11 @@ class Context(Generic[T]):
     services: T = None  # type: ignore[assignment]
     cancel_token: CancelToken | None = None
     global_deadline: float | None = field(default=None, repr=False)
+    # PROTOCOL_SPEC §6.1.8. Set by pipeline Step 3 (module lookup) and read by
+    # the ACL check at Step 4; None outside a pipeline run, which makes the
+    # `arguments` condition unevaluable rather than vacuously true (§6.1.1).
+    # Transient like `executor` and `services`: not serialized.
+    governance_projection: GovernanceProjection | None = field(default=None, repr=False)
 
     @classmethod
     def create(

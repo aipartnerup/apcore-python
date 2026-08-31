@@ -15,7 +15,7 @@ key.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Awaitable, Callable, ClassVar, Protocol, Union, runtime_checkable
+from typing import Any, Awaitable, Callable, ClassVar, Mapping, Protocol, Union, runtime_checkable
 
 from apcore.context import Context
 
@@ -167,6 +167,98 @@ class _MaxCallDepthHandler:
         elif not isinstance(threshold, int):
             return False
         return len(context.call_chain) <= threshold
+
+
+#: The complete predicate vocabulary of the ``arguments`` condition
+#: (PROTOCOL_SPEC §6.1.7). Closed for the same reason §6.1.5 closes the rule key
+#: set: a predicate nothing evaluates would be dropped, and an ``arguments``
+#: block whose only predicate was dropped is vacuously true — which widens an
+#: ``allow`` rule in silence.
+ARGUMENT_PREDICATES: frozenset[str] = frozenset({"has_key", "has_all_keys", "has_none_of"})
+
+
+def validate_arguments_condition(value: Any) -> str | None:
+    """Structurally validate an ``arguments`` condition value (§6.1.7).
+
+    Context-independent and value-free, so §6.1.4's precheck can run it before
+    any handler and produce the same finding in every implementation.
+
+    Returns:
+        None when the value is well-formed, otherwise a reason string naming the
+        fault. A fault makes the condition UNEVALUABLE (§6.1.1), never false:
+        ``has_key: "force"`` written for ``has_key: ["force"]`` asks no question
+        the implementation can answer, and answering "no" would put an
+        ``allow`` rule's ``has_none_of`` typo back into the silently-inert state
+        §6.1.1 exists to end.
+    """
+    if not isinstance(value, Mapping):
+        return f"arguments value must be a mapping, got {type(value).__name__}"
+    if not value:
+        # Fail-closed for the reason §6.1 gives an empty `$not`: a predicate
+        # block that constrains nothing asks no question, and reading it as
+        # "satisfied" would make an `allow` rule carrying it grant on every
+        # call — which is precisely what an author who deleted the last
+        # predicate by accident did not mean.
+        return "arguments block is empty; it constrains nothing and asks no question"
+    unknown = sorted(set(value) - ARGUMENT_PREDICATES)
+    if unknown:
+        return (
+            f"unknown arguments predicate(s) {', '.join(repr(k) for k in unknown)}; "
+            f"the vocabulary is closed ({', '.join(sorted(ARGUMENT_PREDICATES))})"
+        )
+    for predicate, names in value.items():
+        # A bare string is iterable, so `has_key: "force"` would otherwise be
+        # read character by character — the §6.1.4.1 failure one level down.
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            return f"arguments.{predicate} must be a list of strings, got {type(names).__name__}"
+    return None
+
+
+class _ArgumentsHandler:
+    """The built-in ``arguments`` condition (PROTOCOL_SPEC §6.1.7).
+
+    Structure-only. ``has_key`` passes when **any** named key is present,
+    ``has_all_keys`` when **every** one is, ``has_none_of`` when **none** is;
+    several predicates in one block are AND-ed like any other condition object.
+    No predicate reads a value, and that is a design constraint rather than a
+    first cut: the argument view here is not reliably redacted, and the
+    arguments have not been schema-validated (the ACL is Step 4, validation is
+    Step 7), so key presence is the one question well-defined on what is
+    available.
+
+    It is **built-in with no registration point**: a deployment-registered
+    argument handler would be exactly the unauditable host code §7.9.6 rule 2
+    keeps out of a governance verdict, and a fixed vocabulary keeps the decision
+    reproducible from the ACL document.
+
+    It reads :attr:`~apcore.context.Context.governance_projection` (§6.1.8), not
+    the raw arguments and not ``redacted_inputs``. An absent projection is
+    UNEVALUABLE, never "no arguments": treating it as an empty key set would
+    make ``has_none_of`` vacuously true, and an ``allow`` rule gated on
+    ``has_none_of`` would then grant on every call made through an entry point
+    that populates no projection.
+    """
+
+    def evaluate(self, value: Any, context: Context) -> ConditionOutcome:
+        reason = validate_arguments_condition(value)
+        if reason is not None:
+            return ConditionOutcome.UNEVALUABLE
+
+        projection = getattr(context, "governance_projection", None)
+        if projection is None:
+            return ConditionOutcome.UNEVALUABLE
+        present = projection.keys
+
+        for predicate, names in value.items():
+            if predicate == "has_key":
+                satisfied = any(name in present for name in names)
+            elif predicate == "has_all_keys":
+                satisfied = all(name in present for name in names)
+            else:  # has_none_of — the vocabulary is closed and validated above
+                satisfied = not any(name in present for name in names)
+            if not satisfied:
+                return ConditionOutcome.UNSATISFIED
+        return ConditionOutcome.SATISFIED
 
 
 # ---------------------------------------------------------------------------

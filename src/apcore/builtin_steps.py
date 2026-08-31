@@ -21,7 +21,7 @@ import pydantic
 
 from apcore.approval import ApprovalRequest, ApprovalResult
 from apcore.cancel import ExecutionCancelledError
-from apcore.context import Context
+from apcore.context import Context, GovernanceProjection
 from apcore.errors import (
     ACLDeniedError,
     ApprovalDeniedError,
@@ -275,6 +275,20 @@ class BuiltinModuleLookup(BaseStep):
                 # downstream consumers don't see None.
                 ctx.context.redacted_inputs = dict(ctx.inputs)
 
+        # PROTOCOL_SPEC §6.1.8: the governance projection is computed HERE, at
+        # Step 3, and made available to the ACL check at Step 4. The ordering is
+        # normative rather than an implementation detail that happens to hold —
+        # the `arguments` condition (§6.1.7) has nothing to read otherwise.
+        #
+        # It is deliberately NOT `redacted_inputs`, three lines above. That
+        # field's contract is safe *logging*, and the branch just taken shows
+        # exactly why §6.1.8 rule 3 forbids substituting it: with no input
+        # schema it is a raw copy of the arguments, values and all. The
+        # projection carries the key set and each key's JSON type and has no
+        # field a value could live in.
+        if ctx.context is not None and hasattr(ctx.context, "governance_projection"):
+            ctx.context.governance_projection = GovernanceProjection.of(ctx.inputs)
+
         return StepResult(action="continue")
 
 
@@ -308,11 +322,16 @@ class BuiltinACLCheck(BaseStep):
 
         caller_id = getattr(ctx.context, "caller_id", "anonymous")
 
-        # Try async_check first, fall back to sync check
-        if hasattr(self._acl, "async_check"):
-            allowed = await self._acl.async_check(caller_id, ctx.module_id, ctx.context)
-        else:
-            allowed = self._acl.check(caller_id, ctx.module_id, ctx.context)
+        # PROTOCOL_SPEC §6.8.1: Step 4 produces TWO results, so this step reads
+        # the structured accessor and not the boolean. The boolean deliberately
+        # fails closed on an approval requirement — right for a tooling caller,
+        # wrong here, because it would turn "ask a human" into a flat denial and
+        # the approval gate at Step 5 would never see the requirement at all.
+        #
+        # The fallbacks keep a custom ACL object working: one that predates the
+        # structured accessor simply contributes no approval requirement.
+        allowed, approval_required = await self._decide(caller_id, ctx)
+        ctx.acl_approval_required = approval_required
 
         if not allowed:
             # Publish a governance event on denial (canonical name proposed in
@@ -322,6 +341,28 @@ class BuiltinACLCheck(BaseStep):
             self._emit_denied(caller_id, ctx.module_id, ctx.context, ctx.dry_run)
             raise ACLDeniedError(caller_id=caller_id, target_id=ctx.module_id)
         return StepResult(action="continue")
+
+    async def _decide(self, caller_id: str, ctx: PipelineContext) -> tuple[bool, bool]:
+        """Resolve the ACL to ``(allowed, approval_required)``.
+
+        Prefers the structured accessors of PROTOCOL_SPEC §6.8.1, async first,
+        and falls back to the legacy booleans for an ACL object that has none.
+        On the legacy path ``approval_required`` is False: the boolean cannot
+        carry it, and inferring one would be inventing governance.
+        """
+        access = getattr(self._acl, "async_check_access", None)
+        if callable(access):
+            decision = await access(caller_id, ctx.module_id, ctx.context)
+            return decision.access == "allow", bool(decision.approval_required)
+
+        access = getattr(self._acl, "check_access", None)
+        if callable(access):
+            decision = access(caller_id, ctx.module_id, ctx.context)
+            return decision.access == "allow", bool(decision.approval_required)
+
+        if hasattr(self._acl, "async_check"):
+            return bool(await self._acl.async_check(caller_id, ctx.module_id, ctx.context)), False
+        return bool(self._acl.check(caller_id, ctx.module_id, ctx.context)), False
 
     def _emit_denied(self, caller_id: str, module_id: str, ctx: Context, dry_run: bool) -> None:
         """Emit ``apcore.acl.denied`` on the event bus (apcore#77) when live."""
@@ -439,6 +480,13 @@ class BuiltinApprovalGate(BaseStep):
         # which extracts it as the first statement of execute().
         approval_token = self._take_approval_token(ctx)
 
+        # PROTOCOL_SPEC §6.1.6 / §7.4: Step 4's second result. The gate fires on
+        # the UNION of the module annotation, this, and gate_destructive (§6.9
+        # rows 3-5) — an implementation that reads only the annotation silently
+        # ignores every ACL rule carrying `approval`: the rule loads, matches,
+        # and does nothing.
+        acl_requires_approval = bool(getattr(ctx, "acl_approval_required", False))
+
         decision: PolicyDecision | None = None
         if self._policy is not None:
             # PROTOCOL_SPEC §7.9.6: policy resolution receives the call site.
@@ -455,12 +503,20 @@ class BuiltinApprovalGate(BaseStep):
                 arguments=ctx.inputs,
                 context=ctx.context,
             )
-            needs_approval = decision.needs_approval
+            # §6.9 row 4: a policy may ADD an approval requirement and MUST NOT
+            # remove one the ACL set. The ACL is a caller-scoped authorization
+            # layer; ExecutionPolicy is a module-scoped platform override, and
+            # letting the module-scoped one cancel the caller-scoped one is a
+            # privilege escalation — a policy rule written for `orders.*` would
+            # silently strip a requirement an ACL author attached to one
+            # untrusted caller. Union is the only safe composition, so the OR
+            # here is load-bearing and not a convenience.
+            needs_approval = decision.needs_approval or acl_requires_approval
             effective_destructive = decision.destructive
             if decision.overridden:
                 self._emit_policy_audit(decision, ctx.context)
         else:
-            needs_approval = _module_requires_approval(module)
+            needs_approval = _module_requires_approval(module) or acl_requires_approval
             effective_destructive = _module_is_destructive(module)
 
         if not needs_approval:
@@ -501,18 +557,18 @@ class BuiltinApprovalGate(BaseStep):
             result = await self._handler.check_approval(approval_token)
         else:
             annotations = _coerce_annotations(getattr(module, "annotations", None))
-            if decision is not None:
-                # Preserve the ApprovalRequest contract ("requires_approval is
-                # guaranteed true", PROTOCOL_SPEC §7) under policy overrides:
-                # the handler sees the effective governance values, not the
-                # module's raw declaration. Reaching this point means the call
-                # needs approval, so requires_approval is true by definition
-                # (covers both rule overrides and gate_destructive).
-                annotations = dataclasses.replace(
-                    annotations,
-                    requires_approval=True,
-                    destructive=decision.destructive,
-                )
+            # Preserve the ApprovalRequest contract ("requires_approval is
+            # guaranteed true", PROTOCOL_SPEC §7.3 / §7.9.3): the handler sees
+            # the EFFECTIVE governance values, not the module's raw
+            # declaration. Reaching this point means the call needs approval,
+            # so requires_approval is true by definition — whether the source
+            # was the annotation, a policy rule, gate_destructive, or (since
+            # spec v1.28.0) an ACL rule carrying `approval` (§7.4 rule 3).
+            annotations = dataclasses.replace(
+                annotations,
+                requires_approval=True,
+                destructive=effective_destructive,
+            )
             request = ApprovalRequest(
                 module_id=ctx.module_id,
                 arguments=ctx.inputs,

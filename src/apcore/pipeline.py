@@ -107,6 +107,12 @@ class PipelineContext:
     executed_middlewares: list[Any] = field(default_factory=list)
     # New in v0.20
     run_until: Callable[[PipelineState], bool] | None = None
+    # PROTOCOL_SPEC §6.1.6 / §7.4: the second half of Step 4's result. The ACL
+    # answers two independent questions, and Step 5's approval gate fires on the
+    # union of this, the module annotation and gate_destructive (§6.9 rows 3-5).
+    # False when no ACL is attached, when no rule matched, or when the attached
+    # ACL is an older object with no structured accessor.
+    acl_approval_required: bool = False
 
 
 @dataclass

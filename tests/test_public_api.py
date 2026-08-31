@@ -467,6 +467,7 @@ class TestPublicAPIAll:
         "Context",
         "ContextFactory",
         "ContextKey",
+        "GovernanceProjection",
         "Identity",
         "Registry",
         "Executor",
@@ -578,6 +579,7 @@ class TestPublicAPIAll:
         # ACL
         "ACL",
         "ACLRule",
+        "AccessDecision",
         "AuditEntry",
         "ConditionOutcome",
         "RuleValidationFinding",

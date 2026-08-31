@@ -23,6 +23,7 @@ from apcore.acl_handlers import (
     ConditionOutcome,
     ROOT_CONDITION_PATH,
     _as_outcome,
+    _ArgumentsHandler,
     _IdentityTypesHandler,
     _MaxCallDepthHandler,
     _NotHandler,
@@ -31,6 +32,7 @@ from apcore.acl_handlers import (
     _OrHandlerAsync,
     _RolesHandler,
     join_condition_path,
+    validate_arguments_condition,
 )
 from apcore.config import Config
 from apcore.context import Context
@@ -38,6 +40,7 @@ from apcore.errors import ACLRuleError, ConfigNotFoundError
 from apcore.utils.pattern import match_pattern
 
 __all__ = [
+    "AccessDecision",
     "ACLRule",
     "AuditEntry",
     "ACL",
@@ -97,12 +100,55 @@ def _handler_error_message() -> str | None:
     return "; ".join(errors[path] for path in sorted(errors))
 
 
+#: The two values PROTOCOL_SPEC §6.1.6 gives the ``approval`` rule field.
+APPROVAL_REQUIRED = "required"
+APPROVAL_NOT_REQUIRED = "not_required"
+_APPROVAL_VALUES: frozenset[str] = frozenset({APPROVAL_REQUIRED, APPROVAL_NOT_REQUIRED})
+
+
+def _validate_approval(approval: Any, effect: Any, *, where: str) -> None:
+    """Enforce §6.1.6 on one rule's ``approval`` / ``effect`` pair.
+
+    Authorization and the approval requirement are two independent results, so
+    a rule carries both — but ``approval: required`` on a ``deny`` rule names a
+    state that means nothing ("denied *and* put it to a human"), and acting on
+    half of a governance rule is the failure mode §6.1.5 was written to end.
+
+    Args:
+        approval: The rule's ``approval`` value.
+        effect: The rule's ``effect`` value.
+        where: How to name the rule in the message — ``"Rule 3"`` from the
+            loader, ``"ACLRule"`` from direct construction.
+
+    Raises:
+        ACLRuleError: On an unknown value or on ``required`` with ``deny``.
+    """
+    if approval not in _APPROVAL_VALUES:
+        raise ACLRuleError(
+            f"{where} has invalid approval {approval!r}, must be "
+            f"{APPROVAL_REQUIRED!r} or {APPROVAL_NOT_REQUIRED!r}"
+        )
+    if approval == APPROVAL_REQUIRED and effect == "deny":
+        raise ACLRuleError(
+            f"{where} carries approval: {APPROVAL_REQUIRED} on a 'deny' rule. The combination has "
+            "no meaning — a refusal is not a question — and PROTOCOL_SPEC §6.1.6 requires it to be "
+            "rejected rather than half-applied. Use effect: allow with approval: required to ask a "
+            "human, or effect: deny to refuse outright."
+        )
+
+
 @dataclass
 class ACLRule:
     """A single access control rule.
 
     Rules are evaluated in order by the ACL system. Each rule specifies
     caller patterns, target patterns, and an effect (allow/deny).
+
+    ``effect`` and ``approval`` answer two **independent** questions
+    (PROTOCOL_SPEC §6.1.6): may this caller reach this target at all, and must
+    this particular call be put to a human before it runs. ``approval`` defaults
+    to ``"not_required"``, so every rule written before spec v1.28.0 keeps its
+    meaning exactly.
     """
 
     callers: list[str]
@@ -110,13 +156,27 @@ class ACLRule:
     effect: str
     description: str = ""
     conditions: dict[str, Any] | None = None
+    approval: str = APPROVAL_NOT_REQUIRED
+
+    def __post_init__(self) -> None:
+        """Reject the meaningless ``deny`` + ``approval: required`` pair (§6.1.6).
+
+        Validated on the dataclass rather than only in :meth:`ACL.load` because
+        ``ACL(rules=[...])`` and :meth:`ACL.add_rule` never reach the loader's
+        parser — the same door §6.1.1 case 5 and §6.1.4.1 exist for. The loader
+        still checks first, so a file fault names the rule's index.
+        """
+        _validate_approval(self.approval, self.effect, where="ACLRule")
 
 
 #: The complete set of keys an ACL rule may carry (PROTOCOL_SPEC §6.1).
 #: Closed on purpose: a key nothing evaluates is otherwise dropped in silence,
-#: which widens an ``allow`` rule with no warning (#107).
+#: which widens an ``allow`` rule with no warning (#107). ``approval`` joined
+#: the set in spec v1.28.0 (§6.1.6) — adding it was only safe *because* the set
+#: was closed first, since an SDK that still dropped unknown keys would read a
+#: ``deny``-with-``approval`` rule as a bare rule and act on half of it.
 _RULE_KEYS: frozenset[str] = frozenset(
-    {"callers", "targets", "effect", "description", "conditions"}
+    {"callers", "targets", "effect", "description", "conditions", "approval"}
 )
 
 #: Reserved in earlier revisions of §6.1 and evaluated by no implementation.
@@ -172,6 +232,46 @@ class AuditEntry:
     # fact. Several unevaluable conditions in one check are joined with "; " in
     # lexicographic order of condition key.
     handler_error: str | None = None
+    # PROTOCOL_SPEC §6.3.1: whether the matched rule required this call to be
+    # put to a human (§6.1.6). False when no rule matched or the matched rule
+    # required none. Added **beside** ``decision`` rather than widening it:
+    # ``decision`` is a string downstream consumers parse, and a third value
+    # would break every existing parser.
+    approval_required: bool = False
+
+
+@dataclass(frozen=True)
+class AccessDecision:
+    """The structured result of an ACL check (PROTOCOL_SPEC §6.8.1).
+
+    A boolean can carry authorization but not the second axis of §6.1.6, so the
+    structured accessors :meth:`ACL.check_access` and
+    :meth:`ACL.async_check_access` return this instead. The boolean entry points
+    are kept and unchanged in name.
+
+    Attributes:
+        access: ``"allow"`` or ``"deny"`` — the authorization verdict, with the
+            same semantics the boolean always had.
+        approval_required: Whether **this call** must be put to a human before
+            it runs. Only ever true alongside ``access == "allow"``: §6.1.6
+            rejects the other combination at load.
+        matched_rule_index: Index of the deciding rule in definition order, or
+            None when the decision came from ``default_effect``.
+        reason: ``"rule_match"``, ``"default_effect"`` or ``"no_rules"`` — which
+            branch of §6.3 produced the decision.
+
+    Note:
+        ``access == "allow"`` is **not** the legacy boolean. A call that is
+        allowed but needs approval makes :meth:`ACL.check` return ``False``
+        (§6.8.1), because a non-Executor caller can only read a boolean as "let
+        it through". Read :attr:`access` and :attr:`approval_required`
+        separately, or call ``check()`` and accept its fail-closed answer.
+    """
+
+    access: str
+    approval_required: bool = False
+    matched_rule_index: int | None = None
+    reason: str = "default_effect"
 
 
 @dataclass(frozen=True)
@@ -254,6 +354,15 @@ class ACL:
         "identity_types": _IdentityTypesHandler(),
         "roles": _RolesHandler(),
         "max_call_depth": _MaxCallDepthHandler(),
+        # PROTOCOL_SPEC §6.1.7: `arguments` is built-in, and registered here
+        # beside the other built-ins rather than through a new registration
+        # point — `register_condition` writes runtime code into a process-wide
+        # registry, and a deployment-registered argument handler is exactly the
+        # unauditable host code §7.9.6 rule 2 keeps out of a governance verdict.
+        # Being an ordinary registry entry also means §6.1.4's precheck covers
+        # it for free: `argument:` written for `arguments:` is an unregistered
+        # key, so the rule is unevaluable rather than silently inert.
+        "arguments": _ArgumentsHandler(),
     }
 
     # Async condition handlers: used by _evaluate_conditions_async for compound
@@ -593,6 +702,18 @@ class ACL:
                     )
                     continue
                 faults.extend(cls._precheck_conditions(value, async_path=async_path, path_prefix=path))
+            elif key == "arguments":
+                # §6.1.7's vocabulary is closed and its predicate values are
+                # lists of strings, both of which are decidable without a
+                # context and without running the handler — so they belong in
+                # the precheck, where the finding is a pure function of the rule
+                # and identical across implementations (§6.1.4 determinism).
+                # Attached to the `arguments` key, like a malformed `$or` value:
+                # the flags stay False because a structural fault resolves on
+                # neither evaluation path, however well registered the key is.
+                reason = validate_arguments_condition(value)
+                if reason is not None:
+                    faults.append(_Fault(path=path, key=key, reason=reason))
             else:
                 sync_resolvable = key in cls._condition_handlers
                 async_resolvable = sync_resolvable or key in cls._async_condition_handlers
@@ -822,6 +943,12 @@ class ACL:
             if effect not in ("allow", "deny"):
                 raise ACLRuleError(f"Rule {i} has invalid effect '{effect}', must be 'allow' or 'deny'")
 
+            # PROTOCOL_SPEC §6.1.6. Checked here as well as in ACLRule.__post_init__
+            # so a file fault names the offending rule's index, which the
+            # dataclass cannot know.
+            approval = raw_rule.get("approval", APPROVAL_NOT_REQUIRED)
+            _validate_approval(approval, effect, where=f"Rule {i}")
+
             callers = raw_rule["callers"]
             if not isinstance(callers, list):
                 raise ACLRuleError(f"Rule {i} 'callers' must be a list, got {type(callers).__name__}")
@@ -845,6 +972,7 @@ class ACL:
                     effect=effect,
                     description=raw_rule.get("description", ""),
                     conditions=raw_conditions,
+                    approval=approval,
                 )
             )
 
@@ -932,13 +1060,46 @@ class ACL:
         non-null ``handler_error`` naming the key and the reason. An unevaluable
         condition never raises out of this method.
 
+        **This boolean fails closed on an approval requirement** (§6.8.1): a
+        rule resolving to ``allow`` with ``approval: required`` returns
+        ``False`` here, because a boolean can only be read as "let it through /
+        do not" and letting it through would run a call the ACL said needed a
+        human. Callers that need the two axes apart use :meth:`check_access`.
+
         Args:
             caller_id: The calling module ID, or None for external calls.
             target_id: The target module ID being called.
             context: Optional execution context for conditional rules.
 
         Returns:
-            True if the call is allowed, False if denied.
+            True if the call is allowed, False if denied **or if it is allowed
+            but requires approval** — see :meth:`check_access`.
+        """
+        return self._as_legacy_boolean(self.check_access(caller_id, target_id, context))
+
+    def check_access(
+        self,
+        caller_id: str | None,
+        target_id: str,
+        context: Context | None = None,
+    ) -> AccessDecision:
+        """Resolve a call to a structured :class:`AccessDecision` (PROTOCOL_SPEC §6.8.1).
+
+        An ACL rule answers two independent questions (§6.1.6) — may this caller
+        reach this target at all, and must this particular call be put to a
+        human before it runs. :meth:`check` can carry only the first, so this is
+        the accessor the Executor uses. Emits exactly one audit entry, like
+        :meth:`check`; the two are the same decision reported at different
+        widths, not two decisions.
+
+        Args:
+            caller_id: The calling module ID, or None for external calls.
+            target_id: The target module ID being called.
+            context: Optional execution context for conditional rules.
+
+        Returns:
+            An :class:`AccessDecision` carrying ``access``,
+            ``approval_required``, ``matched_rule_index`` and ``reason``.
         """
         effective_caller, rules, default_effect, audit_logger = self._snapshot(caller_id)
 
@@ -970,6 +1131,24 @@ class ACL:
         finally:
             _handler_error_var.reset(token)
 
+    @staticmethod
+    def _as_legacy_boolean(decision: AccessDecision) -> bool:
+        """Collapse an :class:`AccessDecision` to the legacy boolean, failing closed.
+
+        PROTOCOL_SPEC §6.8.1: a rule resolving to ``allow`` with
+        ``approval_required: true`` MUST make :meth:`check` return ``False``.
+
+        ``check()`` is public API consumed by callers that are not the Executor
+        — tooling, preflight helpers, third-party integrations — and such a
+        caller can only read a boolean as "let it through / do not". Returning
+        True would run a call the ACL said needed a human. False is wrong in the
+        benign direction: the caller sees a refusal where the truth was "ask
+        first". The Executor reads :meth:`check_access` and is unaffected, and a
+        legacy caller only meets this at all once an operator has authored a
+        rule carrying ``approval``.
+        """
+        return decision.access == "allow" and not decision.approval_required
+
     async def async_check(
         self,
         caller_id: str | None,
@@ -989,7 +1168,22 @@ class ACL:
             context: Optional execution context for conditional rules.
 
         Returns:
-            True if the call is allowed, False if denied.
+            True if the call is allowed, False if denied **or if it is allowed
+            but requires approval** — see :meth:`async_check_access`.
+        """
+        return self._as_legacy_boolean(await self.async_check_access(caller_id, target_id, context))
+
+    async def async_check_access(
+        self,
+        caller_id: str | None,
+        target_id: str,
+        context: Context | None = None,
+    ) -> AccessDecision:
+        """Async :meth:`check_access` (PROTOCOL_SPEC §6.8.1).
+
+        Same structured result and the same single audit entry; the async
+        condition registry is consulted first, exactly as in
+        :meth:`async_check`.
         """
         effective_caller, rules, default_effect, audit_logger = self._snapshot(caller_id)
 
@@ -1039,30 +1233,38 @@ class ACL:
         matched: tuple[int, ACLRule] | None,
         audit_logger: Callable[[AuditEntry], None] | None,
         context: Context | None,
-    ) -> bool:
-        """Log the decision, emit an audit entry, and return the boolean result.
+    ) -> AccessDecision:
+        """Log the decision, emit an audit entry, and return the structured result.
 
-        Shared by both check() and async_check() so that audit + logging logic
-        lives in exactly one place.
+        Shared by both check_access() and async_check_access() so that audit +
+        logging logic lives in exactly one place.
+
+        The approval requirement comes from the matched rule and from nowhere
+        else (PROTOCOL_SPEC §6.9 rows 1-2): there is no default approval
+        requirement, so no match means ``False``. A ``deny`` rule can never
+        carry one — §6.1.6 rejects that pair at construction.
         """
         if matched is not None:
             matched_idx, matched_rule = matched
-            decision = matched_rule.effect == "allow"
+            access = "allow" if matched_rule.effect == "allow" else "deny"
+            approval_required = matched_rule.approval == APPROVAL_REQUIRED
             rule_label: str = matched_rule.description or "(no description)"
             reason = "rule_match"
         else:
             matched_idx = None
             matched_rule = None
-            decision = default_effect == "allow"
+            access = "allow" if default_effect == "allow" else "deny"
+            approval_required = False
             rule_label = "default"
             reason = "default_effect" if rules_present else "no_rules"
 
         self._logger.debug(
-            "ACL %s: caller_id=%s target_id=%s decision=%s rule=%s",
+            "ACL %s: caller_id=%s target_id=%s decision=%s approval_required=%s rule=%s",
             log_method,
             caller_id,
             target_id,
-            "allow" if decision else "deny",
+            access,
+            approval_required,
             rule_label,
         )
 
@@ -1071,15 +1273,21 @@ class ACL:
                 self._build_audit_entry(
                     caller_id=effective_caller,
                     target_id=target_id,
-                    decision="allow" if decision else "deny",
+                    decision=access,
                     reason=reason,
                     matched_rule=matched_rule,
                     matched_rule_index=matched_idx,
                     context=context,
+                    approval_required=approval_required,
                 )
             )
 
-        return decision
+        return AccessDecision(
+            access=access,
+            approval_required=approval_required,
+            matched_rule_index=matched_idx,
+            reason=reason,
+        )
 
     def _match_patterns(self, patterns: list[str], value: str, context: Context | None = None) -> bool:
         """Match a list of patterns against a value.
@@ -1112,6 +1320,7 @@ class ACL:
         matched_rule: ACLRule | None,
         matched_rule_index: int | None,
         context: Context | None,
+        approval_required: bool = False,
     ) -> AuditEntry:
         """Build an AuditEntry, extracting optional fields from context."""
         identity_type: str | None = None
@@ -1139,6 +1348,7 @@ class ACL:
             call_depth=call_depth,
             trace_id=trace_id,
             handler_error=_handler_error_message(),
+            approval_required=approval_required,
         )
 
     def _match_pattern(self, pattern: str, value: str, context: Context | None = None) -> bool:
@@ -1357,6 +1567,7 @@ class ACL:
         effect: str = "deny",
         description: str = "",
         conditions: dict[str, Any] | None = None,
+        approval: str = APPROVAL_NOT_REQUIRED,
     ) -> None:
         """Add a rule at position 0 (highest priority).
 
@@ -1367,6 +1578,13 @@ class ACL:
             effect: Rule effect if *rule* is None.
             description: Rule description if *rule* is None.
             conditions: Rule conditions if *rule* is None.
+            approval: ``"required"`` or ``"not_required"`` (default) if *rule*
+                is None — whether a matching call must be put to a human
+                (PROTOCOL_SPEC §6.1.6).
+
+        Raises:
+            ACLRuleError: When ``approval="required"`` is combined with
+                ``effect="deny"``, which §6.1.6 makes meaningless.
 
         Note:
             A condition key with no registered handler warns and does not
@@ -1386,6 +1604,7 @@ class ACL:
                 effect=effect,
                 description=description,
                 conditions=conditions,
+                approval=approval,
             )
 
         with self._lock:

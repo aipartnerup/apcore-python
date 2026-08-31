@@ -666,6 +666,16 @@ class Executor:
                     context=pipe_ctx.context,
                 ).needs_approval
 
+        # PROTOCOL_SPEC §7.9.5: report the GOVERNANCE-effective requirement —
+        # the union of §6.9 rows 3-5 — and not merely the policy-effective one.
+        # An ACL rule carrying `approval` (§6.1.6) is a third source, and the
+        # union is also what §6.9 row 4 demands: a policy that clears the
+        # module's annotation MUST NOT clear the ACL's requirement, so this OR
+        # sits deliberately after the policy resolution above and not inside it.
+        # Reporting only the policy-effective value would tell a caller no
+        # approval is needed for a call the gate will stop.
+        requires_approval = requires_approval or pipe_ctx.acl_approval_required
+
         # Module-level introspection is gated on TWO conditions, not one.
         #
         # 1. Module lookup succeeded (`pipe_ctx.module` is not None).
