@@ -6,18 +6,13 @@ means: an unevaluable condition MUST resolve the rule toward refusing access —
 a ``deny`` rule takes effect and the call is denied, an ``allow`` rule does not
 match and MUST NOT grant. "Unevaluable" is a **principle**, not a closed list.
 
-Fixture transition (apcore#100): the committed
-``conformance/fixtures/acl_handler_error.json`` still pins the pre-v1.22.0
-behaviour, under a case named
-``throwing_handler_does_not_flip_default_allow_to_deny_unsafely`` that expects a
-``deny`` rule with a crashing handler to let the call through. Spec v1.22.0
-§6.1.1 reverses exactly that, and the corrected 12-case fixture is staged in the
-spec repo at ``planning/acl-unevaluable-conditions/staged-fixtures/`` until all
-three SDK drivers land. That one case is therefore expected to fail here and
-carries an ``xfail`` naming the reason; every other case is enforced. This
-driver already reads the corrected fixture's shape, so moving the staged file
-into ``conformance/fixtures/`` needs no change on this side — run it against the
-staged copy with ``CONFORMANCE_FIXTURES=<dir>``.
+Fixture transition (apcore#100), complete: the corrected fixture has landed in
+``conformance/fixtures/acl_handler_error.json``. The case it replaced,
+``throwing_handler_does_not_flip_default_allow_to_deny_unsafely``, expected a
+``deny`` rule with a crashing handler to let the call through — exactly what
+spec v1.22.0 §6.1.1 reverses. ``_SUPERSEDED_CASE_IDS`` below still names it so
+that a checkout pointed at a pre-v1.22.0 spec repo reports "superseded" rather
+than a bare failure; it goes inert against the current fixture.
 """
 
 from __future__ import annotations
