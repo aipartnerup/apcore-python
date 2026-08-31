@@ -278,9 +278,9 @@ class TestArgumentsCondition:
     @pytest.mark.parametrize(
         "malformed",
         [
-            {"has_key": "force"},  # a malformed predicate value
-            {"has_keys": ["force"]},  # an unrecognised predicate name
-            {},  # an empty block
+            ({"has_key": "force"}, "arguments.has_key"),  # a malformed predicate value
+            ({"has_keys": ["force"]}, "arguments.has_keys"),  # an unrecognised predicate name
+            ({}, "arguments"),  # an empty block — no predicate to name
         ],
     )
     def test_the_precheck_covers_the_predicate_structure(self, malformed: Any) -> None:
@@ -288,18 +288,25 @@ class TestArgumentsCondition:
 
         are precheck faults and `validate_rules()` reports them (§6.1.2 rule 3) —
         not merely the `arguments` key's registry status.
+
+        §6.1.8 fixes the path: it descends to the offending predicate where one
+        can be named, exactly as §6.1.4 descends into ``$or[1].k``, and stops at
+        ``arguments`` where none can be.
         """
-        acl = _acl(_force_rule(conditions={"arguments": malformed}))
+        value, expected_path = malformed
+        acl = _acl(_force_rule(conditions={"arguments": value}))
         findings = acl.validate_rules()
         assert len(findings) == 1
-        assert findings[0].condition_path == "arguments"
+        assert findings[0].condition_path == expected_path
 
     def test_a_malformed_predicate_is_reported_by_validate_rules(self) -> None:
         """The precheck is context-free, so `validate_rules()` sees it too (§6.1.2)."""
         acl = _acl(_force_rule(conditions={"arguments": {"has_key": "force"}}))
         findings = acl.validate_rules()
         assert len(findings) == 1
-        assert findings[0].condition_path == "arguments"
+        # §6.1.8: the path descends to the predicate; the KEY stays `arguments`,
+        # for a reader who wants the condition rather than its position.
+        assert findings[0].condition_path == "arguments.has_key"
         assert findings[0].condition_key == "arguments"
         # A structural fault resolves on neither evaluation path, however well
         # registered the key is (§6.1.3 rule 3).
