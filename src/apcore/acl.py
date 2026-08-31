@@ -711,11 +711,10 @@ class ACL:
                 # Attached to the `arguments` key, like a malformed `$or` value:
                 # the flags stay False because a structural fault resolves on
                 # neither evaluation path, however well registered the key is.
-                fault = validate_arguments_condition(value)
-                if fault is not None:
-                    suffix, reason = fault
-                    # §6.1.8: descend to the offending predicate where one can
-                    # be named, exactly as §6.1.4 descends into `$or[1].k`.
+                # §6.1.8: descend to the offending predicate where one can be
+                # named, exactly as §6.1.4 descends into `$or[1].k`, and report
+                # EVERY faulty predicate rather than stopping at the first.
+                for suffix, reason in validate_arguments_condition(value):
                     faults.append(_Fault(path=f"{path}{suffix}", key=key, reason=reason))
             else:
                 sync_resolvable = key in cls._condition_handlers

@@ -177,20 +177,28 @@ class _MaxCallDepthHandler:
 ARGUMENT_PREDICATES: frozenset[str] = frozenset({"has_key", "has_all_keys", "has_none_of"})
 
 
-def validate_arguments_condition(value: Any) -> tuple[str, str] | None:
+def validate_arguments_condition(value: Any) -> list[tuple[str, str]]:
     """Structurally validate an ``arguments`` condition value (§6.1.7).
 
     Context-independent and value-free, so §6.1.4's precheck can run it before
-    any handler and produce the same finding in every implementation.
+    any handler and produce the same findings in every implementation.
 
     Returns:
-        None when the value is well-formed, otherwise ``(path_suffix, reason)``.
-        ``path_suffix`` is ``".<predicate>"`` when one predicate is at fault and
-        ``""`` when none can be named, which is §6.1.8's condition-path rule:
-        the finding descends to the offending predicate exactly as §6.1.4
-        descends into ``$or[1].k``, because ``arguments`` alone does not say
-        which of several predicates is wrong. The predicate is named **as
-        written**, so a misspelling is searchable.
+        An empty list when the value is well-formed, otherwise one
+        ``(path_suffix, reason)`` pair per fault. ``path_suffix`` is
+        ``".<predicate>"`` when a predicate is at fault and ``""`` when none can
+        be named, which is §6.1.8's condition-path rule: the finding descends to
+        the offending predicate exactly as §6.1.4 descends into ``$or[1].k``,
+        because ``arguments`` alone does not say which of several predicates is
+        wrong. The predicate is named **as written**, so a misspelling is
+        searchable.
+
+        **Every** faulty predicate is reported and the walk does not stop at the
+        first (§6.1.8 rule 3). Reporting one would make the *choice* of which
+        one observable, and no reading of §6.1.4 makes "the first" a pure
+        function of the rule: ``{"has_key": "force", "zzz": [...]}`` carries both
+        a malformed value and an unrecognised name, and checking names before
+        values reports a different path from walking predicate by predicate.
 
         A fault makes the condition UNEVALUABLE (§6.1.1), never false:
         ``has_key: "force"`` written for ``has_key: ["force"]`` asks no question
@@ -199,33 +207,39 @@ def validate_arguments_condition(value: Any) -> tuple[str, str] | None:
         §6.1.1 exists to end.
     """
     if not isinstance(value, Mapping):
-        return "", f"arguments value must be a mapping, got {type(value).__name__}"
+        # Terminal: a value that is not a mapping has no predicates to walk.
+        return [("", f"arguments value must be a mapping, got {type(value).__name__}")]
     if not value:
         # Fail-closed for the reason §6.1 gives an empty `$not`: a predicate
         # block that constrains nothing asks no question, and reading it as
         # "satisfied" would make an `allow` rule carrying it grant on every
         # call — which is precisely what an author who deleted the last
         # predicate by accident did not mean.
-        return "", "arguments block is empty; it constrains nothing and asks no question"
-    unknown = sorted(set(value) - ARGUMENT_PREDICATES)
-    if unknown:
-        # Reported at the first offender in sorted order so the path is a pure
-        # function of the rule, not of dict insertion order (§6.1.4).
-        return (
-            f".{unknown[0]}",
-            f"unknown arguments predicate(s) {', '.join(repr(k) for k in unknown)}; "
-            f"the vocabulary is closed ({', '.join(sorted(ARGUMENT_PREDICATES))})",
-        )
+        return [("", "arguments block is empty; it constrains nothing and asks no question")]
+    faults: list[tuple[str, str]] = []
+    # Sorted, so the finding ORDER is a pure function of the rule rather than of
+    # dict insertion order (§6.1.4 determinism).
     for predicate in sorted(value):
         names = value[predicate]
+        if predicate not in ARGUMENT_PREDICATES:
+            faults.append(
+                (
+                    f".{predicate}",
+                    f"unknown arguments predicate {predicate!r}; "
+                    f"the vocabulary is closed ({', '.join(sorted(ARGUMENT_PREDICATES))})",
+                )
+            )
+            continue
         # A bare string is iterable, so `has_key: "force"` would otherwise be
         # read character by character — the §6.1.4.1 failure one level down.
         if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
-            return (
-                f".{predicate}",
-                f"arguments.{predicate} must be a list of strings, got {type(names).__name__}",
+            faults.append(
+                (
+                    f".{predicate}",
+                    f"arguments.{predicate} must be a list of strings, got {type(names).__name__}",
+                )
             )
-    return None
+    return faults
 
 
 class _ArgumentsHandler:
@@ -254,7 +268,7 @@ class _ArgumentsHandler:
     """
 
     def evaluate(self, value: Any, context: Context) -> ConditionOutcome:
-        if validate_arguments_condition(value) is not None:
+        if validate_arguments_condition(value):
             return ConditionOutcome.UNEVALUABLE
 
         projection = getattr(context, "governance_projection", None)

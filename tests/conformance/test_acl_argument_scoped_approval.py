@@ -104,16 +104,23 @@ def test_argument_scoped_approval(case: dict[str, Any]) -> None:
 
     # §6.1.8 closing paragraph: cases 2-4 are decidable with no context and no
     # handler, so validate_rules() must surface them at deploy time.
+    all_findings = acl.validate_rules()
     expected_path = case["expected_validation_finding_path"]
-    findings = [f for f in acl.validate_rules() if f.condition_path == expected_path] if expected_path else []
-    if expected_path:
-        assert findings, (
-            f"{note}\n  validate_rules() reported no finding at '{expected_path}': {acl.validate_rules()}"
-        )
+    # §6.1.8 rule 3: every faulty predicate is reported, so a case may pin the
+    # exact finding set rather than the presence of one.
+    expected_paths = case.get("expected_validation_finding_paths")
+    if expected_paths is not None:
+        assert [f.condition_path for f in all_findings] == expected_paths, note
+        for finding in all_findings:
+            assert finding.sync_resolvable is False, note
+            assert finding.async_resolvable is False, note
+    elif expected_path:
+        findings = [f for f in all_findings if f.condition_path == expected_path]
+        assert findings, f"{note}\n  validate_rules() reported no finding at '{expected_path}': {all_findings}"
         assert findings[0].sync_resolvable is False, note
         assert findings[0].async_resolvable is False, note
     else:
-        assert acl.validate_rules() == (), f"{note}\n  unexpected findings: {acl.validate_rules()}"
+        assert all_findings == (), f"{note}\n  unexpected findings: {all_findings}"
 
 
 def test_deny_plus_approval_is_rejected_at_every_entry_point() -> None:
