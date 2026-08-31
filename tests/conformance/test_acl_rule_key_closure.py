@@ -31,9 +31,7 @@ def _present() -> bool:
 # `check_driver_coverage.py --strict` has a driver to find for it. Until then
 # the module skips and names the unexercised fixture — "not verified", never
 # "passed".
-pytestmark = pytest.mark.skipif(
-    not _present(), reason=f"{FIXTURE} not in the spec repo yet (spec v1.27.0, #107)"
-)
+pytestmark = pytest.mark.skipif(not _present(), reason=f"{FIXTURE} not in the spec repo yet (spec v1.27.0, #107)")
 
 
 def _cases() -> list[dict[str, Any]]:

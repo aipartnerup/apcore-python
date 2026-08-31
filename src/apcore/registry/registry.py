@@ -1568,9 +1568,7 @@ class Registry:
             # `register(..., version=...)` supplied a version the module object
             # does not carry itself — so the caller's metadata silently vanished
             # from the descriptor alongside the version (sync finding A-D-002).
-            version_str = (
-                meta.get("version") or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
-            )
+            version_str = meta.get("version") or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
             versioned_meta = self._versioned_meta.get(module_id, version_str)
             if versioned_meta:
                 meta["metadata"] = {**meta.get("metadata", {}), **versioned_meta}
@@ -1639,9 +1637,7 @@ class Registry:
             # `meta` is checked first because `merge_module_metadata` lifts a
             # declared `dependencies` to the top level; the nested
             # `metadata["dependencies"]` form is the manual-register path.
-            dependencies=parse_dependencies(
-                meta.get("dependencies") or effective_metadata.get("dependencies") or []
-            ),
+            dependencies=parse_dependencies(meta.get("dependencies") or effective_metadata.get("dependencies") or []),
         )
 
     def _log_deprecation_warning(self, module_id: str, version: str, deprecation: dict[str, Any]) -> None:

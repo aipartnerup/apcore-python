@@ -70,9 +70,7 @@ def test_async_on_load_is_refused_not_silently_dropped() -> None:
 
     assert "async on_load" in str(excinfo.value)
     assert not module.ran, "the coroutine must not have been driven"
-    assert not registry.has(
-        "executor.async_on_load"
-    ), "a module whose on_load could not run must not be published"
+    assert not registry.has("executor.async_on_load"), "a module whose on_load could not run must not be published"
 
 
 def test_sync_on_load_still_runs_and_publishes() -> None:

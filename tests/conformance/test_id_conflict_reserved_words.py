@@ -25,6 +25,7 @@ FIXTURE = "id_conflict_reserved_words.json"
 def _present() -> bool:
     return (fixtures_dir() / FIXTURE).is_file()
 
+
 # The fixture lands in the spec repo one push after this driver, so that
 # `check_driver_coverage.py --strict` has a driver to find for it. Until then
 # the module skips and says which fixture is unexercised — "not verified", not
@@ -86,6 +87,4 @@ def test_id_conflict_reserved_words(case: dict[str, Any]) -> None:
         # own error classes, so assert the registration was refused and that
         # the message identifies the offending id rather than pinning a class
         # name three languages do not share.
-        assert case["new_id"].split(".")[0] in str(excinfo.value) or case[
-            "new_id"
-        ] in str(excinfo.value), case["note"]
+        assert case["new_id"].split(".")[0] in str(excinfo.value) or case["new_id"] in str(excinfo.value), case["note"]

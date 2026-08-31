@@ -1722,9 +1722,7 @@ class TestRegisterVersionArgumentReachesDescriptor:
         registry.register("math.add", self._Mod(), version="2.0.0", metadata={"foo": 1})
         descriptor = registry.get_definition("math.add")
         assert descriptor.version == "2.0.0"
-        assert descriptor.metadata.get("foo") == 1, (
-            "the caller's metadata must not vanish when `version=` is supplied"
-        )
+        assert descriptor.metadata.get("foo") == 1, "the caller's metadata must not vanish when `version=` is supplied"
 
     def test_module_attribute_still_wins_when_no_version_argument(self) -> None:
         from apcore import Registry
@@ -1798,9 +1796,7 @@ class TestDescriptorCarriesTypedDependencies:
         from apcore import Registry
 
         registry = Registry()
-        registry.register(
-            "a.d", self._Mod(), metadata={"dependencies": [{"module_id": "a.dep"}]}
-        )
+        registry.register("a.d", self._Mod(), metadata={"dependencies": [{"module_id": "a.dep"}]})
         from_descriptor = [d.module_id for d in registry.get_definition("a.d").dependencies]
         raw = registry.get_module_metadata("a.d").get("dependencies") or []
         from_metadata = [d["module_id"] for d in raw]

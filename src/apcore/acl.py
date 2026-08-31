@@ -125,8 +125,7 @@ def _validate_approval(approval: Any, effect: Any, *, where: str) -> None:
     """
     if approval not in _APPROVAL_VALUES:
         raise ACLRuleError(
-            f"{where} has invalid approval {approval!r}, must be "
-            f"{APPROVAL_REQUIRED!r} or {APPROVAL_NOT_REQUIRED!r}"
+            f"{where} has invalid approval {approval!r}, must be " f"{APPROVAL_REQUIRED!r} or {APPROVAL_NOT_REQUIRED!r}"
         )
     if approval == APPROVAL_REQUIRED and effect == "deny":
         raise ACLRuleError(
@@ -175,9 +174,7 @@ class ACLRule:
 #: the set in spec v1.28.0 (§6.1.6) — adding it was only safe *because* the set
 #: was closed first, since an SDK that still dropped unknown keys would read a
 #: ``deny``-with-``approval`` rule as a bare rule and act on half of it.
-_RULE_KEYS: frozenset[str] = frozenset(
-    {"callers", "targets", "effect", "description", "conditions", "approval"}
-)
+_RULE_KEYS: frozenset[str] = frozenset({"callers", "targets", "effect", "description", "conditions", "approval"})
 
 #: Reserved in earlier revisions of §6.1 and evaluated by no implementation.
 #: Rejected like any other unknown key, but named as reserved in the message:
@@ -196,10 +193,7 @@ def _reject_unknown_rule_keys(index: int, raw_rule: dict) -> None:
     parts = []
     if reserved:
         names = ", ".join(repr(k) for k in reserved)
-        parts.append(
-            f"{names} reserved for a future specification version and evaluated "
-            f"by no implementation"
-        )
+        parts.append(f"{names} reserved for a future specification version and evaluated " f"by no implementation")
     if other:
         parts.append(f"{', '.join(repr(k) for k in other)} unrecognised")
     raise ACLRuleError(

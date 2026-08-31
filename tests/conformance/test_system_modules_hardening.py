@@ -575,9 +575,7 @@ class TestReloadWithPathFilter:
 
         # side_effect must tolerate the method's full signature, not just its
         # first argument — see the note on the dependency-bearing case below.
-        with patch.object(
-            mod, "_reload_one", side_effect=lambda mid, *_a, **_kw: reload_order.append(mid)
-        ):
+        with patch.object(mod, "_reload_one", side_effect=lambda mid, *_a, **_kw: reload_order.append(mid)):
             mod.execute(dict(case["action"]["input"]), _make_context())
 
         # The contract value is the dispatch key; the checker takes only the
@@ -602,9 +600,7 @@ class TestReloadWithPathFilter:
         # `reload_order.append` breaks the moment the signature grows (it did,
         # when `context` was threaded through for A-D-017) and the resulting
         # TypeError is swallowed upstream, leaving `order` silently empty.
-        with patch.object(
-            mod, "_reload_one", side_effect=lambda mid, *_a, **_kw: reload_order.append(mid)
-        ):
+        with patch.object(mod, "_reload_one", side_effect=lambda mid, *_a, **_kw: reload_order.append(mid)):
             mod.execute({"path_filter": "executor.*", "reason": "topo test"}, _make_context())
 
         _assert_topological_order(reload_order, modules, declared_dependencies=declared)
@@ -1125,8 +1121,7 @@ class TestBulkReloadCarriesCallerIdentity:
         assert reloaded, f"a bulk reload must emit the event; got {[e.event_type for e in events]}"
         caller = reloaded[0].data.get("caller_id")
         assert caller != "@external", (
-            "an authenticated bulk reload must not be attributed to @external — "
-            f"got {caller!r}"
+            "an authenticated bulk reload must not be attributed to @external — " f"got {caller!r}"
         )
 
     @staticmethod

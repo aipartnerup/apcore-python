@@ -186,8 +186,7 @@ class TestFrameworkCodeInventoryIsComplete:
         unguarded = {
             code: classes
             for code, classes in self._emitted_codes().items()
-            if code not in _FRAMEWORK_CODES
-            and not any(code.startswith(p) for p in FRAMEWORK_ERROR_CODE_PREFIXES)
+            if code not in _FRAMEWORK_CODES and not any(code.startswith(p) for p in FRAMEWORK_ERROR_CODE_PREFIXES)
         }
         assert not unguarded, (
             "these framework-emitted codes are protected by neither _FRAMEWORK_CODES "

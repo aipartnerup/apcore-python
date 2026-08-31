@@ -403,9 +403,7 @@ def test_framework_key_surface_is_derived_from_the_canonical_schema() -> None:
     could not guard — the nested closedness those schemas actually declare
     (sync finding A-D-020).
     """
-    fixture = json.loads(
-        (fixtures_dir() / "config_key_governance.json").read_text()
-    )
+    fixture = json.loads((fixtures_dir() / "config_key_governance.json").read_text())
 
     def _find_allowed(node: object) -> list[str] | None:
         if isinstance(node, dict):
@@ -443,9 +441,7 @@ def test_nested_typo_is_rejected_under_strict() -> None:
     rate then fell back to its default silently, which is the failure strict
     mode exists to prevent.
     """
-    errors = _collect_unknown_framework_keys(
-        {"observability": {"tracing": {"enabled": True, "sampling_rat": 1.0}}}
-    )
+    errors = _collect_unknown_framework_keys({"observability": {"tracing": {"enabled": True, "sampling_rat": 1.0}}})
     assert any("observability.tracing.sampling_rat" in e for e in errors), errors
 
 
@@ -462,9 +458,7 @@ def test_declared_nested_keys_are_accepted() -> None:
 
 def test_undeclared_subtree_reports_once_not_per_leaf() -> None:
     """An unknown container is one error, not one per key beneath it."""
-    errors = _collect_unknown_framework_keys(
-        {"observability": {"tracin": {"enabled": True, "sampling_rate": 1.0}}}
-    )
+    errors = _collect_unknown_framework_keys({"observability": {"tracin": {"enabled": True, "sampling_rate": 1.0}}})
     assert len(errors) == 1, errors
     assert "observability.tracin" in errors[0]
 
@@ -569,11 +563,6 @@ def test_sys_modules_namespace_supplies_every_declared_default() -> None:
 
     supplied = _leaves(registration.defaults or {})
     missing = sorted(expected.keys() - supplied.keys())
-    assert missing == [], (
-        "the sys_modules namespace does not supply defaults its own schema "
-        f"declares: {missing}"
-    )
-    mismatched = {
-        k: (supplied[k], expected[k]) for k in expected if not _values_equal(supplied[k], expected[k])
-    }
+    assert missing == [], "the sys_modules namespace does not supply defaults its own schema " f"declares: {missing}"
+    mismatched = {k: (supplied[k], expected[k]) for k in expected if not _values_equal(supplied[k], expected[k])}
     assert mismatched == {}, f"namespace defaults disagree with the schema: {mismatched}"

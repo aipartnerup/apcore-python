@@ -42,12 +42,10 @@ _SCHEMA_FOR = {
 
 def _validate_against_canonical_schema(module: str, output: dict[str, Any]) -> None:
     schema = json.loads((_SCHEMAS / _SCHEMA_FOR[module]).read_text())
-    errors = sorted(
-        Draft202012Validator(schema).iter_errors(output), key=lambda e: list(e.path)
-    )
-    assert not errors, "\n".join(
-        f"{list(e.path)}: {e.message}" for e in errors
-    )
+    errors = sorted(Draft202012Validator(schema).iter_errors(output), key=lambda e: list(e.path))
+    assert not errors, "\n".join(f"{list(e.path)}: {e.message}" for e in errors)
+
+
 _OFFSET = re.compile(r"^-(\d+)([hd])$")
 
 

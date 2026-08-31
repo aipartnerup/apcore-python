@@ -53,9 +53,7 @@ def _present() -> bool:
 # `check_driver_coverage.py --strict` has a driver to find for it. Until then
 # the module skips and names the unexercised fixture — "not verified", never
 # "passed".
-pytestmark = pytest.mark.skipif(
-    not _present(), reason=f"{FIXTURE} not in the spec repo yet (spec v1.28.0, #108)"
-)
+pytestmark = pytest.mark.skipif(not _present(), reason=f"{FIXTURE} not in the spec repo yet (spec v1.28.0, #108)")
 
 
 def _cases() -> list[dict[str, Any]]:
@@ -130,9 +128,9 @@ def _assert_run(case: dict[str, Any], *, with_projection: bool) -> None:
     assert legacy is _expected(case, "legacy_check", with_projection=with_projection), note
 
     handler_error_expected = _expected(case, "audit_handler_error_present", with_projection=with_projection)
-    assert (entry.handler_error is not None) is handler_error_expected, (
-        f"{note}\n  handler_error was {entry.handler_error!r}"
-    )
+    assert (
+        entry.handler_error is not None
+    ) is handler_error_expected, f"{note}\n  handler_error was {entry.handler_error!r}"
     # §6.1.1 rule 5: a pending requirement neither suppresses nor substitutes
     # for handler_error, and the entry carries the FINAL approval value.
     assert entry.approval_required is _expected(case, "approval_required", with_projection=with_projection), note
@@ -153,7 +151,9 @@ async def _assert_async_run(case: dict[str, Any], *, with_projection: bool) -> N
     handler_error_expected = _expected(case, "audit_handler_error_present", with_projection=with_projection)
     assert (entries[0].handler_error is not None) is handler_error_expected, note
 
-    legacy = await acl.async_check(case["caller_id"], case["target_id"], _context(case, with_projection=with_projection))
+    legacy = await acl.async_check(
+        case["caller_id"], case["target_id"], _context(case, with_projection=with_projection)
+    )
     assert legacy is _expected(case, "legacy_check", with_projection=with_projection), note
 
 

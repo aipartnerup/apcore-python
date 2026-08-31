@@ -333,8 +333,7 @@ class TestSysModulesConfig:
             "sys_modules.events.subscribers",
         ):
             assert config.get(key) is None, (
-                f"{key} is not declared by defaults.schema.json, so the legacy "
-                "default table must not answer for it"
+                f"{key} is not declared by defaults.schema.json, so the legacy " "default table must not answer for it"
             )
 
     def test_namespace_mode_still_supplies_the_sys_modules_defaults(self, tmp_path: Path) -> None:
