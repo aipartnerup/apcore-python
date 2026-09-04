@@ -1030,16 +1030,44 @@ class TestMalformedPatternFields:
         assert captured[0].handler_error is not None
         assert _reported_paths(captured[0].handler_error) == ["callers", "targets"]
 
-    def test_an_empty_list_is_well_formed_and_simply_never_matches(self) -> None:
-        """§6.5 keeps this a plain non-match — it is a valid list of strings."""
+    def test_an_empty_list_cannot_be_constructed(self) -> None:
+        """REVERSED in spec v1.31.0 (§6.2.1, apcore#112) — replaces one test with two.
+
+        Through spec v1.30.0 this file carried
+        ``test_an_empty_list_is_well_formed_and_simply_never_matches``, whose
+        docstring read *"§6.5 keeps this a plain non-match — it is a valid list
+        of strings"* and which asserted ``check(...) is True`` with
+        ``handler_error is None`` on a ``deny`` rule under
+        ``default_effect: allow``. That reading was decided during apcore#106's
+        implementation and enshrined here — and it is precisely the fail-open
+        apcore#112 was filed about: the ``deny`` rule an operator wrote loaded
+        without error, ``validate_rules()`` called it clean, and the call it
+        named was permitted. §6.5's edge-case table required it, and that row is
+        **replaced rather than reinterpreted**. §6.2.1 now closes the arity at
+        every door, so the rule cannot be built at all.
+        """
+        with pytest.raises(ACLRuleError, match=r"ACLRule has an invalid 'callers'"):
+            ACLRule(callers=[], targets=["*"], effect="deny")
+
+    def test_an_empty_list_assigned_after_construction_denies(self) -> None:
+        """The other half of the replacement: the one route no door covers.
+
+        ``ACLRule`` is a non-frozen dataclass, so ``rule.callers = []`` reaches
+        the evaluator whatever the constructors check — and unlike an
+        unrecognised ``effect``, which §6.1.5 disposes of by observing the value
+        is never read again, a mutated pattern array *is* read by the matcher.
+        §6.1.4.1 therefore classifies it: unevaluable, so the ``deny`` rule
+        takes effect, ``handler_error`` names the field and a warning is
+        emitted. Same rule, same probe, opposite answer to the test this
+        replaces.
+        """
         captured: list[AuditEntry] = []
-        acl = ACL(
-            rules=[ACLRule(callers=[], targets=["*"], effect="deny")],
-            default_effect="allow",
-            audit_logger=captured.append,
-        )
-        assert acl.check("attacker", "service.op", _ctx()) is True
-        assert captured[0].handler_error is None
+        rule = ACLRule(callers=["*"], targets=["*"], effect="deny")
+        acl = ACL(rules=[rule], default_effect="allow", audit_logger=captured.append)
+        rule.callers = []
+        assert acl.check("attacker", "service.op", _ctx()) is False
+        assert captured[0].handler_error is not None
+        assert _reported_paths(captured[0].handler_error) == ["callers"]
 
     def test_a_malformed_pattern_field_is_caught_before_the_patterns_are_read(self) -> None:
         """`callers: "*"` matched everything by iterating characters; now it is a fault."""

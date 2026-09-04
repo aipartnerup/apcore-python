@@ -37,6 +37,7 @@ from apcore.config import (
 )
 from apcore.context import Context, Identity
 from apcore.errors import (
+    ACLRuleError,
     CallDepthExceededError,
     CallFrequencyExceededError,
     CircularCallError,
@@ -519,12 +520,46 @@ def _build_acl_context(case: dict[str, Any]) -> Context:
     return ctx
 
 
+# Two cases in `acl_evaluation.json` assert the reading spec v1.31.0 removed:
+# `callers: []` / `targets: []` "never matches any caller". PROTOCOL_SPEC §6.2.1
+# (apcore#112) closes a pattern array's arity at every entry point, so the rule
+# can no longer be BUILT. The fixture's own `expected: false` survives the
+# change — both cases use `effect: allow` under `default_effect: deny`, and an
+# unevaluable `allow` rule does not grant either — but the construction this
+# driver performs does not, so the case is asserted in the shape the SDK now
+# answers rather than skipped: `ACLRuleError`, plus the fixture's unchanged
+# expectation that access is refused.
+#
+# Both cases are superseded by `acl_pattern_arity.json`, which covers the shape
+# at both layers, and are deleted from `acl_evaluation.json` in the coordinated
+# pass that lands that fixture. The set is tolerant of their absence so this
+# driver passes against the fixture on either side of that pass.
+_ACL_EVALUATION_SUPERSEDED_BY_PATTERN_ARITY = frozenset({"empty_callers_matches_none", "empty_targets_matches_none"})
+
+
 @pytest.mark.parametrize(
     "case",
     _acl_data["test_cases"],
     ids=[c["id"] for c in _acl_data["test_cases"]],
 )
 def test_acl_evaluation(case: dict[str, Any]) -> None:
+    if case["id"] in _ACL_EVALUATION_SUPERSEDED_BY_PATTERN_ARITY:
+        assert case["expected"] is False, (
+            "the superseded cases are only compatible with §6.2.1 while they expect a refusal; "
+            "one that expects access has changed meaning and must be re-read, not re-routed"
+        )
+        with pytest.raises(ACLRuleError):
+            [
+                ACLRule(
+                    callers=r["callers"],
+                    targets=r["targets"],
+                    effect=r["effect"],
+                    conditions=r.get("conditions"),
+                )
+                for r in case["rules"]
+            ]
+        return
+
     rules = [
         ACLRule(
             callers=r["callers"],

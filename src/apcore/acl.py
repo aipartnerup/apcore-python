@@ -138,6 +138,145 @@ def _validate_effect(effect: Any, *, where: str) -> None:
         raise ACLRuleError(f"{where} has invalid effect '{effect}', must be 'allow' or 'deny'")
 
 
+#: The compound-operator tokens PROTOCOL_SPEC §6.2.1 reserves for **index 0**
+#: of a ``callers`` / ``targets`` array. Detection is by **equality** and never
+#: by a ``$`` prefix or a substring: ``$orders.*`` is an ordinary pattern that
+#: merely begins with the same character, and MUST load.
+_PATTERN_OPERATORS: frozenset[str] = frozenset({"$or", "$not"})
+
+#: The remedy every operand-less array needs, appended to the three arity
+#: messages. Both readings of an empty array are plausible and the failure is
+#: now at boot, where a good message is the whole remedy (§6.2.1).
+#:
+#: No ``"; "`` anywhere in this string, or in any reason phrase
+#: :func:`_pattern_array_fault` returns: §6.1.1 rule 2 makes ``"; "`` the
+#: separator between the diagnostics an ``AuditEntry``'s ``handler_error``
+#: carries, so a reason containing one splits into two unparseable entries.
+_EMPTY_ARITY_REMEDY = (
+    'Write ["*"] if "everything" was meant. A rule that was meant to match nothing is not a rule — delete it.'
+)
+
+
+def _pattern_array_fault(patterns: Any) -> str | None:
+    """Return why *patterns* is outside §6.2.1's closed shape, or None (spec v1.31.0).
+
+    The single structural predicate behind every door — :meth:`ACL.load`,
+    :meth:`ACLRule.__post_init__` and therefore :meth:`ACL.add_rule` — and
+    behind :meth:`ACL._precheck_patterns`, which is the backstop for the one
+    route no door covers. One predicate on purpose, for the reason
+    :func:`_validate_effect` is one function: two copies of a value set are two
+    things that drift, which is how the loader came to be the only door that
+    checked ``effect``.
+
+    A pattern array is **FLAT** (§6.2.1). The operators do not nest, there is no
+    precedence, an operand is always a plain pattern string, and there is
+    exactly one operator position — index 0. So the shape is finite, decidable
+    with no context and no registry, and identical in all three languages:
+
+    1. the array MUST NOT be empty;
+    2. every element MUST be a non-empty string;
+    3. ``$or`` at index 0 MUST be followed by at least one pattern;
+    4. ``$not`` at index 0 MUST be followed by **exactly** one;
+    5. ``$or`` / ``$not`` MUST NOT appear at any index other than 0.
+
+    Through spec v1.30.0 none of this was enforced anywhere, while
+    ``schemas/acl-config.schema.json`` had declared ``minItems: 1`` and
+    ``minLength: 1`` since the file existed — the third instance of #107's and
+    #111's shape, in which the normative artefact declared the constraint and no
+    entry point enforced it. The matcher read the arity fault as a *scope*
+    decision and returned False, which makes an ``allow`` rule merely useless
+    and a ``deny`` rule a **fail-open**: under ``default_effect: allow`` the call
+    the operator wrote the rule to block was permitted, by a rule that loaded
+    without error and a validator that called it clean.
+
+    Args:
+        patterns: The ``callers`` or ``targets`` value to inspect.
+
+    Returns:
+        A reason phrase naming the fault, or None when the shape is legal. The
+        phrase carries no field name and no rule index, so the door can prefix
+        both and the precheck can hand it to ``handler_error`` under the
+        field's own §6.1.4 path.
+    """
+    if not isinstance(patterns, list) or not all(isinstance(pattern, str) for pattern in patterns):
+        # The §6.1.4.1 *type* fault, which this predicate deliberately does not
+        # own. It is reported by the precheck rather than rejected at the door
+        # (``ACLRule(callers="a")`` still constructs), it is unrepresentable in
+        # apcore-rust's ``Vec<String>``, and an array whose elements are not
+        # strings has no meaningful arity reading anyway.
+        return None
+
+    if not patterns:
+        return f"a pattern array MUST carry at least one operand and this one is empty. {_EMPTY_ARITY_REMEDY}"
+
+    for index, pattern in enumerate(patterns):
+        if not pattern:
+            return (
+                f"the pattern at index {index} is the empty string, which matches no legal module ID. "
+                "The schema has always declared minLength: 1 on both fields' items."
+            )
+
+    for index, pattern in enumerate(patterns[1:], start=1):
+        if pattern in _PATTERN_OPERATORS:
+            return (
+                f"the reserved token {pattern!r} appears at index {index}. A pattern array is FLAT — the "
+                "operators do not nest and there is no precedence — so '$or' / '$not' are operators at "
+                "index 0 and nowhere else, and every element after it is a plain pattern. "
+                "['$or', '$not', 'a'] is not \"or-of-not\" and ['api.*', '$not', 'cli.*'] is not "
+                '"api.* but not cli.*" — neither form exists. Through spec v1.30.0 the token was read as '
+                "a literal pattern, which this section's own reserved-token MUST NOT guarantees can "
+                "never match — dead weight in a security policy."
+            )
+
+    operands = len(patterns) - 1
+    if patterns[0] == "$or" and operands < 1:
+        return f"'$or' at index 0 MUST be followed by at least one pattern, and none was given. {_EMPTY_ARITY_REMEDY}"
+    if patterns[0] == "$not" and operands != 1:
+        if operands == 0:
+            return (
+                "'$not' at index 0 MUST be followed by exactly one pattern, and none was given. "
+                f"{_EMPTY_ARITY_REMEDY}"
+            )
+        return (
+            f"'$not' at index 0 MUST be followed by exactly one pattern, got {operands}. Through spec "
+            "v1.30.0 the form was implementation-defined and every SDK consulted the first operand and "
+            "dropped the rest, so ['$not', p1, p2] silently meant ['$not', p1] and an 'allow' rule "
+            "GRANTED p2 — the second target the operator excluded. There is no mechanical rewrite: "
+            "['$not', p1] preserves what the rule has actually been doing, while \"neither p1 nor p2\" "
+            "needs a leading 'deny' rule, which ENDS the scan where a non-matching rule lets it continue "
+            "to later rules. Rewrite by hand, against the rule's position."
+        )
+    return None
+
+
+def _validate_pattern_array(patterns: Any, field: str, *, where: str) -> None:
+    """Reject a ``callers`` / ``targets`` array outside §6.2.1's shape (spec v1.31.0, #112).
+
+    One function for all three doors §6.1.6 rule 3 names — file loading, direct
+    construction, runtime insertion — threaded exactly as
+    :func:`_validate_effect` is, and for the same reason: the closure has to be
+    per *entry point* rather than per code path, or a shape rejected from a YAML
+    file is accepted through ``ACLRule(...)``.
+
+    Args:
+        patterns: The field's value.
+        field: ``"callers"`` or ``"targets"`` — §6.2.1 constrains both
+            identically, and an implementation that validates one and infers the
+            other is the defect the conformance fixture's ``*_in_callers_*``
+            mirrors exist to catch.
+        where: How to name the rule — ``"Rule 3"`` from the loader, ``"ACLRule"``
+            from direct construction. A rule under construction has no position
+            yet and §6.2.1 forbids inventing one, which is why the caller
+            supplies this rather than the function guessing.
+
+    Raises:
+        ACLRuleError: When the array's shape is outside §6.2.1's closure.
+    """
+    reason = _pattern_array_fault(patterns)
+    if reason is not None:
+        raise ACLRuleError(f"{where} has an invalid '{field}' (PROTOCOL_SPEC §6.2.1): {reason}")
+
+
 def _validate_approval(approval: Any, effect: Any, *, where: str) -> None:
     """Enforce §6.1.6 on one rule's ``approval`` / ``effect`` pair.
 
@@ -194,7 +333,7 @@ class ACLRule:
     approval: str = APPROVAL_NOT_REQUIRED
 
     def __post_init__(self) -> None:
-        """Reject an out-of-enum ``effect`` (§6.1.5) and a meaningless ``deny`` + ``approval`` pair (§6.1.6).
+        """Reject an out-of-enum ``effect`` (§6.1.5), a meaningless ``deny`` + ``approval`` pair (§6.1.6), and a pattern array outside §6.2.1's closed shape.
 
         Validated on the dataclass rather than only in :meth:`ACL.load` because
         ``ACL(rules=[...])`` and :meth:`ACL.add_rule` never reach the loader's
@@ -204,9 +343,19 @@ class ACLRule:
         ``effect`` is checked **before** ``approval`` so that ``effect: "DENY"``
         with ``approval: required`` reports the value that is actually wrong,
         rather than a pairing rule read off a value the spec does not recognise.
+        The pattern arrays come last, in field order, so a rule that is wrong on
+        both axes still reports the value the earlier checks already named.
+
+        The pattern check is deliberately silent on the §6.1.4.1 *type* fault:
+        ``ACLRule(callers="admin.*")`` still constructs and is caught at
+        evaluation by the precheck, because that fault is unrepresentable in
+        apcore-rust and rejecting it here would split the SDKs on which
+        configurations exist.
         """
         _validate_effect(self.effect, where="ACLRule")
         _validate_approval(self.approval, self.effect, where="ACLRule")
+        _validate_pattern_array(self.callers, "callers", where="ACLRule")
+        _validate_pattern_array(self.targets, "targets", where="ACLRule")
 
 
 #: The complete set of keys an ACL rule may carry (PROTOCOL_SPEC §6.1).
@@ -654,7 +803,7 @@ class ACL:
 
     @classmethod
     def _precheck_patterns(cls, rule: ACLRule) -> list[_Fault]:
-        """Check that ``callers`` and ``targets`` are each a list of strings (§6.1.4.1).
+        """Check that ``callers`` and ``targets`` are each a list of strings **of legal shape** (§6.1.4.1).
 
         A value that is not a list of strings is a malformed rule, not a pattern
         set. A bare string is iterable, so ``callers: "admin.*"`` written where
@@ -663,21 +812,109 @@ class ACL:
         carrying that typo granted access to **every caller**. A non-subscriptable
         scalar raised ``TypeError`` out of ``check()``, which its contract forbids.
 
+        Since spec v1.31.0 (§6.2.1, #112) the **arity** is checked here too. That
+        half is the backstop for the one route no door covers: :class:`ACLRule`
+        is a non-frozen dataclass, so ``rule.targets = []`` reaches the evaluator
+        whatever the constructors check. §6.1.5's v1.30.0 reasoning for why the
+        ``effect`` closure needs no backstop — the value is never read again once
+        the doors are shut — does **not** transfer, because a mutated pattern
+        array *is* read: the matcher consults it on the next ``check()``. An
+        array outside §6.2.1's closure is therefore a precheck fault on exactly
+        the same terms as a malformed type: the rule's scope is unreadable, the
+        rule is UNEVALUABLE, and §6.1.1's effect table decides — a ``deny`` rule
+        takes effect and denies, an ``allow`` rule does not match and MUST NOT
+        grant. §6.1.4.1 has no partially-readable tier: ``targets: []`` is
+        legible as an empty scope in a way ``targets: 3`` is not, and acting on
+        that difference is the per-implementation judgement call that produced
+        three different answers in #100.
+
+        Tier 2 — an array that is well-formed under every clause above and still
+        matches nothing — is deliberately **not** here. It is
+        :meth:`_never_matches`, and it feeds :meth:`validate_rules` alone.
+
         Both fields are examined; the check does not stop at the first fault, so
-        the finding set is a pure function of the rule (§6.1.4 determinism).
+        the finding set is a pure function of the rule (§6.1.4 determinism). At
+        most one fault per field: the type fault keeps precedence, because an
+        array whose elements are not strings has no meaningful arity reading.
         """
         faults: list[_Fault] = []
         for path, value in ((_CALLERS_PATH, rule.callers), (_TARGETS_PATH, rule.targets)):
-            if isinstance(value, list) and all(isinstance(pattern, str) for pattern in value):
-                continue
-            faults.append(
-                _Fault(
-                    path=path,
-                    key=None,
-                    reason=f"{path} must be a list of strings, got {type(value).__name__}",
+            if not (isinstance(value, list) and all(isinstance(pattern, str) for pattern in value)):
+                faults.append(
+                    _Fault(
+                        path=path,
+                        key=None,
+                        reason=f"{path} must be a list of strings, got {type(value).__name__}",
+                    )
                 )
-            )
+                continue
+            reason = _pattern_array_fault(value)
+            if reason is not None:
+                faults.append(_Fault(path=path, key=None, reason=reason))
         return faults
+
+    @staticmethod
+    def _never_matches(field: str, patterns: list[str]) -> str | None:
+        """Tier 2 (§6.2.1, spec v1.31.0): a well-formed array that matches no module ID.
+
+        A **separate predicate** from :meth:`_precheck_patterns` on purpose. It
+        is consulted by :meth:`validate_rules` after the precheck reports the
+        field clean, and it MUST NOT reach ``handler_error`` or any access
+        decision: such a rule loads, is reported, and decides exactly as it did
+        before — ``["$not", "*"]`` on a ``deny`` rule under
+        ``default_effect: allow`` still lets an unrelated call through.
+
+        Why a finding and not a rejection. Closing §6.2.1's arities does not
+        exhaust the inert class — ``["$not", "*"]`` has perfectly legal arity,
+        exactly one operand, and matches nothing, producing the identical
+        fail-open — but detecting it means reasoning about the **match
+        relation** rather than the array's shape, and that predicate cannot be
+        closed without freezing the pattern language. §6.1.4's determinism
+        guarantee binds precheck-origin diagnostics because they feed
+        ``handler_error`` and the decision; tier-2 findings feed neither, so a
+        divergence between SDKs is a missed diagnostic rather than an ACL file
+        that loads in one language and fails in another. §6.1.3 governs: this is
+        diagnostics, not enforcement.
+
+        The criterion is normative and this list is §6.2.1's MUST-detect
+        **minimum**, not a closed set — the mistake §6.1.1 corrected in v1.25.0
+        was enumerating where it should have stated a principle.
+
+        Args:
+            field: ``"callers"`` or ``"targets"``. Unlike tier 1 this is not
+                field-symmetric: ``@external`` is the caller-side sentinel §6.5
+                substitutes for a null ``caller_id``, so it is exactly what
+                ``callers`` is for and matches no module ID as a ``targets``
+                pattern.
+            patterns: A pattern array the precheck has already called clean.
+
+        Returns:
+            A reason phrase, or None when the array can match something.
+        """
+        if not patterns:  # pragma: no cover — the precheck rejected it already
+            return None
+
+        if patterns[0] == "$not":
+            operand = patterns[1]
+            # "any pattern consisting only of wildcards" — `*`, `**`, `***`.
+            # Not a string comparison against "*": `**` is universal too, and an
+            # implementation that compares literals reports one and not the other.
+            if set(operand) == {"*"}:
+                return (
+                    f"['$not', {operand!r}] negates a pattern that matches every module ID, so the rule "
+                    "fires for nothing and protects nothing. It is well-formed, so it loads and changes "
+                    "no decision — but a rule that can never match is not the rule the operator wrote."
+                )
+            return None
+
+        operands = patterns[1:] if patterns[0] == "$or" else patterns
+        if field == _TARGETS_PATH and all(operand == "@external" for operand in operands):
+            return (
+                "'@external' is the caller-side sentinel §6.5 substitutes for a null caller_id. No module "
+                "ID is '@external', so as a 'targets' pattern it matches nothing. It remains entirely "
+                "legal in 'callers', which is what it is for."
+            )
+        return None
 
     @classmethod
     def _precheck_conditions(cls, conditions: Any, *, async_path: bool, path_prefix: str = "") -> list[_Fault]:
@@ -809,6 +1046,15 @@ class ACL:
         ``validate_conditions`` because it reports structural faults in
         ``callers`` and ``targets`` as well (§6.1.4.1), not only condition keys.
 
+        Since spec v1.31.0 (§6.2.1, #112) it is also the **only** reader of
+        :meth:`_never_matches` — tier 2, an array that is well-formed under
+        every structural clause and still matches no legal module ID. Such a
+        rule protects nothing and MUST be reported, but it MUST NOT be rejected
+        and MUST NOT change any access decision; the finding carries the same
+        shape as a structural fault (path ``callers`` / ``targets``, a **null**
+        key, both resolvability flags False), so a reader cannot tell the tiers
+        apart and does not need to.
+
         Loading an ACL only warns, because handler registration is a runtime,
         process-wide act that legitimately happens after discovery; this method
         is what a deployment calls once registration is complete, so it can turn
@@ -840,6 +1086,17 @@ class ACL:
         findings: list[RuleValidationFinding] = []
         for index, rule in enumerate(rules):
             faults = cls._precheck_rule(rule, async_path=False)
+            # Tier 2 is consulted only where the precheck reported the field
+            # clean: an array whose shape is already faulty has no readable
+            # match relation, and two findings on one path would say the same
+            # thing twice.
+            faulty_fields = {fault.path for fault in faults}
+            for pattern_field, patterns in ((_CALLERS_PATH, rule.callers), (_TARGETS_PATH, rule.targets)):
+                if pattern_field in faulty_fields:
+                    continue
+                reason = cls._never_matches(pattern_field, patterns)
+                if reason is not None:
+                    faults.append(_Fault(path=pattern_field, key=None, reason=reason))
             for fault in sorted(faults, key=lambda f: f.path):
                 findings.append(
                     RuleValidationFinding(
@@ -951,7 +1208,10 @@ class ACL:
             ACLRuleError: If the YAML is invalid or has structural errors —
                 including a ``conditions`` value that is not a mapping, which a
                 file has no legitimate reason to carry and which would otherwise
-                surface only as a §6.1.1 case-5 denial at the first ``check()``.
+                surface only as a §6.1.1 case-5 denial at the first ``check()``,
+                and a ``callers`` / ``targets`` array outside §6.2.1's closed
+                shape (spec v1.31.0, #112), which loaded clean and left the rule
+                inert.
         """
         if not os.path.isfile(yaml_path):
             raise ConfigNotFoundError(config_path=yaml_path)
@@ -1001,13 +1261,22 @@ class ACL:
             approval = raw_rule.get("approval", APPROVAL_NOT_REQUIRED)
             _validate_approval(approval, effect, where=f"Rule {i}")
 
+            # PROTOCOL_SPEC §6.2.1 (spec v1.31.0, #112). Checked here as well as
+            # in ACLRule.__post_init__ so a file fault names the offending rule's
+            # index, which the dataclass cannot know — the same split
+            # _validate_effect and _validate_approval already use. `ACL.load`
+            # rejected an OMITTED callers / targets and permitted an EMPTY one,
+            # so a plain YAML file reached the fail-open; the arity closure is
+            # what shuts that route.
             callers = raw_rule["callers"]
             if not isinstance(callers, list):
                 raise ACLRuleError(f"Rule {i} 'callers' must be a list, got {type(callers).__name__}")
+            _validate_pattern_array(callers, "callers", where=f"Rule {i}")
 
             targets = raw_rule["targets"]
             if not isinstance(targets, list):
                 raise ACLRuleError(f"Rule {i} 'targets' must be a list, got {type(targets).__name__}")
+            _validate_pattern_array(targets, "targets", where=f"Rule {i}")
 
             raw_conditions = raw_rule.get("conditions")
             if raw_conditions is not None and not isinstance(raw_conditions, dict):
@@ -1400,7 +1669,16 @@ class ACL:
     def _match_patterns(self, patterns: list[str], value: str, context: Context | None = None) -> bool:
         """Match a list of patterns against a value.
 
-        Implements compound operators ($or, $not) in pattern lists.
+        Implements the compound operators ``$or`` / ``$not`` at index 0 of a
+        pattern array (PROTOCOL_SPEC §6.2.1). The array is FLAT: index 0 is the
+        only operator position and every later element is a plain pattern.
+
+        The ``False`` returns below for an operand-less array are kept as
+        **defence in depth only**. Since spec v1.31.0 every entry point rejects
+        that shape and :meth:`_precheck_patterns` classifies whatever reaches
+        evaluation around them as unevaluable, so no such array should arrive
+        here — and reading an arity fault as a scope decision, which is what
+        these returns used to be, is #112 itself.
         """
         if not patterns:
             return False
@@ -1744,13 +2022,17 @@ class ACL:
 
         Raises:
             ACLRuleError: When ``effect`` is outside ``allow`` / ``deny``
-                (§6.1.5), or when ``approval="required"`` is combined with
-                ``effect="deny"``, which §6.1.6 makes meaningless. Runtime
-                insertion is one of the three entry points §6.1.6 rule 3
-                requires both checks at; this method returning ``None`` is not
-                an exemption, so it signals the way Python signals a value that
-                cannot be constructed — :class:`ACLRule` raises, whether it is
-                built here from *callers* / *targets* or handed in pre-built.
+                (§6.1.5), when ``approval="required"`` is combined with
+                ``effect="deny"``, which §6.1.6 makes meaningless, or when
+                ``callers`` / ``targets`` is outside §6.2.1's closed shape —
+                empty, ``$or`` with no operand, ``$not`` with none or more than
+                one, an empty pattern string, or a reserved token anywhere but
+                index 0 (spec v1.31.0). Runtime insertion is one of the three
+                entry points §6.1.6 rule 3 requires all of these checks at; this
+                method returning ``None`` is not an exemption, so it signals the
+                way Python signals a value that cannot be constructed —
+                :class:`ACLRule` raises, whether it is built here from
+                *callers* / *targets* or handed in pre-built.
 
         Note:
             A condition key with no registered handler warns and does not
