@@ -138,6 +138,41 @@ def _validate_effect(effect: Any, *, where: str) -> None:
         raise ACLRuleError(f"{where} has invalid effect '{effect}', must be 'allow' or 'deny'")
 
 
+def _validate_default_effect(default_effect: Any) -> None:
+    """Reject a ``default_effect`` outside :data:`_EFFECT_VALUES` (§6.1.5).
+
+    **Judged FIRST, before any rule, at every door** (§6.2.1, spec v1.31.0).
+    ``default_effect`` is not a rule and has no index, so the rule ordering
+    never reaches it — and a configuration wrong in both ``default_effect`` and
+    a rule is exactly the one-file-one-error case the ordering exists for. Left
+    unstated before v1.31.0, and implementations differed.
+
+    "First" is ahead of the **file-level checks on the ``rules`` collection
+    itself**, not merely ahead of the individual rules: a document both missing
+    ``rules`` and carrying an unrecognised ``default_effect`` is refused for the
+    ``default_effect``. No conformance case covers that combination, so
+    ``TestDefaultEffectIsJudgedBeforeAnyRule`` in ``tests/test_acl.py`` is the
+    only guard on it.
+
+    One function for both doors that accept one — :meth:`ACL.load` and
+    :meth:`ACL.__init__` — for the same reason :func:`_validate_effect` is one
+    function: the loader used to leave this entirely to the constructor, which
+    runs *after* the whole rule list has been parsed and validated, so a file
+    carrying a bad ``default_effect`` and a bad rule 0 named the rule.
+
+    Args:
+        default_effect: The configuration's ``default_effect`` value.
+
+    Raises:
+        ACLRuleError: When it is not ``"allow"`` or ``"deny"``.
+    """
+    if default_effect not in _EFFECT_VALUES:
+        raise ACLRuleError(
+            f"Invalid default_effect '{default_effect}': must be 'allow' or 'deny'. "
+            "Cross-language parity with apcore-typescript constructor validation (sync A-D-025)."
+        )
+
+
 #: The compound-operator tokens PROTOCOL_SPEC §6.2.1 reserves for **index 0**
 #: of a ``callers`` / ``targets`` array. Detection is by **equality** and never
 #: by a ``$`` prefix or a substring: ``$orders.*`` is an ordinary pattern that
@@ -307,6 +342,69 @@ def _validate_approval(approval: Any, effect: Any, *, where: str) -> None:
         )
 
 
+def _validate_rule(rule: ACLRule, *, where: str) -> None:
+    """Validate one whole rule, in the order §6.2.1 fixes (spec v1.31.0, #112).
+
+    **The order is normative, and §6.2.1 states it for the first time.** A rule
+    that is bad on more than one axis MUST be refused for the first of
+    ``effect`` -> ``approval`` -> ``callers`` / ``targets`` that it fails, so
+    the same rule produces the same error in every implementation. §6.1.6 rule 2
+    *implies* that ``effect`` is read before ``approval`` — judging "``deny``
+    plus ``approval: required``" requires knowing the effect — but it states no
+    order, which is why three implementations had three: ``{callers: [],
+    targets: [], effect: "Allow"}`` was refused for its ``effect`` in one and
+    for its patterns in another, and a third ran ``effect`` -> patterns ->
+    ``approval``. All were conformant, because nothing said otherwise.
+
+    ``effect`` comes first because the pairing rule below it is read *off* the
+    effect: ``effect: "DENY"`` with ``approval: required`` is not a ``deny``
+    rule, so reporting the pairing would name a rule the specification does not
+    recognise.
+
+    **The pattern fields are ONE axis**, covering §6.1.4.1's *type* fault and
+    §6.2.1's *shape* closure together, with the type fault first — a value must
+    be a list of strings before its arity means anything — and ``callers``
+    before ``targets``. Only the shape half is a door rejection here; the type
+    fault is unrepresentable in apcore-rust, so it is reported by
+    :meth:`ACL._precheck_patterns`, which gives it the same precedence within
+    the same field order.
+
+    **Rule index dominates all three axes** (§6.2.1). A rule *set* with more
+    than one bad rule MUST be refused for the LOWEST-INDEXED bad rule, and an
+    implementation MUST NOT sweep one axis across every rule before looking at
+    the next. That is a property of the callers rather than of this function:
+    :meth:`ACL.load` validates rule by rule in file order, and ``ACL(rules=[...])``
+    validates each :class:`ACLRule` as it is constructed, so both refuse the
+    first bad rule rather than the first bad axis. Sweeping is how one
+    implementation came to report a lower-indexed rule's pattern fault from its
+    loader and a higher-indexed rule's ``effect`` fault from its constructor,
+    for the same file.
+
+    **One function, called at every door**, which is §6.2.1's first point of
+    order: a rule offered to :meth:`ACL.add_rule` MUST be validated *at that
+    moment*, whatever its history — including a rule that was
+    well-formed when constructed and has since had ``callers`` or ``targets``
+    assigned — and an implementation MUST NOT rely on the rule type's own
+    construction-time check to cover that door. Threading the check through
+    :meth:`ACLRule.__post_init__` alone reaches ``add_rule`` only *through
+    construction*, which the mutated rule walks straight past.
+
+    Args:
+        rule: The rule to validate. Read only; nothing is mutated or normalised.
+        where: How to name the rule in the message — ``"Rule 3"`` from the
+            loader, ``"ACLRule"`` from direct construction and from runtime
+            insertion. A rule under construction has no position yet and §6.1.5
+            forbids inventing one.
+
+    Raises:
+        ACLRuleError: On the first axis the rule fails.
+    """
+    _validate_effect(rule.effect, where=where)
+    _validate_approval(rule.approval, rule.effect, where=where)
+    _validate_pattern_array(rule.callers, _CALLERS_PATH, where=where)
+    _validate_pattern_array(rule.targets, _TARGETS_PATH, where=where)
+
+
 @dataclass
 class ACLRule:
     """A single access control rule.
@@ -340,11 +438,11 @@ class ACLRule:
         parser — the same door §6.1.1 case 5 and §6.1.4.1 exist for. The loader
         still checks first, so a file fault names the rule's index.
 
-        ``effect`` is checked **before** ``approval`` so that ``effect: "DENY"``
-        with ``approval: required`` reports the value that is actually wrong,
-        rather than a pairing rule read off a value the spec does not recognise.
-        The pattern arrays come last, in field order, so a rule that is wrong on
-        both axes still reports the value the earlier checks already named.
+        The order — ``effect`` -> ``approval`` -> ``callers`` / ``targets`` —
+        is normative (§6.2.1) and lives in :func:`_validate_rule`, which
+        :meth:`ACL.add_rule` calls on the rule it is *handed* rather than only
+        on the one it builds. Construction is one door of three, and it is the
+        only one this hook covers.
 
         The pattern check is deliberately silent on the §6.1.4.1 *type* fault:
         ``ACLRule(callers="admin.*")`` still constructs and is caught at
@@ -352,10 +450,7 @@ class ACLRule:
         apcore-rust and rejecting it here would split the SDKs on which
         configurations exist.
         """
-        _validate_effect(self.effect, where="ACLRule")
-        _validate_approval(self.approval, self.effect, where="ACLRule")
-        _validate_pattern_array(self.callers, "callers", where="ACLRule")
-        _validate_pattern_array(self.targets, "targets", where="ACLRule")
+        _validate_rule(self, where="ACLRule")
 
 
 #: The complete set of keys an ACL rule may carry (PROTOCOL_SPEC §6.1).
@@ -1137,11 +1232,10 @@ class ACL:
         # in-enum for the lifetime of the object. Reads _EFFECT_VALUES rather
         # than an inline literal so the two fields cannot drift on which values
         # are legal; the message stays as it was for cross-language parity.
-        if default_effect not in _EFFECT_VALUES:
-            raise ACLRuleError(
-                f"Invalid default_effect '{default_effect}': must be 'allow' or 'deny'. "
-                "Cross-language parity with apcore-typescript constructor validation (sync A-D-025)."
-            )
+        # §6.2.1 puts this FIRST, before any rule, at every door — and this
+        # constructor takes its rules already built, so "first" is the first
+        # thing it does.
+        _validate_default_effect(default_effect)
 
         self._rules = list(rules) if rules is not None else []
 
@@ -1225,6 +1319,22 @@ class ACL:
         if not isinstance(data, dict):
             raise ACLRuleError(f"ACL config must be a mapping, got {type(data).__name__}")
 
+        # PROTOCOL_SPEC §6.2.1: `default_effect` is judged FIRST, before any
+        # rule, at every door. It is not a rule and has no index, so the rule
+        # ordering below never reaches it — and this used to be left entirely to
+        # the `ACL` constructor at the bottom of this method, which runs after
+        # every rule has been parsed and validated, so a file carrying a bad
+        # `default_effect` AND a bad rule 0 was refused for the RULE here and
+        # for `default_effect` through direct construction: one configuration,
+        # two answers, from two doors of the same SDK.
+        #
+        # Placed above the `rules` checks and not merely above the loop:
+        # "first" is ahead of the file-level checks on the `rules` COLLECTION
+        # too, so a document both missing `rules` and carrying a bad
+        # `default_effect` names the `default_effect`.
+        default_effect: str = data.get("default_effect", "deny")
+        _validate_default_effect(default_effect)
+
         if "rules" not in data:
             raise ACLRuleError("ACL config missing required 'rules' key")
 
@@ -1232,7 +1342,6 @@ class ACL:
         if not isinstance(raw_rules, list):
             raise ACLRuleError(f"'rules' must be a list, got {type(raw_rules).__name__}")
 
-        default_effect: str = data.get("default_effect", "deny")
         rules: list[ACLRule] = []
 
         for i, raw_rule in enumerate(raw_rules):
@@ -2030,9 +2139,14 @@ class ACL:
                 index 0 (spec v1.31.0). Runtime insertion is one of the three
                 entry points §6.1.6 rule 3 requires all of these checks at; this
                 method returning ``None`` is not an exemption, so it signals the
-                way Python signals a value that cannot be constructed —
-                :class:`ACLRule` raises, whether it is built here from
-                *callers* / *targets* or handed in pre-built.
+                way Python signals a value that cannot be constructed.
+
+                The rule is validated **here**, on the object this method is
+                handed, and not only by :class:`ACLRule`'s own constructor
+                (§6.2.1). A pre-built rule may have been well-formed when it was
+                constructed and had ``callers`` or ``targets`` assigned since —
+                :class:`ACLRule` is a non-frozen dataclass — and such a rule
+                reaches this door without passing through any constructor.
 
         Note:
             A condition key with no registered handler warns and does not
@@ -2054,6 +2168,25 @@ class ACL:
                 conditions=conditions,
                 approval=approval,
             )
+
+        # PROTOCOL_SPEC §6.2.1: runtime insertion re-validates the rule it is
+        # HANDED, whatever that rule's history. Threading the check through
+        # :meth:`ACLRule.__post_init__` alone reaches this door only *through
+        # construction*, and :class:`ACLRule` is a non-frozen dataclass — so
+        #
+        #     r = ACLRule(callers=["*"], targets=["*"], effect="deny")
+        #     r.targets = []
+        #     acl.add_rule(r)
+        #
+        # walked straight past it and installed a rule §6.2.1 forbids. The
+        # backstop in :meth:`_precheck_patterns` then made that rule UNEVALUABLE
+        # at every subsequent check rather than a rule, which is the outcome the
+        # door exists to prevent. An implementation MUST NOT rely on the rule
+        # type's own construction-time check to cover this door; the call is
+        # therefore unconditional and covers the kwargs path too, where it is
+        # merely redundant — the predicate is pure, so a second evaluation costs
+        # a comparison and cannot disagree with the first.
+        _validate_rule(rule, where="ACLRule")
 
         with self._lock:
             self._rules.insert(0, rule)

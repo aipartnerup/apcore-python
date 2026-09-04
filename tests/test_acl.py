@@ -899,6 +899,357 @@ class TestPatternArrayArityHeadlineCases:
             ACLRule(callers=[], targets=[], effect="Allow")
 
 
+class TestAddRuleReValidatesTheRuleItIsHanded:
+    """§6.2.1: runtime insertion validates the rule **at that moment**, whatever its history.
+
+    Resolved normatively in spec v1.31.0 because two of three implementations
+    re-validated and one did not, and `acl_pattern_arity.json` cannot express
+    the difference: `entry_points` deliberately carries no per-door expectation,
+    so a shape rejected at construction reads as rejected at every door listed.
+
+    This SDK was the one that did not. The pattern closure was threaded through
+    `ACLRule.__post_init__`, which reaches `add_rule` only *through
+    construction* — and `ACLRule` is a non-frozen dataclass, so a rule that was
+    well-formed when built and has had `callers` or `targets` assigned since
+    walks straight past it. §6.1.5's v1.30.0 text leaves mutation-then-use to a
+    **MAY** for `effect`, which is sound there because a closed `effect` is
+    never read again; a pattern array **is** read, by the matcher, on the next
+    `check()`.
+    """
+
+    def test_a_rule_mutated_after_construction_is_rejected(self) -> None:
+        """The exact sequence §6.2.1 names, which inserted without raising before.
+
+        The rule was well-formed when constructed, so `__post_init__` passed;
+        the assignment is the one route no constructor intercepts. Without the
+        re-validation the ACL ends up holding a rule §6.2.1 forbids, which
+        `_precheck_patterns` then reports as UNEVALUABLE on every subsequent
+        check — the fault landing at each `check()` instead of at the door.
+        """
+        rule = ACLRule(callers=["*"], targets=["*"], effect="deny")
+        rule.targets = []
+
+        acl = ACL(default_effect="allow")
+        with pytest.raises(ACLRuleError, match=r"ACLRule has an invalid 'targets'"):
+            acl.add_rule(rule)
+        assert acl.rules == ()
+
+    def test_a_mutated_callers_field_is_rejected_too(self) -> None:
+        """Both fields, or an implementation that checks one passes half the fixture."""
+        rule = ACLRule(callers=["*"], targets=["*"], effect="deny")
+        rule.callers = ["$not"]
+
+        acl = ACL(default_effect="allow")
+        with pytest.raises(ACLRuleError, match=r"ACLRule has an invalid 'callers'"):
+            acl.add_rule(rule)
+        assert acl.rules == ()
+
+    def test_a_pre_built_well_formed_rule_still_inserts(self) -> None:
+        """The control. A door that rejects everything satisfies the case above."""
+        rule = ACLRule(callers=["api.*"], targets=["executor.*"], effect="allow")
+
+        acl = ACL(default_effect="deny")
+        acl.add_rule(rule)
+
+        assert len(acl.rules) == 1
+        assert acl.rules[0] is rule
+        assert acl.check("api.gateway", "executor.email.send") is True
+
+    def test_a_rule_mutated_back_into_shape_is_accepted(self) -> None:
+        """The check reads the rule's *current* value, not a verdict cached at construction."""
+        rule = ACLRule(callers=["*"], targets=["*"], effect="deny")
+        rule.targets = []
+        rule.targets = ["cli.*"]
+
+        acl = ACL(default_effect="allow")
+        acl.add_rule(rule)
+
+        assert len(acl.rules) == 1
+        assert acl.check("api.gateway", "cli.rm") is False
+
+
+class TestRuleValidationOrder:
+    """§6.2.1: a rule bad on more than one axis is refused for `effect`, then `approval`, then the patterns.
+
+    Resolved normatively in spec v1.31.0 for the same reason the door above was:
+    `{callers: [], targets: [], effect: "Allow"}` was refused for its `effect` in
+    one implementation and for its patterns in another, both conformant because
+    nothing said otherwise. apcore-rust ordered it the other way and moves; this
+    SDK already ordered it this way, so these tests exist to keep the three from
+    drifting apart again rather than to change anything here.
+
+    §6.2.1 states this order for the first time. §6.1.6 rule 2 *implies* that
+    `effect` is read before `approval` — judging "`deny` plus
+    `approval: required`" requires knowing the effect — but states no order, and
+    an implementer reading §6.1.6 alone will not find one.
+    """
+
+    def test_the_effect_is_reported_before_the_patterns(self) -> None:
+        """The rule §6.2.1 quotes verbatim as the one that got two answers."""
+        with pytest.raises(ACLRuleError, match=r"invalid effect 'Allow'"):
+            ACLRule(callers=[], targets=[], effect="Allow")
+
+    def test_the_effect_is_reported_before_the_approval(self) -> None:
+        """`DENY` is not a `deny` rule, so the pairing rule must not be read off it."""
+        with pytest.raises(ACLRuleError, match=r"invalid effect 'DENY'"):
+            ACLRule(callers=[], targets=[], effect="DENY", approval="required")
+
+    def test_the_approval_is_reported_before_the_patterns(self) -> None:
+        """The middle step, which no earlier test pinned.
+
+        `approval: required` on a `deny` rule names a state that means nothing,
+        and it is reported ahead of the pattern arrays — so a rule wrong on both
+        gets the same message in every implementation.
+        """
+        with pytest.raises(ACLRuleError, match=r"carries approval: required on a 'deny' rule"):
+            ACLRule(callers=[], targets=[], effect="deny", approval="required")
+
+    def test_callers_is_reported_before_targets(self) -> None:
+        """Field order within the last step, so the two arrays cannot swap either."""
+        with pytest.raises(ACLRuleError, match=r"ACLRule has an invalid 'callers'"):
+            ACLRule(callers=[], targets=[], effect="deny")
+
+    def test_the_order_holds_at_runtime_insertion_too(self) -> None:
+        """The order is a property of the rule, not of the door that refuses it.
+
+        `add_rule` re-validates what it is handed, so it runs the same sequence;
+        an implementation that open-coded a second check here could order it
+        differently and pass every test above.
+        """
+        acl = ACL(default_effect="deny")
+        rule = ACLRule(callers=["*"], targets=["*"], effect="allow")
+        rule.effect = "Allow"
+        rule.callers = []
+
+        with pytest.raises(ACLRuleError, match=r"invalid effect 'Allow'"):
+            acl.add_rule(rule)
+        assert acl.rules == ()
+
+    def test_the_type_fault_is_reported_before_the_shape_fault(self) -> None:
+        """The pattern fields are ONE axis, and within it the type fault comes first.
+
+        A value must be a list of strings before its arity means anything. The
+        type fault is not a door rejection — it is unrepresentable in
+        apcore-rust, so §6.1.4.1 leaves it to the precheck — which is why this
+        is asserted where both faults can be seen at once.
+        """
+        captured: list[AuditEntry] = []
+        rule = ACLRule(callers=["*"], targets=["*"], effect="deny")
+        acl = ACL(rules=[rule], default_effect="allow", audit_logger=captured.append)
+
+        # `""` is empty AND the wrong type. The type reading wins: a bare string
+        # is not a pattern array at all, so it has no arity to be wrong about.
+        rule.callers = ""  # type: ignore[assignment]
+        acl.check("api.gateway", "cli.rm")
+
+        error = captured[0].handler_error
+        assert error is not None
+        assert error.startswith("callers: callers must be a list of strings, got str"), error
+
+        # And the field order within the axis, with a fault on each.
+        rule.targets = []
+        assert [f.condition_path for f in acl.validate_rules()] == ["callers", "targets"]
+
+
+class TestTheLowestIndexedBadRuleIsTheOneRefused:
+    """§6.2.1: rule index dominates all three axes.
+
+    A rule set with more than one bad rule MUST be refused for the
+    **lowest-indexed** bad rule, and an implementation MUST NOT sweep one axis
+    across every rule before looking at the next. Both halves exist so that one
+    file produces one error, whichever door it arrives through and whichever
+    implementation reads it — an implementation that swept axis by axis reported
+    a lower-indexed rule's pattern fault from its loader and a higher-indexed
+    rule's `effect` fault from its constructor, for the same file.
+    """
+
+    def test_the_loader_refuses_rule_zero_even_when_rule_one_fails_an_earlier_axis(self, tmp_path: Path) -> None:
+        """Rule 0's patterns, not rule 1's `effect`.
+
+        This is the sweep the MUST NOT forbids: `effect` precedes the pattern
+        axis *within a rule*, so an implementation that checked every rule's
+        `effect` first would name rule 1 here.
+        """
+        body = json.dumps(
+            {
+                "default_effect": "deny",
+                "rules": [
+                    {"callers": [], "targets": ["*"], "effect": "allow"},
+                    {"callers": ["*"], "targets": ["*"], "effect": "Allow"},
+                ],
+            }
+        )
+        path = tmp_path / "acl.yaml"
+        path.write_text(body)
+
+        with pytest.raises(ACLRuleError, match=r"Rule 0 has an invalid 'callers'"):
+            ACL.load(str(path))
+
+    def test_the_loader_refuses_rule_zero_when_the_faults_are_the_other_way_round(self, tmp_path: Path) -> None:
+        """The control, so the test above cannot pass on a hardcoded axis preference."""
+        body = json.dumps(
+            {
+                "default_effect": "deny",
+                "rules": [
+                    {"callers": ["*"], "targets": ["*"], "effect": "Allow"},
+                    {"callers": [], "targets": ["*"], "effect": "allow"},
+                ],
+            }
+        )
+        path = tmp_path / "acl.yaml"
+        path.write_text(body)
+
+        with pytest.raises(ACLRuleError, match=r"Rule 0 has invalid effect 'Allow'"):
+            ACL.load(str(path))
+
+    def test_direct_construction_refuses_the_same_rule_the_loader_does(self) -> None:
+        """The two doors MUST agree, which is the whole point of the cross-rule half.
+
+        `ACL(rules=[...])` validates each `ACLRule` as it is constructed, so the
+        list is walked in index order and the first bad rule raises — the same
+        answer `ACL.load` gives for the same file.
+        """
+        with pytest.raises(ACLRuleError, match=r"ACLRule has an invalid 'callers'"):
+            ACL(
+                rules=[
+                    ACLRule(callers=[], targets=["*"], effect="allow"),
+                    ACLRule(callers=["*"], targets=["*"], effect="Allow"),
+                ],
+                default_effect="deny",
+            )
+
+    @pytest.mark.parametrize(
+        ("rule_zero", "expected"),
+        [
+            ({"callers": ["*"], "targets": ["*"], "effect": "Allow"}, r"Rule 0 has invalid effect 'Allow'"),
+            ({"callers": ["*"], "targets": ["*"], "effect": "allow", "priority": 3}, r"Rule 0 carries 'priority'"),
+            ({"targets": ["*"], "effect": "allow"}, r"Rule 0 missing required key 'callers'"),
+            ({"callers": [], "targets": ["*"], "effect": "allow"}, r"Rule 0 has an invalid 'callers'"),
+        ],
+        ids=["effect", "unknown_key", "missing_field", "pattern_shape"],
+    )
+    def test_a_loader_only_axis_does_not_escape_the_per_rule_loop(
+        self, rule_zero: dict[str, object], expected: str, tmp_path: Path
+    ) -> None:
+        """ "Axis" is EVERY per-rule check a door performs, not only effect / approval / patterns.
+
+        A loader has axes the other doors cannot have — #107's rule-key closure,
+        the missing-field check, the value-type checks — and the sweep
+        prohibition binds those too. apcore-rust closed the key set across the
+        WHOLE FILE before any rule's `effect` was read, so a file bad at rule 0
+        was refused for rule 1. Rule 1 here carries an unknown key, so any check
+        that escapes the per-rule loop names it and fails this.
+        """
+        body = json.dumps(
+            {
+                "default_effect": "deny",
+                "rules": [rule_zero, {"callers": ["*"], "targets": ["*"], "effect": "allow", "priority": 3}],
+            }
+        )
+        path = tmp_path / "acl.yaml"
+        path.write_text(body)
+
+        with pytest.raises(ACLRuleError, match=expected):
+            ACL.load(str(path))
+
+
+class TestDefaultEffectIsJudgedBeforeAnyRule:
+    """§6.2.1: `default_effect` is judged FIRST, before any rule, at every door.
+
+    It is not a rule and has no index, so the rule ordering never reaches it —
+    and a configuration wrong in both `default_effect` and a rule is exactly the
+    one-file-one-error case the ordering exists for. Unstated before v1.31.0,
+    and implementations differed.
+
+    This SDK left it entirely to the `ACL` constructor, which `ACL.load` reaches
+    only at the very bottom, after every rule has been parsed and validated. So
+    a file carrying a bad `default_effect` AND a bad rule 0 was refused for the
+    RULE through the loader and for `default_effect` through direct
+    construction: one configuration, two answers, from two doors of one SDK.
+    """
+
+    def test_the_loader_names_the_default_effect_and_not_rule_zero(self, tmp_path: Path) -> None:
+        body = json.dumps(
+            {
+                "default_effect": "Allow",
+                "rules": [{"callers": [], "targets": ["*"], "effect": "allow"}],
+            }
+        )
+        path = tmp_path / "acl.yaml"
+        path.write_text(body)
+
+        with pytest.raises(ACLRuleError, match=r"Invalid default_effect 'Allow'"):
+            ACL.load(str(path))
+
+    def test_the_constructor_judges_it_before_it_looks_at_the_rules(self) -> None:
+        """The rules are already built here, so "first" is the first thing it does."""
+        with pytest.raises(ACLRuleError, match=r"Invalid default_effect 'Allow'"):
+            ACL(rules=[ACLRule(callers=["*"], targets=["*"], effect="allow")], default_effect="Allow")
+
+    def test_it_is_judged_with_no_rules_at_all(self) -> None:
+        """It has no index and needs no rule; a rule-less config is still refused."""
+        with pytest.raises(ACLRuleError, match=r"Invalid default_effect 'Allow'"):
+            ACL(default_effect="Allow")
+
+    def test_a_good_default_effect_still_lets_the_rule_fault_through(self, tmp_path: Path) -> None:
+        """Control. Judging it first must not swallow the fault that follows it."""
+        body = json.dumps(
+            {
+                "default_effect": "allow",
+                "rules": [{"callers": [], "targets": ["*"], "effect": "allow"}],
+            }
+        )
+        path = tmp_path / "acl.yaml"
+        path.write_text(body)
+
+        with pytest.raises(ACLRuleError, match=r"Rule 0 has an invalid 'callers'"):
+            ACL.load(str(path))
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            {"default_effect": "Allow"},
+            {"default_effect": "Allow", "rules": "nope"},
+            {"default_effect": "Allow", "rules": {"a": 1}},
+        ],
+        ids=["rules_missing", "rules_not_a_list", "rules_a_mapping"],
+    )
+    def test_first_means_ahead_of_the_file_level_checks_on_the_rules_collection(
+        self, document: dict[str, object], tmp_path: Path
+    ) -> None:
+        """§6.2.1: "first" is ahead of the checks on the `rules` COLLECTION, not merely ahead of the rules.
+
+        A document both missing (or malforming) `rules` and carrying an
+        unrecognised `default_effect` is refused for the `default_effect`. No
+        conformance case covers this combination — `acl_pattern_arity.json`
+        always supplies a well-formed `rules` list — so the fixture cannot catch
+        a drift here and this test is the only guard.
+        """
+        path = tmp_path / "acl.yaml"
+        path.write_text(json.dumps(document))
+
+        with pytest.raises(ACLRuleError, match=r"Invalid default_effect 'Allow'"):
+            ACL.load(str(path))
+
+    @pytest.mark.parametrize(
+        ("document", "expected"),
+        [
+            ({"default_effect": "allow"}, r"missing required 'rules' key"),
+            ({"default_effect": "allow", "rules": "nope"}, r"'rules' must be a list, got str"),
+        ],
+        ids=["rules_missing", "rules_not_a_list"],
+    )
+    def test_the_file_level_checks_still_fire_behind_a_good_default_effect(
+        self, document: dict[str, object], expected: str, tmp_path: Path
+    ) -> None:
+        """Control for the boundary above: moving `default_effect` ahead must not swallow them."""
+        path = tmp_path / "acl.yaml"
+        path.write_text(json.dumps(document))
+
+        with pytest.raises(ACLRuleError, match=expected):
+            ACL.load(str(path))
+
+
 class TestPatternArrayArityBackstop:
     """§6.1.4.1 classifies a shape assigned onto an already-constructed rule.
 
