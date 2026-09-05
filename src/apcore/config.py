@@ -204,6 +204,36 @@ _DEFAULTS: dict[str, Any] = {
 #: The check is one level deep, matching §9.14 step 2 ("each key present in
 #: ``apcore_data[section]``"), so only each section's direct child names are
 #: needed here.
+#: The closed set of **path-typed** configuration keys — those whose value is a
+#: filesystem path (PROTOCOL_SPEC §9.2.1). Declared canonically by
+#: ``"x-apcore-path": true`` in ``schemas/apcore-config.schema.json``; this tuple
+#: is that projection.
+#:
+#: It exists for consumers outside this SDK. Anything that forwards apcore
+#: configuration across a process boundary — a CLI spawning a worker, a
+#: supervisor building a container environment — has to know which ``APCORE_*``
+#: variables carry paths, because a relative value silently re-roots wherever the
+#: working directory differs. Without a published set each such consumer builds
+#: its own and drifts.
+#:
+#: Two exclusions are deliberate. ``bindings.pattern`` is a glob matched against
+#: filenames *within* ``bindings.dir``, never resolved as a path itself.
+#: ``id_map.overrides`` holds module IDs.
+#:
+#: ``extensions.roots`` is list-valued; every element is path-typed in both the
+#: bare-string and the ``{root, namespace}`` form, which is why it is reported
+#: under the element key ``extensions.roots[]``.
+#:
+#: This set says *which* keys carry paths. It says nothing about what a relative
+#: value resolves against — that base is unspecified as of spec v1.34.0.
+_PATH_TYPED_CONFIG_KEYS: tuple[str, ...] = (
+    "acl.root",
+    "bindings.dir",
+    "extensions.root",
+    "extensions.roots[]",
+    "schema.root",
+)
+
 _FRAMEWORK_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         "$schema",
@@ -818,6 +848,25 @@ class Config:
             else:
                 return fallback
         return node
+
+    @classmethod
+    def path_typed_keys(cls) -> tuple[str, ...]:
+        """Return the closed set of path-typed configuration keys (§9.2.1).
+
+        A path-typed key is one whose value is a filesystem path. The set is
+        declared canonically by ``"x-apcore-path": true`` in
+        ``schemas/apcore-config.schema.json``; this returns that projection,
+        sorted, as a tuple.
+
+        ``extensions.roots`` is reported as ``extensions.roots[]`` because it is
+        list-valued and every element carries a path.
+
+        Note what this does NOT tell you: what a *relative* value in one of these
+        keys is resolved against. That base is unspecified as of spec v1.34.0 and
+        currently differs between keys — ``acl.root`` resolves against the config
+        file's directory, ``schema.root`` against the process CWD.
+        """
+        return _PATH_TYPED_CONFIG_KEYS
 
     # ------------------------------------------------------------------
     # Namespace registry (class-level)

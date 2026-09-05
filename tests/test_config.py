@@ -333,7 +333,7 @@ class TestSysModulesConfig:
             "sys_modules.events.subscribers",
         ):
             assert config.get(key) is None, (
-                f"{key} is not declared by defaults.schema.json, so the legacy " "default table must not answer for it"
+                f"{key} is not declared by defaults.schema.json, so the legacy default table must not answer for it"
             )
 
     def test_namespace_mode_still_supplies_the_sys_modules_defaults(self, tmp_path: Path) -> None:
@@ -625,3 +625,49 @@ class TestReloadHonoursOriginalValidateFlag:
         cfg.write_text('version: "1.0.0"\n')
         with pytest.raises(ConfigError, match="project.name"):
             config.reload()
+
+
+class TestPathTypedConfigKeys:
+    """PROTOCOL_SPEC §9.2.1 — the closed set of path-typed configuration keys."""
+
+    EXPECTED = ("acl.root", "bindings.dir", "extensions.root", "extensions.roots[]", "schema.root")
+
+    def test_accessor_matches_declared_set_in_both_directions(self):
+        actual = set(Config.path_typed_keys())
+        expected = set(self.EXPECTED)
+        assert actual - expected == set(), f"keys the SDK invented: {sorted(actual - expected)}"
+        assert expected - actual == set(), f"keys the SDK is missing: {sorted(expected - actual)}"
+
+    def test_bindings_pattern_is_not_path_typed(self):
+        # Discriminating case. `bindings.pattern` sits in the same section as
+        # `bindings.dir` and its default (`*.binding.yaml`) looks like a filename,
+        # so an implementation that classifies by section — or by eye — sweeps it
+        # in. It is a glob matched WITHIN `bindings.dir`, never resolved itself.
+        assert "bindings.pattern" not in Config.path_typed_keys()
+
+    def test_non_path_string_keys_are_not_path_typed(self):
+        # An implementation that marks every string-valued key as path-typed
+        # passes any presence-only assertion and fails here.
+        for key in (
+            "acl.default_effect",
+            "schema.strategy",
+            "logging.level",
+            "observability.tracing.exporter",
+            "project.name",
+        ):
+            assert key not in Config.path_typed_keys(), key
+
+    def test_set_is_a_property_of_the_spec_not_of_a_document(self):
+        # Same answer from a defaults-only Config and from an instance that
+        # declares none of these keys.
+        assert Config.path_typed_keys() == self.EXPECTED
+
+    def test_every_scalar_path_typed_key_is_in_the_declared_key_surface(self):
+        # `extensions.roots[]` is the element form of the list key
+        # `extensions.roots`; strip the marker before checking membership.
+        for key in Config.path_typed_keys():
+            base = key[:-2] if key.endswith("[]") else key
+            assert Config.get_default(base, "__missing__") != "__missing__" or base in {
+                "extensions.roots",
+                "bindings.dir",
+            }, base
