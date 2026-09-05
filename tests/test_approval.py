@@ -39,6 +39,8 @@ class TestApprovalRequest:
             annotations=ann,
             description="Test module",
             tags=["admin"],
+            caller_id="agent.orchestrator",
+            action="test.module",
         )
         assert req.module_id == "test.module"
         assert req.arguments == {"key": "value"}
@@ -46,6 +48,8 @@ class TestApprovalRequest:
         assert req.annotations is ann
         assert req.description == "Test module"
         assert req.tags == ["admin"]
+        assert req.caller_id == "agent.orchestrator"
+        assert req.action == "test.module"
 
     def test_defaults(self) -> None:
         ctx = Context.create()
@@ -58,6 +62,8 @@ class TestApprovalRequest:
         )
         assert req.description is None
         assert req.tags == []
+        assert req.caller_id is None
+        assert req.action == ""
 
     def test_frozen(self) -> None:
         ctx = Context.create()

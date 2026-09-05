@@ -38,6 +38,16 @@ class CancelToken:
         if self._cancelled:
             raise ExecutionCancelledError()
 
+    def raise_if_cancelled(self) -> None:
+        """Raise ExecutionCancelledError if cancelled.
+
+        Canonical spec method name (`docs/features/cancellation.md`, "Contract:
+        CancelToken.raise_if_cancelled"). Identical behavior to :meth:`check`,
+        which is used throughout this SDK and elsewhere by external callers and
+        is NOT deprecated by this method's addition — both names are supported.
+        """
+        self.check()
+
     def reset(self) -> None:
         """Reset the token for reuse."""
         self._cancelled = False

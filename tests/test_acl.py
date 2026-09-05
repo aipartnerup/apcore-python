@@ -1251,20 +1251,43 @@ class TestDefaultEffectIsJudgedBeforeAnyRule:
 
 
 class TestPatternArrayArityBackstop:
-    """§6.1.4.1 classifies a shape assigned onto an already-constructed rule.
+    """§6.1.4.1 classifies a shape assigned onto a rule already installed in a
+    live ACL and mutated afterward through a reference the caller already holds.
 
-    ``ACLRule`` is a non-frozen dataclass, so ``rule.targets = []`` is the one
-    route no constructor can intercept. §6.1.5's v1.30.0 reasoning for why the
-    ``effect`` closure needs no backstop — the value is never read again once the
-    doors are shut — does **not** transfer: a mutated pattern array *is* read,
-    because the matcher consults it on the next ``check()``.
+    ``ACLRule`` is a non-frozen dataclass, so mutating a rule already inside a
+    constructed ``ACL`` (via the public ``rules`` accessor, exactly as a real
+    caller would have to) is the one route no door runs again to intercept.
+    §6.1.5's v1.30.0 reasoning for why the ``effect`` closure needs no backstop
+    — the value is never read again once the doors are shut — does **not**
+    transfer: a mutated pattern array *is* read, because the matcher consults
+    it on the next ``check()``.
+
+    Spec v1.33.0 disambiguates "assigned onto an already-constructed rule"
+    between this scenario (already past every door, safe to leave to the
+    backstop) and a rule mutated *before* it is ever first offered to a door —
+    which ``ACL(rules=[...])`` itself now rejects; see
+    ``TestConstructionRejectsAPreviouslyMutatedRule`` below for that case. This
+    class covered the wrong one before the disambiguation: every parametrized
+    test here used to mutate the rule *before* the first ``ACL(...)`` call
+    that would ever see it — which was never distinguishable from this,
+    correct, "already installed" scenario by its outcome (both are safe at
+    ``check()`` time), only by whether construction had already succeeded.
     """
 
     @staticmethod
     def _mutated(field: str, value: list[str], *, effect: str, default_effect: str, **kwargs: object) -> ACL:
         rule = ACLRule(callers=["*"], targets=["*"], effect=effect, **kwargs)  # type: ignore[arg-type]
-        setattr(rule, field, value)
-        return ACL(rules=[rule], default_effect=default_effect)
+        # Construct FIRST, while `rule` is still well-formed — `ACL.__init__`
+        # validates every rule it is handed (spec v1.33.0), so a rule built
+        # this way would be rejected if mutated before this point.
+        acl = ACL(rules=[rule], default_effect=default_effect)
+        # Mutate through the PUBLIC accessor, not the closed-over local `rule`
+        # reference — this is the route a real caller has, and the one
+        # apcore-rust's `&[ACLRule]` (no `rules_mut`) deliberately does not
+        # expose. Mirrors the conformance driver's `_run_backstop` exactly.
+        installed = acl.rules[0]
+        setattr(installed, field, value)
+        return acl
 
     @pytest.mark.parametrize("value", [[], ["$or"], ["$not"], ["$not", "a", "b"], [""], ["api.*", "$or"]])
     def test_a_mutated_deny_rule_takes_effect_and_denies(self, value: list[str]) -> None:
@@ -1370,6 +1393,49 @@ class TestPatternArrayArityBackstop:
         assert acl.check("api.gateway", "cli.rm") is False
         assert captured[0].handler_error is None
         assert acl.validate_rules() == ()
+
+
+class TestConstructionRejectsAPreviouslyMutatedRule:
+    """§6.1.4.1 / §6.2.1 (spec v1.33.0): construction history does not exempt.
+
+    A rule mutated to a malformed shape BEFORE it is ever offered to a door —
+    including ``ACL``'s own constructor, which accepts a list of already-built
+    ``ACLRule`` objects exactly as ``add_rule`` accepts one — is being offered
+    to that door for the first time. It MUST be rejected there like any other
+    rule reaching that door, the same as ``add_rule`` already rejects a rule
+    mutated after its own construction (§6.1.6 rule 3). This is the case
+    ``TestPatternArrayArityBackstop`` covered by mistake before the spec
+    disambiguated "assigned onto an already-constructed rule": that class now
+    constructs the ACL *before* mutating (installed-then-mutated, genuinely
+    uninterceptable); this class mutates *before* the ACL the rule is handed to
+    has ever been constructed, which IS interceptable and must raise.
+    """
+
+    @staticmethod
+    def _mutated_then_constructed(field: str, value: list[str], *, effect: str, default_effect: str) -> ACL:
+        rule = ACLRule(callers=["*"], targets=["*"], effect=effect)
+        setattr(rule, field, value)
+        return ACL(rules=[rule], default_effect=default_effect)
+
+    @pytest.mark.parametrize("value", [[], ["$or"], ["$not"], ["$not", "a", "b"], [""], ["api.*", "$or"]])
+    def test_targets_mutated_before_first_construction_is_rejected(self, value: list[str]) -> None:
+        with pytest.raises(ACLRuleError):
+            self._mutated_then_constructed("targets", value, effect="deny", default_effect="allow")
+
+    @pytest.mark.parametrize("value", [[], ["$or"], ["$not"], ["$not", "a", "b"], [""], ["api.*", "$or"]])
+    def test_callers_mutated_before_first_construction_is_rejected(self, value: list[str]) -> None:
+        with pytest.raises(ACLRuleError):
+            self._mutated_then_constructed("callers", value, effect="allow", default_effect="deny")
+
+    def test_a_rule_mutated_then_passed_in_a_multi_rule_list_is_rejected(self) -> None:
+        """The list form: the first malformed rule is refused, same as a
+        rule built with a bad value directly — construction history is per
+        rule, and one well-formed neighbour does not rescue it."""
+        good = ACLRule(callers=["*"], targets=["cli.*"], effect="allow")
+        bad = ACLRule(callers=["*"], targets=["*"], effect="deny")
+        bad.targets = []
+        with pytest.raises(ACLRuleError):
+            ACL(rules=[good, bad], default_effect="deny")
 
 
 class TestPatternArrayNeverMatches:

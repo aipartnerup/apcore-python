@@ -41,6 +41,17 @@ class ApprovalRequest:
         annotations: Module's annotation set (requires_approval is guaranteed true).
         description: Module's human-readable description.
         tags: Module's tags.
+        caller_id: The invoking module's ID, from ``context.caller_id`` — ``None``
+            on a top-level call (spec decision D-03, PROTOCOL_SPEC §7.3.1). Lets a
+            handler (Slack approver, audit log) read who is asking without
+            traversing ``context``. Defaults to ``None`` only so this field can
+            follow ``tags`` in argument order; ``BuiltinApprovalGate`` always
+            supplies it explicitly.
+        action: The module ID being invoked — equal to ``module_id``, exposed
+            under its own name so a handler can read "what is being done"
+            without cross-referencing ``module_id`` (spec decision D-03).
+            Defaults to ``""`` for the same field-ordering reason as
+            ``caller_id``; ``BuiltinApprovalGate`` always supplies it explicitly.
     """
 
     module_id: str
@@ -49,6 +60,8 @@ class ApprovalRequest:
     annotations: ModuleAnnotations
     description: str | None = None
     tags: list[str] = field(default_factory=list)
+    caller_id: str | None = None
+    action: str = ""
 
 
 @dataclass(frozen=True)

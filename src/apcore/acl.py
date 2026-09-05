@@ -1222,9 +1222,21 @@ class ACL:
                 every check() call. Useful for structured audit trails.
 
         Raises:
-            ACLRuleError: When *default_effect* is outside ``allow`` / ``deny``.
-                Each rule in *rules* validated its own ``effect`` when it was
-                constructed, which is the same closed set one level down.
+            ACLRuleError: When *default_effect* is outside ``allow`` / ``deny``,
+                or when a rule in *rules* is invalid **at this moment** —
+                whatever its history. Each rule validated its own ``effect``,
+                ``approval`` and pattern-array shape when it was constructed
+                (``ACLRule.__post_init__``), but a rule mutated *after* its own
+                construction and handed straight to this constructor — never
+                having been installed in any ACL — is being offered to this
+                door for the first time, and this constructor does not get to
+                treat construction history as an exemption from the check
+                every other rule in *rules* gets (PROTOCOL_SPEC §6.1.4.1 /
+                §6.2.1, spec v1.33.0). This is narrower than it sounds: a rule
+                already installed inside a *previously constructed* ``ACL`` and
+                mutated afterward through a reference the caller already holds
+                is a different, uninterceptable route — see §6.1.1's
+                UNEVALUABLE backstop, which this constructor does not affect.
         """
         # PROTOCOL_SPEC §6.1.5 closes ``default_effect`` on the same terms as a
         # rule's ``effect``, and this constructor is the only writer —
@@ -1238,6 +1250,23 @@ class ACL:
         _validate_default_effect(default_effect)
 
         self._rules = list(rules) if rules is not None else []
+
+        # PROTOCOL_SPEC §6.1.6 rule 3: direct construction is one of the three
+        # entry points a malformed rule MUST be rejected at, and §6.1.4.1 /
+        # §6.2.1 (spec v1.33.0) settle what "already-constructed rule" means
+        # for the backstop that exempts *only* a rule already installed in a
+        # live ACL and mutated afterward through a caller's own reference —
+        # not a rule mutated before it ever reaches this constructor.
+        # ``ACLRule.__post_init__`` already caught this at true construction
+        # time; what it cannot catch is `rule.targets = []` run *after*
+        # construction and *before* being handed to ``ACL(rules=[rule])`` for
+        # the first time, since `__post_init__` runs exactly once. Same
+        # function, same ``where=`` convention `add_rule` uses, so both doors
+        # raise an identical message for the same fault, in list order (lowest
+        # index first — a `for` loop raising on first failure already gives us
+        # this for free).
+        for rule in self._rules:
+            _validate_rule(rule, where="ACLRule")
 
         self._default_effect: str = default_effect
         self._yaml_path: str | None = None

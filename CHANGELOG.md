@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.29.0] - 2026-09-05
+
+### Added
+
+- **`ApprovalRequest.caller_id` and `ApprovalRequest.action` (spec decision D-03, `docs/spec/2026-05-decision-log.md`, PROTOCOL_SPEC §7.3.1).** `docs/features/approval-system.md`'s Contract block already required the request a handler receives to carry `caller_id` and `action`; the dataclass carried neither, so a handler (Slack approver, audit log) that needed "who is asking" or "what module is this" had to traverse `request.context` and re-derive `action` from `request.module_id` under a second name. Both fields are additive with safe defaults (`caller_id: str | None = None`, `action: str = ""`) so no existing keyword-constructed `ApprovalRequest` breaks; `BuiltinApprovalGate` (`builtin_steps.py`) always supplies both explicitly at its one construction site — `caller_id=ctx.context.caller_id` (`None` on a top-level call, read straight off `Context.caller_id` with no `"@external"`-style substitution) and `action=ctx.module_id`. Conformance fixture `approval_request_fields.json` (apcore repo) pins both scenarios; this SDK's own suite covers the same two cases (`test_approval_executor.py`, `test_approval_system_spec.py`).
+
+- **`CancelToken.raise_if_cancelled()` (`docs/features/cancellation.md`, "Contract: CancelToken.raise_if_cancelled").** The spec's Contract block names this method; the Python SDK only had `check()`, an identical-behavior method under a different name, which `tests/test_cancellation_spec.py` had been recording as a documented cross-language naming gap (three skipped clauses). `raise_if_cancelled()` is purely additive — it delegates to `check()`, which remains the primary name used throughout this SDK and by existing external callers and is **not** deprecated. The three previously-skipped spec clauses now run for real against the new method.
+
+### Fixed
+
+- **`ACL(rules=[...])` did not re-validate a rule mutated before it was ever passed in, unlike apcore-typescript and apcore-rust, which already rejected the identical input (PROTOCOL_SPEC §6.1.4.1 / §6.2.1, spec v1.33.0).** `ACLRule.__post_init__` validates a rule's `effect`, `approval` and pattern-array shape once, at true construction time; a rule built well-formed and then mutated (`rule.targets = []`) before ever being handed to `ACL(rules=[rule])` walked straight past that check, because `ACL.__init__` itself ran no validation of its own — relying entirely on `add_rule`'s equivalent check (already fixed in `f6fed56`/`9dd6ed5`), which covers a *different* door. `ACL.__init__` now calls the same `_validate_rule` `add_rule` calls, on every rule it is handed, and raises `ACLRuleError` on the first (lowest-index) invalid one — direct construction is one of the three entry points §6.1.6 rule 3 names, and a rule's construction history is not legible to the door receiving it. **This does not touch `TestPatternArrayArityBackstop`**: every one of its cases now constructs the `ACL` from a well-formed rule *first* and mutates the already-installed rule through the public `rules` accessor afterward — the one route no door runs again to intercept, and precisely the scenario PROTOCOL_SPEC's disambiguated §6.1.4.1/§6.2.1 language now says the backstop is *for*. New `TestConstructionRejectsAPreviouslyMutatedRule` in `tests/test_acl.py` and a new `construct`-door driver (`_door_construct_mutated`) in `conformance/test_acl_pattern_arity.py` (apcore repo) cover the newly-rejected sequence; apcore-typescript and apcore-rust already pass it unchanged.
+
 ## [0.28.0] - 2026-08-31
 
 > **Release note:** this section contains BREAKING changes (input validation now

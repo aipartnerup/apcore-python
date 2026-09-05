@@ -576,6 +576,13 @@ class BuiltinApprovalGate(BaseStep):
                 annotations=annotations,
                 description=getattr(module, "description", None),
                 tags=list(getattr(module, "tags", None) or []),
+                # Spec decision D-03 (2026-05-decision-log.md, PROTOCOL_SPEC
+                # §7.3.1): caller_id is read straight off Context.caller_id with
+                # no substitution — None on a top-level call is correct, not a
+                # gap to fill with a sentinel. action always equals the module
+                # actually being invoked, not a handler-supplied label.
+                caller_id=ctx.context.caller_id,
+                action=ctx.module_id,
             )
             result = await self._handler.request_approval(request)
 

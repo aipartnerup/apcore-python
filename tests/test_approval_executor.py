@@ -216,6 +216,44 @@ class TestApprovalGateSync:
         assert req.description == "Destructive operation"
         assert req.tags == ["admin"]
         assert req.context.trace_id is not None
+        # Spec decision D-03 (2026-05-decision-log.md, PROTOCOL_SPEC §7.3.1):
+        # a top-level call (no incoming Context) has no caller, and `action`
+        # always names the module actually being invoked.
+        assert req.caller_id is None
+        assert req.action == "test.approval_required"
+
+    def test_approval_request_caller_id_is_the_invoking_module_on_a_nested_call(self, registry: Registry) -> None:
+        """The other half of D-03: `caller_id` names the calling module, not `None`, on a nested call.
+
+        `Context.child()` sets `caller_id` from the parent's `call_chain`, and
+        `BuiltinApprovalGate` reads it straight off `Context.caller_id` with no
+        substitution — never the ``"@external"`` sentinel ACL evaluation uses
+        internally for a context-less caller.
+        """
+        captured_requests: list[ApprovalRequest] = []
+
+        async def capture_handler(request: ApprovalRequest) -> ApprovalResult:
+            captured_requests.append(request)
+            return ApprovalResult(status="approved", approved_by="test")
+
+        class CallerModule:
+            input_schema = PermissiveInput
+            output_schema = PermissiveOutput
+
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                return context.executor.call("test.approval_required", inputs, context)
+
+        registry.register("test.caller", CallerModule())
+
+        handler = CallbackApprovalHandler(capture_handler)
+        executor = Executor(registry=registry, approval_handler=handler)
+        executor.call("test.caller", {"key": "val"})
+
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        assert req.caller_id == "test.caller"
+        assert req.action == "test.approval_required"
+        assert req.action == req.module_id
 
     def test_approval_token_is_consumed_without_mutating_the_callers_dict(self, registry: Registry) -> None:
         """_approval_token drives check_approval and never reaches the module.

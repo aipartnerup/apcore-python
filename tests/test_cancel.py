@@ -48,6 +48,34 @@ class TestCancelToken:
         assert token.is_cancelled is False
         token.check()  # Should not raise
 
+    def test_raise_if_cancelled_does_nothing_when_not_cancelled(self) -> None:
+        """raise_if_cancelled() does not raise when token is not cancelled.
+
+        Canonical spec method name (docs/features/cancellation.md, "Contract:
+        CancelToken.raise_if_cancelled"), additive alongside check() — both
+        names must behave identically.
+        """
+        token = CancelToken()
+        token.raise_if_cancelled()  # Should not raise
+
+    def test_raise_if_cancelled_raises_when_cancelled(self) -> None:
+        """raise_if_cancelled() raises ExecutionCancelledError when cancelled."""
+        token = CancelToken()
+        token.cancel()
+        with pytest.raises(ExecutionCancelledError):
+            token.raise_if_cancelled()
+
+    def test_raise_if_cancelled_and_check_agree(self) -> None:
+        """Both names observe the same state — neither is a separate flag."""
+        token = CancelToken()
+        token.raise_if_cancelled()
+        token.check()
+        token.cancel()
+        with pytest.raises(ExecutionCancelledError):
+            token.check()
+        with pytest.raises(ExecutionCancelledError):
+            token.raise_if_cancelled()
+
 
 class TestExecutorCancellation:
     """Tests for Executor respecting cancel tokens."""

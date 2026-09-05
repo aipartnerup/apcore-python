@@ -75,19 +75,36 @@ class TestInputs:
                 annotations=ModuleAnnotations(requires_approval=True),
             )
 
-    @pytest.mark.skip(
-        reason=(
-            "missing symbol: ApprovalRequest.caller_id / ApprovalRequest.action "
-            "(contract gap) — the spec Inputs clause requires the request to "
-            "contain `caller_id` and `action`, but the Python ApprovalRequest "
-            "dataclass exposes neither field (it carries module_id, arguments, "
-            "context, annotations, description, tags). caller identity lives on "
-            "request.context, not on the request."
-        )
-    )
     def test_request_caller_id_and_action_required(self) -> None:
-        """approval_system.request_approval.input.request.caller_id_action_required"""
-        raise AssertionError("unreachable: skipped contract gap")
+        """approval_system.request_approval.input.request.caller_id_action_required
+
+        Spec decision D-03 (2026-05-decision-log.md, PROTOCOL_SPEC §7.3.1):
+        `ApprovalRequest` carries `caller_id` and `action` directly, so a
+        handler can read them without traversing `request.context`. `caller_id`
+        is `None` for a top-level call (there is no caller to name) and
+        `action` is always populated — it is not conditioned on `caller_id`.
+        """
+        request = ApprovalRequest(
+            module_id="test.mod",
+            arguments={},
+            context=Context.create(),
+            annotations=ModuleAnnotations(requires_approval=True),
+            caller_id=None,
+            action="test.mod",
+        )
+        assert request.caller_id is None
+        assert request.action == "test.mod"
+
+        nested = ApprovalRequest(
+            module_id="test.mod",
+            arguments={},
+            context=Context(trace_id="t-1", caller_id="test.caller"),
+            annotations=ModuleAnnotations(requires_approval=True),
+            caller_id="test.caller",
+            action="test.mod",
+        )
+        assert nested.caller_id == "test.caller"
+        assert nested.action == "test.mod"
 
 
 # ---------------------------------------------------------------------------

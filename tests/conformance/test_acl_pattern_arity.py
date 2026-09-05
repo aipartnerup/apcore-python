@@ -225,6 +225,36 @@ def _door_construct(case: dict[str, Any]) -> ACL:
     )
 
 
+def _door_construct_mutated(case: dict[str, Any]) -> ACL:
+    """Direct construction of a rule that was well-formed **when constructed**.
+
+    Mirrors :func:`_door_add_rule_mutated` at the other door §6.1.6 rule 3
+    names: ``ACL``'s own constructor accepts a list of already-built
+    ``ACLRule`` objects exactly as ``add_rule`` accepts one, so a rule mutated
+    after its own construction and handed to ``ACL(rules=[...])`` for the
+    first time is being offered to a door for the first time — construction
+    history is not legible to the door and cannot exempt a rule from the check
+    every other rule reaching it gets (spec v1.33.0, §6.1.4.1/§6.2.1
+    disambiguation of "assigned onto an already-constructed rule").
+
+    :func:`_door_construct` alone cannot see this gap: it builds each
+    ``ACLRule`` from the case's bad value *directly*, which raises inside
+    ``ACLRule.__post_init__`` before ``ACL(rules=[...])`` is ever reached — so
+    the ACL constructor's own validation, as opposed to ``ACLRule``'s, is
+    never actually exercised by that driver alone. This one mutates a
+    well-formed rule per the case's `rule`/`rules` shape and hands the whole
+    list to the constructor in one call, same as `_door_construct` does for
+    the cross-rule ordering it asserts.
+    """
+    rules = []
+    for raw in _raw_rules(case):
+        rule = ACLRule(callers=["*"], targets=["*"], effect="deny")
+        for name, value in _rule_kwargs(raw).items():
+            setattr(rule, name, value)
+        rules.append(rule)
+    return ACL(rules=rules, default_effect=case["default_effect"])
+
+
 def _door_add_rule(case: dict[str, Any]) -> ACL:
     """Runtime insertion with a pre-built rule."""
     acl = ACL(default_effect=case["default_effect"])
@@ -270,10 +300,18 @@ def _door_add_rule_mutated(case: dict[str, Any]) -> ACL:
 #: Fixture door name -> the driver callables that exercise it. ``add_rule`` has
 #: three because a pre-built rule, the kwargs path and a rule mutated after
 #: construction are three different constructions through one public method,
-#: and only the first two go through :class:`ACLRule`.
+#: and only the first two go through :class:`ACLRule`. ``construct`` has two
+#: for the same reason ``add_rule`` has more than one: a rule built with the
+#: bad value directly (raising inside ``ACLRule.__post_init__``, never
+#: reaching ``ACL.__init__``'s own check) and a rule mutated after its own
+#: construction (which does reach it) are different paths through one door,
+#: and only the direct-construction fault is representable in apcore-rust's
+#: type system — the mutated path is what closes the ambiguity spec v1.33.0
+#: resolved between "already-constructed rule" meaning "already installed in a
+#: live ACL" versus "any rule object currently holding a bad value".
 _DOORS: dict[str, tuple[Any, ...]] = {
     "load": (_door_load,),
-    "construct": (_door_construct,),
+    "construct": (_door_construct, _door_construct_mutated),
     "add_rule": (_door_add_rule, _door_add_rule_kwargs, _door_add_rule_mutated),
 }
 

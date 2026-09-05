@@ -8,12 +8,10 @@ Feature spec declares 2 '## Contract:' blocks:
 Each test below carries a verbatim clause id of the form
 'cancellation.<method>.<kind>.<detail>' so cross-language diffs line up.
 
-NOTE (cross-language gap): the contract block names the second method
-'CancelToken.raise_if_cancelled', but the Python SDK source
-(src/apcore/cancel.py) implements the cancellation check as 'check()'.
-There is no 'raise_if_cancelled' symbol. Per the missing-symbol rule, every
-clause under that contract is emitted as a skip documenting the gap rather
-than a hard reference that would break import of the whole file.
+`CancelToken.raise_if_cancelled` was added as the canonical spec-named method,
+identical in behavior to `check()` — which remains supported and is not
+deprecated (`src/apcore/cancel.py`). The clauses below now exercise
+`raise_if_cancelled` directly instead of skipping on the naming gap.
 """
 
 from __future__ import annotations
@@ -91,43 +89,68 @@ async def test_cancellation_cancel_property_idempotent() -> None:
 
 # ---------------------------------------------------------------------------
 # Contract: CancelToken.raise_if_cancelled
-#
-# MISSING SYMBOL: the Python SDK has no 'raise_if_cancelled' method on
-# CancelToken (the equivalent behavior is 'check()'). These clauses are
-# recorded as skips so the cross-language naming gap is documented as a skip
-# rather than a coarse import/compile failure.
 # ---------------------------------------------------------------------------
 
 
 def test_cancellation_raise_if_cancelled_error_execution_cancelled() -> None:
     """cancellation.raise_if_cancelled.error.EXECUTION_CANCELLED"""
-    pytest.skip(
-        "missing symbol: CancelToken.raise_if_cancelled (contract gap) — "
-        "Python SDK implements this as CancelToken.check()"
-    )
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(ExecutionCancelledError) as exc_info:
+        token.raise_if_cancelled()
+
+    err = exc_info.value
+    assert isinstance(err, ModuleError)
+    assert err.code == "EXECUTION_CANCELLED"
 
 
-def test_cancellation_raise_if_cancelled_property_thread_safe() -> None:
-    """cancellation.raise_if_cancelled.property.thread_safe"""
-    pytest.skip(
-        "missing symbol: CancelToken.raise_if_cancelled (contract gap) — "
-        "Python SDK implements this as CancelToken.check()"
-    )
+async def test_cancellation_raise_if_cancelled_property_thread_safe() -> None:
+    """cancellation.raise_if_cancelled.property.thread_safe
+
+    Mirrors test_cancellation_cancel_property_thread_safe_shared_token above:
+    concurrent raise_if_cancelled() reads of a token being cancelled elsewhere
+    must not raise a spurious exception and must converge to a consistent
+    cancelled state.
+    """
+    shared = CancelToken()
+
+    async def do_check() -> None:
+        await asyncio.sleep(0)
+        # Not cancelled yet on most interleavings; a raise here would still be
+        # correct, so only ExecutionCancelledError is tolerated.
+        try:
+            shared.raise_if_cancelled()
+        except ExecutionCancelledError:
+            pass
+
+    async def do_cancel() -> None:
+        await asyncio.sleep(0)
+        shared.cancel()
+
+    await asyncio.gather(do_cancel(), *(do_check() for _ in range(16)))
+    assert shared.is_cancelled is True
 
 
 def test_cancellation_raise_if_cancelled_property_pure() -> None:
-    """cancellation.raise_if_cancelled.property.pure"""
-    pytest.skip(
-        "missing symbol: CancelToken.raise_if_cancelled (contract gap) — "
-        "Python SDK implements this as CancelToken.check()"
-    )
+    """cancellation.raise_if_cancelled.property.pure
+
+    raise_if_cancelled() only reads is_cancelled and never mutates it — calling
+    it repeatedly (raising each time once cancelled) must not change the
+    token's observable state.
+    """
+    token = CancelToken()
+    token.cancel()
+
+    for _ in range(3):
+        with pytest.raises(ExecutionCancelledError):
+            token.raise_if_cancelled()
+        assert token.is_cancelled is True
 
 
 # ---------------------------------------------------------------------------
-# Sanity guard: ensure the declared error type/code referenced by the
-# raise_if_cancelled contract actually exists with the spec'd code, so the
-# gap above is purely a method-name mismatch (not a missing error type).
-# This keeps the missing-symbol skips honest and is a non-trivial assertion.
+# Sanity guard: raise_if_cancelled() and check() must agree on every call —
+# neither is a separate flag, and the addition of one name must not create a
+# second source of truth for cancellation state.
 # ---------------------------------------------------------------------------
 
 
@@ -135,8 +158,8 @@ def test_cancellation_execution_cancelled_error_code_matches_spec() -> None:
     """cancellation.raise_if_cancelled.error.EXECUTION_CANCELLED (error-type guard)
 
     The contract requires ExecutionCancelledError(code=EXECUTION_CANCELLED).
-    Verify the error TYPE and CODE field match exactly via the live check()
-    path, confirming the gap is method-naming only.
+    Verify the error TYPE and CODE field match exactly via both check() and
+    raise_if_cancelled(), confirming the two names share one implementation.
     """
     token = CancelToken()
     token.cancel()
@@ -146,3 +169,10 @@ def test_cancellation_execution_cancelled_error_code_matches_spec() -> None:
     err = exc_info.value
     assert isinstance(err, ModuleError)
     assert err.code == "EXECUTION_CANCELLED"
+
+    with pytest.raises(ExecutionCancelledError) as exc_info2:
+        token.raise_if_cancelled()
+
+    err2 = exc_info2.value
+    assert isinstance(err2, ModuleError)
+    assert err2.code == "EXECUTION_CANCELLED"
