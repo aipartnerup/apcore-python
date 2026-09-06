@@ -181,6 +181,17 @@ _DEFAULTS: dict[str, Any] = {
     "stream": {
         "max_merge_depth": 32,
     },
+    # Added by spec v1.36.0 (apcore#114). `defaults.schema.json` gained a
+    # `bindings` section so that the `./bindings` default §5.12.6 promises is
+    # reachable through the mechanism meant to serve it; before that the two
+    # values existed only as literals inside each SDK's binding loader, which
+    # made `config.get("bindings.dir")` answer None for a fully loaded Config
+    # and put the canonical default out of reach of every consumer that asks
+    # the configuration system rather than the loader.
+    "bindings": {
+        "dir": "./bindings",
+        "pattern": "*.binding.yaml",
+    },
 }
 
 #: Framework sections of the ``apcore`` namespace, mapped to the keys each one

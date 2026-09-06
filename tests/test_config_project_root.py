@@ -342,7 +342,14 @@ class TestDeprecationWarningStaysSilent:
     def test_silent_when_every_path_typed_value_is_absolute(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Both conditions are required; an absolute value re-roots nowhere."""
+        """Both conditions are required; an absolute value re-roots nowhere.
+
+        EVERY key in §9.2.1's set has to be spelled absolutely, defaults
+        included: the condition counts the merged view, so a key left unstated
+        keeps its relative §9.1.1 default and the warning correctly fires.
+        ``bindings.dir`` is here because spec v1.36.0 gave it such a default —
+        before that it had none, and omitting it happened to be harmless.
+        """
         config_dir = tmp_path / "config-dir"
         run_dir = tmp_path / "run-dir"
         run_dir.mkdir()
@@ -353,6 +360,7 @@ class TestDeprecationWarningStaysSilent:
                 "acl": {"root": str(tmp_path / "acl")},
                 "schema": {"root": str(tmp_path / "schemas")},
                 "extensions": {"root": str(tmp_path / "extensions")},
+                "bindings": {"dir": str(tmp_path / "bindings")},
             },
         )
         monkeypatch.chdir(run_dir)

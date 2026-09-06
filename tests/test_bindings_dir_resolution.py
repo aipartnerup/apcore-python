@@ -276,16 +276,26 @@ class TestPrecedence:
     ) -> None:
         """Last tier of both chains: ``./bindings`` and ``*.binding.yaml``.
 
-        The default is applied by the loader, not by ``Config``: ``_DEFAULTS``
-        mirrors ``schemas/defaults.schema.json``, which declares no ``bindings``
-        section at all.
+        Spec v1.36.0 moved these two values into
+        ``schemas/defaults.schema.json``, which ``_DEFAULTS`` mirrors, so
+        ``Config`` now answers them. Through v1.35.0 it did not, and this test
+        asserted the opposite — that ``bindings.dir`` had *no* default — because
+        the loader was the only place the canonical value existed. That
+        assertion is now wrong, and the corrected one is what the fixture
+        ``config_key_governance.json`` pins from the other side.
+
+        The loader keeps its own last tier regardless, and this case still
+        exercises it: ``config`` is omitted here, so nothing ever consults a
+        merged document.
         """
         monkeypatch.chdir(tmp_path)
         _write_binding(tmp_path / "bindings", "a.binding.yaml", "default.func")
         _write_binding(tmp_path / "bindings", "b.other.yaml", "unmatched.func")
 
-        assert Config.get_default("bindings.dir") is None
-        assert Config.from_defaults().get("bindings.dir") is None
+        assert Config.get_default("bindings.dir") == "./bindings"
+        assert Config.get_default("bindings.pattern") == "*.binding.yaml"
+        assert Config.from_defaults().get("bindings.dir") == "./bindings"
+        assert Config.from_defaults().get("bindings.pattern") == "*.binding.yaml"
 
         result = loader.load_binding_dir(registry=registry)
 

@@ -54,19 +54,21 @@ _SUPPORTED_SPEC_VERSIONS = {"1.0"}
 #: (PROTOCOL_SPEC §5.12.6 clauses 1-2: explicit argument > ``APCORE_BINDINGS_*``
 #: env > config file > these).
 #:
-#: These live here rather than arriving through ``Config``'s default tier, and
-#: that is not an oversight. ``Config._DEFAULTS`` mirrors
-#: ``schemas/defaults.schema.json`` key for key — a correspondence
+#: Read from ``Config``'s default table rather than spelled here. Spec v1.36.0
+#: added the ``bindings`` section to ``schemas/defaults.schema.json``, and
+#: ``Config._DEFAULTS`` mirrors that file key for key — a correspondence
 #: ``tests/conformance/test_config_key_governance.py`` pins in both directions —
-#: and that file declares no ``bindings`` section at all. The canonical
-#: ``"./bindings"`` / ``"*.binding.yaml"`` defaults are declared only by
-#: ``BindingsConfig`` in ``schemas/apcore-config.schema.json``, which the Python
-#: SDK does not merge into the document. So ``config.get("bindings.dir")``
-#: answers ``None`` even for a fully loaded ``Config``, and the default has to be
-#: applied at the point of consumption. Adding a ``bindings`` section to
-#: ``_DEFAULTS`` instead would break the governance fixture, not fix this.
-_DEFAULT_BINDING_DIR = "./bindings"
-_DEFAULT_BINDING_PATTERN = "*.binding.yaml"
+#: so the canonical values now arrive through ``Config`` and a literal repeated
+#: here would be a second source of truth for them.
+#:
+#: The tier is still needed, and that is not belt-and-braces. ``config`` is
+#: optional on :meth:`BindingLoader.load_binding_dir`, and an in-memory
+#: ``Config(data=...)`` never merges ``_DEFAULTS``; in both cases
+#: ``config.get("bindings.dir")`` yields nothing and the loader is the only
+#: place left that can supply the default. Sourcing it from ``get_default``
+#: means the two paths cannot disagree.
+_DEFAULT_BINDING_DIR_KEY = "bindings.dir"
+_DEFAULT_BINDING_PATTERN_KEY = "bindings.pattern"
 
 _AUTO_SCHEMA_VALID_STRINGS = {"true", "permissive", "strict"}
 
@@ -268,15 +270,15 @@ class BindingLoader:
 
         resolved_dir: Any = dir_path
         if resolved_dir is None and config is not None:
-            resolved_dir = config.get("bindings.dir")
+            resolved_dir = config.get(_DEFAULT_BINDING_DIR_KEY)
         if resolved_dir is None:
-            resolved_dir = _DEFAULT_BINDING_DIR
+            resolved_dir = Config.get_default(_DEFAULT_BINDING_DIR_KEY)
 
         resolved_pattern: Any = pattern
         if resolved_pattern is None and config is not None:
-            resolved_pattern = config.get("bindings.pattern")
+            resolved_pattern = config.get(_DEFAULT_BINDING_PATTERN_KEY)
         if resolved_pattern is None:
-            resolved_pattern = _DEFAULT_BINDING_PATTERN
+            resolved_pattern = Config.get_default(_DEFAULT_BINDING_PATTERN_KEY)
 
         resolved_dir = str(resolved_dir)
         resolved_pattern = str(resolved_pattern)

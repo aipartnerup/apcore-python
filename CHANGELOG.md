@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`bindings.dir` and `bindings.pattern` are now canonical defaults (`schemas/defaults.schema.json`, spec v1.36.0, [apcore#114](https://github.com/aiperceivable/apcore/issues/114)).** `defaults.schema.json` never carried a `bindings` section, so the `"./bindings"` / `"*.binding.yaml"` values §5.12.6 promises were unreachable from the mechanism meant to serve them: `Config.get("bindings.dir")` answered `None` for a fully loaded `Config`, and each SDK kept the canonical value as a private literal inside its own binding loader. The spec repo added the section and regenerated `config_key_governance.json` (65 allowed keys, 20 canonical defaults), which pins every SDK's default table against it; `_DEFAULTS` gains both keys to match. `BindingLoader.load_binding_dir` keeps its own last tier — `config` is optional and an in-memory `Config(data=...)` never merges `_DEFAULTS`, so the loader is still the only place that can supply a default on those two paths — but it now reads that tier from `Config.get_default()` instead of a literal, so the two cannot disagree. Visible consequence: a relative `bindings.dir` is now present in every merged configuration, so it is counted by §9.2.2's deprecation-warning condition alongside `extensions.root`, `schema.root` and `acl.root`.
+
 ---
 
 ## [0.29.0] - 2026-09-05
