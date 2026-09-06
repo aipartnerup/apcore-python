@@ -114,9 +114,9 @@ def test_approval_request_fields(case: dict[str, Any]) -> None:
     assert len(captured) == 1, f"[{FIXTURE} :: {case['id']}] the gate must reach the handler exactly once"
     request = captured[0]
 
-    assert request.caller_id == case["expected_request_caller_id"], (
-        f"[{FIXTURE} :: {case['id']}] caller_id: {request.caller_id!r} != {case['expected_request_caller_id']!r}"
-    )
-    assert request.action == case["expected_request_action"], (
-        f"[{FIXTURE} :: {case['id']}] action: {request.action!r} != {case['expected_request_action']!r}"
-    )
+    assert (
+        request.caller_id == case["expected_request_caller_id"]
+    ), f"[{FIXTURE} :: {case['id']}] caller_id: {request.caller_id!r} != {case['expected_request_caller_id']!r}"
+    assert (
+        request.action == case["expected_request_action"]
+    ), f"[{FIXTURE} :: {case['id']}] action: {request.action!r} != {case['expected_request_action']!r}"

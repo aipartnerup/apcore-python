@@ -165,12 +165,12 @@ def test_declared_set_matches_schemas() -> None:
     expected = set(case["expected"]["path_typed_keys"])
     projected = _project_path_markers(_schema(_DECLARING_SCHEMA))
 
-    assert expected - projected == set(), (
-        f"{FIXTURE} declares key(s) that carry no x-apcore-path marker in {_DECLARING_SCHEMA}"
-    )
-    assert projected - expected == set(), (
-        f"{_DECLARING_SCHEMA} marks key(s) as x-apcore-path that {FIXTURE} does not declare"
-    )
+    assert (
+        expected - projected == set()
+    ), f"{FIXTURE} declares key(s) that carry no x-apcore-path marker in {_DECLARING_SCHEMA}"
+    assert (
+        projected - expected == set()
+    ), f"{_DECLARING_SCHEMA} marks key(s) as x-apcore-path that {FIXTURE} does not declare"
     # The fixture's own block and its case expectation must agree, or the two
     # halves of this file are pinned to different sets.
     assert set(DECLARED_KEYS) == expected
@@ -188,9 +188,9 @@ def test_defaults_schema_markers_are_a_subset() -> None:
     declared = _project_path_markers(_schema(_DECLARING_SCHEMA))
 
     assert mirrored, f"{_MIRRORING_SCHEMA} carries no x-apcore-path marker at all"
-    assert mirrored - declared == set(), (
-        f"{_MIRRORING_SCHEMA} marks key(s) that {_DECLARING_SCHEMA} does not — the set has two sources"
-    )
+    assert (
+        mirrored - declared == set()
+    ), f"{_MIRRORING_SCHEMA} marks key(s) that {_DECLARING_SCHEMA} does not — the set has two sources"
 
 
 # ---------------------------------------------------------------------------

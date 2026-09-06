@@ -273,12 +273,12 @@ def _assert_scan_was_of(case: dict[str, Any], modules: list[Any]) -> None:
         target = inside if relative.rsplit("/", 1)[0] == scanned_dir else outside
         target.update(_module_ids_of(descriptor_name))
 
-    assert produced <= inside, (
-        f"loader produced {sorted(produced - inside)}, which no descriptor under {scanned_dir!r} declares"
-    )
-    assert produced & (outside - inside) == set(), (
-        f"loader enumerated a directory other than {scanned_dir!r}: it produced {sorted(produced & outside)}"
-    )
+    assert (
+        produced <= inside
+    ), f"loader produced {sorted(produced - inside)}, which no descriptor under {scanned_dir!r} declares"
+    assert (
+        produced & (outside - inside) == set()
+    ), f"loader enumerated a directory other than {scanned_dir!r}: it produced {sorted(produced & outside)}"
 
 
 def _assert_loaded(case: dict[str, Any], modules: list[Any]) -> None:
@@ -435,9 +435,9 @@ def test_no_auto_scan_at_init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert case["expected"]["scanned"] is False
     registered = client.registry.list()
     for module_id in planted:
-        assert module_id not in registered, (
-            f"client construction scanned a binding directory and registered {module_id!r}"
-        )
+        assert (
+            module_id not in registered
+        ), f"client construction scanned a binding directory and registered {module_id!r}"
     assert case["expected"]["registered_module_ids"] == [], "fixture expects an empty registry contribution"
 
     # And the loader still works when the application asks for it — clause 3
@@ -561,9 +561,9 @@ def test_driver_contract_is_not_a_case() -> None:
     """``driver_contract`` and ``binding_files`` are runner inputs, not test cases."""
     assert "driver_contract" in _FIXTURE
     assert "binding_files" in _FIXTURE
-    assert set(_FIXTURE["binding_files"]) - set(_BINDING_FILES) == {"comment"}, (
-        "binding_files gained a non-descriptor key this driver does not know to skip"
-    )
+    assert set(_FIXTURE["binding_files"]) - set(_BINDING_FILES) == {
+        "comment"
+    }, "binding_files gained a non-descriptor key this driver does not know to skip"
     assert "binding_file" not in _FIXTURE, "the singular descriptor was replaced by the named map in spec v1.36.0"
     ids = set(case_ids(FIXTURE))
     assert "driver_contract" not in ids

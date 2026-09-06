@@ -204,9 +204,9 @@ def _apply(root: Path, case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) ->
 
     for name, value in (case.get("env") or {}).items():
         if name == _ENV_CONFIG_FILE:
-            assert value in (case.get("fs") or {}), (
-                f"case {case['id']!r} points $APCORE_CONFIG_FILE at {value!r}, which its fs block does not create"
-            )
+            assert value in (
+                case.get("fs") or {}
+            ), f"case {case['id']!r} points $APCORE_CONFIG_FILE at {value!r}, which its fs block does not create"
             monkeypatch.setenv(name, str(_fs_target(root, value)))
         else:
             monkeypatch.setenv(name, value)
@@ -381,9 +381,9 @@ def test_no_warning_when_root_equals_cwd(layout: Path, monkeypatch: pytest.Monke
     _assert_root(layout, case, config)
     assert case["expected"]["relative_path_typed_values_present"] is True
     assert case["expected"]["deprecation_warning"] is False
-    assert _deprecation_warnings(captured) == [], (
-        "a warning fired where project_root == CWD; this is the blanket warning §9.2.2 rejects"
-    )
+    assert (
+        _deprecation_warnings(captured) == []
+    ), "a warning fired where project_root == CWD; this is the blanket warning §9.2.2 rejects"
 
 
 def test_no_warning_when_all_path_values_absolute(layout: Path, monkeypatch: pytest.MonkeyPatch) -> None:

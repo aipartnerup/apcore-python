@@ -212,9 +212,9 @@ class TestMissingResolvedDirRaisesForEveryProvenance:
             loader.load_binding_dir(registry=registry, config=config)
 
         assert "./absent_from_env" in str(exc.value)
-        assert "./absent_from_file" not in str(exc.value), (
-            "the message named the file tier, so the env tier never reached the loader"
-        )
+        assert "./absent_from_file" not in str(
+            exc.value
+        ), "the message named the file tier, so the env tier never reached the loader"
 
     def test_the_bindings_default(
         self,
