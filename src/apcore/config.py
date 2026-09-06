@@ -977,6 +977,56 @@ def _relative_path_typed_keys(config: Config) -> list[str]:
     return found
 
 
+def _emit_per_load(message: str, category: type[Warning], *, stacklevel: int) -> None:
+    """Emit *message* once per call, never once per process.
+
+    PROTOCOL_SPEC §9.2.2 requirement 2, "Cadence": the warning is a property of
+    *the document being loaded*, so every load satisfying the condition emits and
+    implementations **MUST NOT** suppress it with process-global state. A
+    once-per-process flag makes emission order-dependent — whichever load runs
+    first consumes the warning, and a later affected configuration is silent, so
+    the operator cannot tell which document triggered it — and is a
+    test-isolation hazard besides.
+
+    ``warnings.warn`` carries exactly such state, and not by anyone's choice:
+    under the ``"default"`` action it records ``(message text, category, lineno)``
+    in the calling frame's ``__warningregistry__`` and suppresses a repeat. Two
+    *different* affected configurations still both warn, because the message text
+    embeds the project root — which is why the obvious two-config test does not
+    detect this. What is suppressed is the case §9.2.2 names explicitly: the same
+    document loaded again from the same call site, "a reload that re-reads an
+    edited file", which SHOULD re-evaluate and may legitimately warn again.
+
+    ``warn_explicit`` with no registry is the narrow fix. Passing ``registry=None``
+    makes the machinery allocate a throwaway dict for this one call, so no
+    de-duplication state survives it, while every *filter* the host set still
+    applies exactly as before: ``-W error`` still raises, ``-W ignore`` still
+    ignores, ``catch_warnings(record=True)`` still records. The alternative —
+    ``simplefilter`` inside a ``catch_warnings`` block — would mutate the host's
+    filters for the duration of a load and override the choice they made, which
+    is worse than the defect. Nothing is mutated at import time.
+
+    *stacklevel* is counted from this function's caller exactly as
+    ``warnings.warn``'s is, so the reported filename and line are unchanged.
+    ``module_globals`` is deliberately not forwarded: ``warn_explicit`` uses it
+    only to pull a source line out of an exotic module loader, and a loader
+    without ``get_source`` — ``__main__`` under ``python -`` is one — raises
+    ``ImportError`` from inside the warning machinery when it is supplied.
+    """
+    try:
+        frame = sys._getframe(stacklevel)
+    except ValueError:  # pragma: no cover - shallower stack than expected
+        frame = sys._getframe(0)
+    warnings.warn_explicit(
+        message,
+        category,
+        frame.f_code.co_filename,
+        frame.f_lineno,
+        module=frame.f_globals.get("__name__", "<string>"),
+        registry=None,
+    )
+
+
 def _warn_if_project_root_diverges(config: Config) -> None:
     """PROTOCOL_SPEC §9.2.2 requirement 2 — the *narrow* deprecation warning.
 
@@ -985,6 +1035,8 @@ def _warn_if_project_root_diverges(config: Config) -> None:
     explicitly not wanted — it would fire for every tier 2-5 project, where
     nothing changes at v2.0, and train operators to ignore the one warning that
     does matter.
+
+    Cadence is once per configuration load; see :func:`_emit_per_load`.
     """
     project_root = config.project_root
     cwd = _cwd()
@@ -995,7 +1047,7 @@ def _warn_if_project_root_diverges(config: Config) -> None:
     if not relative_keys:
         return
 
-    warnings.warn(
+    _emit_per_load(
         f"apcore#113 (PROTOCOL_SPEC §9.2.2): project root {project_root!r} differs from the "
         f"working directory {cwd!r}, and these path-typed keys hold relative values: "
         f"{', '.join(relative_keys)}. Through 1.x they keep resolving as they do today "
