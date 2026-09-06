@@ -36,10 +36,15 @@ that is v2.0 behaviour, forbidden in the 1.x line by requirement 3, and
 against the configuration file's directory (D-64) and ``schema.root`` still
 against CWD.
 
-Two places where this SDK and the fixture do not line up are recorded rather
-than smoothed over: the macOS spelling of §9.14 tier 6 (see :func:`_tier6_dir`)
-and the definition of "a relative path-typed value is present" (see
-``test_no_warning_when_all_path_values_absolute``, a strict xfail).
+**No divergence remains, and neither of the two was closed by changing this
+SDK.** §9.14 tier 6 is platform-varying, and the fixture used to spell the POSIX
+path, which failed every driver on macOS; it now names the TIER through
+``<tier6_config>`` / ``<tier6_dir>`` tokens the driver materialises at the
+running platform's location (see :func:`_tier6_dir`). And
+``no_warning_when_all_path_values_absolute`` used to make only ``schema.root``
+and ``acl.root`` absolute while §9.2.2's condition counts the §9.1.1 defaults
+too, so ``extensions.root`` stayed relative and the case was unsatisfiable — all
+three SDKs reported it; it now spells every key in §9.2.1's set.
 """
 
 from __future__ import annotations
@@ -85,45 +90,73 @@ def _case(case_id: str) -> dict[str, Any]:
 def _tier6_dir(root: Path) -> Path:
     """The §9.14 tier-6 user-level directory under the redirected home.
 
-    The fixture spells this ``fakehome/.config/apcore``, which is the XDG
-    spelling. §9.14 tier 6 is defined as ``~/.config/apcore/config.yaml`` with
-    the parenthetical "(XDG on Linux, ``~/Library/Application Support`` on
-    macOS)", and this SDK implements exactly that split. So the fixture's
-    literal is the Linux spelling of a tier whose location is platform-varying;
-    the *tier* is what the case asserts, and the tier is what is materialised
-    here. ``test_fixture_tier6_path_is_the_posix_spelling`` pins that the two
-    coincide wherever the platform has no macOS-shaped answer.
+    §9.14 tier 6 is explicitly platform-varying — ``~/.config/apcore`` on Linux,
+    ``~/Library/Application Support/apcore`` on macOS — and this SDK implements
+    exactly that split. The fixture therefore names the TIER and leaves the
+    spelling to the driver: ``<tier6_config>`` is a token, and this is where it
+    is resolved. Its first published form hardcoded the POSIX path, which failed
+    every driver on macOS while asserting nothing extra on Linux.
     """
-    home = root / "fakehome"
+    home = _home(root)
     if sys.platform == "darwin":
         return home / "Library" / "Application Support" / "apcore"
     return home / ".config" / "apcore"
 
 
+def _home(root: Path) -> Path:
+    """The directory ``layout.home`` names, which ``$HOME`` is redirected to.
+
+    Read from the fixture rather than spelled here: ``home_isolation`` requires
+    a fixture-owned tree, and the fixture is the thing that owns the name.
+    """
+    return root / _LAYOUT["home"]
+
+
 def _tier7_dir(root: Path) -> Path:
-    """The §9.14 tier-7 legacy user-level directory; the same on every platform."""
-    return root / "fakehome" / ".apcore"
+    """The §9.14 tier-7 legacy user-level directory; the same on every platform.
+
+    Not platform-varying, but HOME-relative, which is why the fixture gives it
+    the same token treatment as tier 6 rather than a path under the workspace.
+    """
+    return _home(root) / ".apcore"
+
+
+#: ``fs`` tokens (``home_relative_tokens`` clause) and the directory each one's
+#: file is materialised in. The filename is the tier's own, per §9.14.
+_FS_TOKENS: dict[str, tuple[Any, str]] = {
+    "<tier6_config>": (_tier6_dir, "config.yaml"),
+    "<tier7_config>": (_tier7_dir, "config.yaml"),
+}
+
+#: ``expected`` tokens naming the directory a tier's file was materialised in.
+_DIR_TOKENS: dict[str, Any] = {
+    "<tier6_dir>": _tier6_dir,
+    "<tier7_dir>": _tier7_dir,
+}
 
 
 def _fs_target(root: Path, relative: str) -> Path:
-    """Map an ``fs`` key onto a real path, translating the tier-6 slot per platform."""
-    declared_tier6 = "fakehome/.config/apcore/"
-    if relative.startswith(declared_tier6):
-        return _tier6_dir(root) / relative[len(declared_tier6) :]
+    """Map an ``fs`` key onto a real path, resolving a tier token if it is one."""
+    if relative in _FS_TOKENS:
+        directory, filename = _FS_TOKENS[relative]
+        return directory(root) / filename
     return root / relative
 
 
 def _expected_dir(root: Path, relative: str | None) -> Path | None:
-    """Map an expectation's layout-relative directory onto a resolved absolute path.
+    """Map an expectation's directory onto a resolved absolute path.
 
     ``comparison`` clause: resolved absolute, after symlink normalisation on
     both sides — macOS temporary directories are symlinked through ``/private``,
-    which otherwise produces spurious inequality.
+    which otherwise produces spurious inequality. A ``<tierN_dir>`` token
+    resolves to the same location ``<tierN_config>`` was materialised at, which
+    is the point of the pairing: asserting a literal spelling would be asserting
+    the platform the suite happens to run on.
     """
     if relative is None:
         return None
-    if relative == "fakehome/.config/apcore":
-        return _tier6_dir(root).resolve()
+    if relative in _DIR_TOKENS:
+        return _DIR_TOKENS[relative](root).resolve()
     return (root / relative).resolve()
 
 
@@ -142,7 +175,7 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _tier6_dir(root).mkdir(parents=True, exist_ok=True)
     _tier7_dir(root).mkdir(parents=True, exist_ok=True)
 
-    fake_home = root / "fakehome"
+    fake_home = _home(root)
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / ".config"))
@@ -206,6 +239,30 @@ def _source_dir(config: Config) -> Path | None:
 def _deprecation_warnings(captured: list[warnings.WarningMessage]) -> list[warnings.WarningMessage]:
     """§9.2.2 requirement 2 warnings, by CATEGORY — the text is not normative."""
     return [entry for entry in captured if issubclass(entry.category, DeprecationWarning)]
+
+
+def _relative_path_typed_values(config: Config) -> dict[str, str]:
+    """Path-typed keys (§9.2.1) whose MERGED value is relative, and their values.
+
+    The merged view, not the declared one: §9.2.2's target rule covers
+    "file-declared, environment-sourced, API-supplied, and the §9.1.1 defaults
+    alike", so a key nobody wrote is still affected while it carries a relative
+    default. That reading is what made the all-absolute case unsatisfiable until
+    the fixture named every key in the set.
+    """
+    found: dict[str, str] = {}
+    for key in Config.path_typed_keys():
+        if key.endswith("[]"):
+            for element in config.get(key[:-2]) or []:
+                candidate = element.get("root") if isinstance(element, dict) else element
+                if isinstance(candidate, str) and candidate and not Path(candidate).is_absolute():
+                    found[key] = candidate
+                    break
+            continue
+        value = config.get(key)
+        if isinstance(value, str) and value and not Path(value).is_absolute():
+            found[key] = value
+    return found
 
 
 def _assert_root(root: Path, case: dict[str, Any], config: Config) -> None:
@@ -329,25 +386,24 @@ def test_no_warning_when_root_equals_cwd(layout: Path, monkeypatch: pytest.Monke
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "SDK/fixture divergence, reported not papered over. The case makes schema.root and acl.root "
-        "absolute and expects relative_path_typed_values_present=false. apcore-python counts the "
-        "MERGED view, in which extensions.root still holds its relative §9.1.1 default './extensions' "
-        "— deliberately, per §9.2.2's 'file-declared, environment-sourced, API-supplied, and the "
-        "§9.1.1 defaults alike'. So this SDK sees a relative path-typed value present and warns. "
-        "Either the case must also pin the two keys that carry relative defaults, or requirement 2's "
-        "condition must be read as covering declared values only; the three SDKs are known to differ "
-        "here. Strict, so it turns red the moment either side moves."
-    ),
-)
 def test_no_warning_when_all_path_values_absolute(layout: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Second negative half: root != CWD, but every path-typed value is absolute.
 
     BOTH conditions are required. A driver that asserts only the first negative
     case passes an implementation that warns on the project-root difference
     alone.
+
+    **Was a strict xfail, and the fixture is what changed.** The case's first
+    published form spelled only ``schema.root`` and ``acl.root`` absolutely and
+    was unsatisfiable for that reason: §9.2.2's target semantics count the
+    §9.1.1 defaults as well as declared values, so ``extensions.root`` kept its
+    relative ``./extensions`` and this SDK correctly warned. All three SDKs
+    reported it independently. v1.36.0 spells every key in §9.2.1's set, and no
+    SDK behaviour changed to close it.
+
+    The companion assertion below is what makes this a check rather than a
+    coincidence: every path-typed key really is absolute in the MERGED view, so
+    the silence is the second condition failing and not the first.
     """
     case = _case("no_warning_when_all_path_values_absolute")
     reject_unknown_expectations(FIXTURE, case, {"expected"})
@@ -357,42 +413,12 @@ def test_no_warning_when_all_path_values_absolute(layout: Path, monkeypatch: pyt
 
     _assert_root(layout, case, config)
     assert case["expected"]["relative_path_typed_values_present"] is False
+    assert _relative_path_typed_values(config) == {}, (
+        "a path-typed value is still relative in the merged view, so this case would be "
+        "asserting the absence of a warning it has no right to expect"
+    )
     assert case["expected"]["deprecation_warning"] is False
     assert _deprecation_warnings(captured) == []
-
-
-def test_no_warning_when_all_path_values_absolute_divergence_is_exactly_the_defaults(
-    layout: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The shape of the divergence above, so it cannot drift unnoticed.
-
-    The xfail says "this SDK warns here". This says *why*: the two keys the case
-    makes absolute really are absolute in the merged view, and the relative
-    value that remains is a §9.1.1 default the case does not pin. An SDK change
-    to some third behaviour is then a failure here rather than a still-xfailing
-    test.
-    """
-    case = _case("no_warning_when_all_path_values_absolute")
-    _apply(layout, case, monkeypatch)
-    config, captured = _load_discovered()
-
-    for key in ("schema.root", "acl.root"):
-        value = config.get(key)
-        assert isinstance(value, str) and Path(value).is_absolute(), (
-            f"{key} should be absolute in this case; got {value!r}"
-        )
-
-    still_relative = {
-        key: config.get(key)
-        for key in Config.path_typed_keys()
-        if isinstance(config.get(key), str) and not Path(str(config.get(key))).is_absolute()
-    }
-    assert still_relative, "no relative path-typed value remains, so this SDK would not warn"
-    assert set(still_relative) <= {"extensions.root", "bindings.dir"}, (
-        f"unexpected relative path-typed value(s) {sorted(still_relative)}; the divergence is "
-        f"supposed to be confined to keys carrying a relative §9.1.1 default"
-    )
-    assert _deprecation_warnings(captured), "the divergence is that this SDK warns; it did not"
 
 
 def test_env_sourced_relative_value_counts_toward_the_warning(layout: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -495,21 +521,44 @@ def test_v1x_current_bases_unchanged(layout: Path, monkeypatch: pytest.MonkeyPat
 # ---------------------------------------------------------------------------
 
 
-def test_fixture_tier6_path_is_the_posix_spelling() -> None:
-    """§9.14 tier 6 is platform-varying; the fixture spells the XDG variant.
+def test_tier_cases_name_a_tier_and_never_a_spelling() -> None:
+    """§9.14 tier 6 is platform-varying, so the fixture may not spell it.
 
-    On anything but macOS the tier directory this driver materialises is the
-    fixture's literal ``fakehome/.config/apcore``. On macOS §9.14 names
-    ``~/Library/Application Support`` instead, and the tier — not the spelling —
-    is what ``tier_6_user_level_xdg`` asserts.
+    The ``home_relative_tokens`` clause: ``<tier6_config>`` / ``<tier7_config>``
+    in ``fs`` and ``<tier6_dir>`` / ``<tier7_dir>`` in ``expected`` are tokens the
+    driver resolves at the running platform's location. Pinned here because a
+    fixture that reverted to a literal POSIX path would otherwise fail on macOS
+    with a message about a missing directory rather than about the regression.
     """
+    for case_id, config_token, dir_token in (
+        ("tier_6_user_level_xdg", "<tier6_config>", "<tier6_dir>"),
+        ("tier_7_legacy_user_level", "<tier7_config>", "<tier7_dir>"),
+    ):
+        case = _case(case_id)
+        assert list(case["fs"]) == [config_token], f"{case_id} no longer names its config file by tier token"
+        assert case["expected"]["config_source_dir"] == dir_token
+        assert config_token in _FS_TOKENS
+        assert dir_token in _DIR_TOKENS
+
     root = Path("/layout")
+    home = root / _LAYOUT["home"]
+    assert _tier7_dir(root) == home / ".apcore"
     if sys.platform == "darwin":
-        assert _tier6_dir(root) == root / "fakehome" / "Library" / "Application Support" / "apcore"
+        assert _tier6_dir(root) == home / "Library" / "Application Support" / "apcore"
     else:
-        assert _tier6_dir(root) == root / "fakehome" / ".config" / "apcore"
-        declared = _case("tier_6_user_level_xdg")["expected"]["config_source_dir"]
-        assert _tier6_dir(root) == root / declared
+        assert _tier6_dir(root) == home / ".config" / "apcore"
+
+
+def test_layout_names_the_home_to_redirect() -> None:
+    """``layout.home`` is the fixture's, not this driver's.
+
+    The tier-6/7 subdirectories are deliberately absent from ``layout.dirs``
+    because tier 6's location is platform-varying; the driver creates them when
+    it materialises the tokens. What the fixture does state is which directory
+    ``$HOME`` points at, and reading it from there is what keeps the two in step.
+    """
+    assert _LAYOUT["home"] in _LAYOUT["dirs"]
+    assert _home(Path("/layout")) == Path("/layout") / _LAYOUT["home"]
 
 
 COVERED: dict[str, str] = {
@@ -534,12 +583,18 @@ COVERED: dict[str, str] = {
 }
 
 
+#: The canonical fixture's case count, asserted so that an upstream addition or
+#: removal is a named failure rather than a quietly smaller run.
+EXPECTED_CASE_COUNT = 14
+
+
 def test_every_canonical_case_is_driven() -> None:
     """A case added upstream is a failure here, never a silent gap."""
     canonical = set(case_ids(FIXTURE))
     claimed = set(COVERED)
     assert canonical - claimed == set(), f"canonical fixture {FIXTURE} gained case(s) with no driver here"
     assert claimed - canonical == set(), f"this file claims case(s) {FIXTURE} no longer defines"
+    assert len(canonical) == EXPECTED_CASE_COUNT
 
 
 def test_every_claimed_driver_exists() -> None:
@@ -563,4 +618,5 @@ def test_driver_contract_is_not_a_case() -> None:
         "env_isolation",
         "comparison",
         "warning_observation",
+        "home_relative_tokens",
     } <= set(_FIXTURE["driver_contract"])

@@ -403,12 +403,18 @@ COVERED: dict[str, str] = {
 }
 
 
+#: The canonical fixture's case count, asserted so that an upstream addition or
+#: removal is a named failure rather than a quietly smaller run.
+EXPECTED_CASE_COUNT = 7
+
+
 def test_every_canonical_case_is_driven() -> None:
     """A case added upstream is a failure here, never a silent gap."""
     canonical = set(case_ids(FIXTURE))
     claimed = set(COVERED)
     assert canonical - claimed == set(), f"canonical fixture {FIXTURE} gained case(s) with no driver here"
     assert claimed - canonical == set(), f"this file claims case(s) {FIXTURE} no longer defines"
+    assert len(canonical) == EXPECTED_CASE_COUNT
 
 
 def test_every_claimed_driver_exists() -> None:

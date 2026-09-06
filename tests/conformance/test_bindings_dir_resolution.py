@@ -1,12 +1,13 @@
 """Cross-language driver for ``bindings_dir_resolution.json``.
 
-PROTOCOL_SPEC §5.12.6 (spec v1.35.0, apcore#114): a binding loader invoked
-**without an explicit directory argument** resolves the scan directory from
-``bindings.dir`` under §9.2 precedence (``APCORE_BINDINGS_DIR`` > config file >
-default ``./bindings``), matches candidates against ``bindings.pattern`` through
-the same chain (default ``*.binding.yaml``), yields to an explicit argument when
-one is given, and **MUST NOT** be triggered automatically at client or framework
-initialisation.
+PROTOCOL_SPEC §5.12.6 (spec v1.35.0, corrected v1.36.0, apcore#114): a binding
+loader invoked **without an explicit directory argument** resolves the scan
+directory from ``bindings.dir`` under §9.2 precedence (``APCORE_BINDINGS_DIR`` >
+config file > default ``./bindings``), matches candidates against
+``bindings.pattern`` through the same chain (default ``*.binding.yaml``), yields
+to an explicit argument when one is given, **MUST NOT** be triggered
+automatically at client or framework initialisation, and **MUST** raise rather
+than return empty when the resolved directory does not exist (clause 5).
 
 **The defect this pins is a MUST with no subject.** Through v1.34.0 the section
 read "if ``bindings.dir`` is configured, implementations MUST scan files
@@ -29,9 +30,12 @@ for it. ``config_construction`` is load-bearing for the same reason: each case's
 mapping bypasses it.
 
 ``env_isolation`` is honoured by :func:`_isolated_environment`, which *deletes*
-every ``APCORE_*`` variable rather than blanking it — §9.2 makes an empty string
-a valid override, so ``APCORE_BINDINGS_DIR=""`` would shadow the config file
-with the empty path rather than stand down.
+every ``APCORE_*`` variable rather than blanking it. That was already true for
+the reason §9.2 gives — a set-but-empty variable is still an override — and
+since §9.2.1 requirement 5 it is true for a second reason: this SDK now
+*discards* an empty path-typed override, so blanking would neither shadow the
+file nor stand aside in the way the old comment described. Deleting is the one
+form that means "not set" under both readings.
 
 The loader is driven through ``BindingLoader.load_binding_dir``, the public
 entry point an application calls. The fixture's ``entry_point`` clause forbids
@@ -39,10 +43,18 @@ reaching into a private resolution helper: §5.12.6's subject is the loader *as
 invoked*, and a helper that computes the right directory while the public entry
 point ignores it satisfies nothing.
 
-Two divergences between this SDK and the fixture are recorded here as strict
-xfails rather than papered over — see
-``test_missing_configured_dir_is_not_an_error`` and
-``test_fixture_binding_descriptor_uses_the_spec_field_spelling``.
+**No divergence remains.** The two strict xfails this file carried are both
+gone, and neither was closed by changing the SDK:
+
+* ``missing_configured_dir_is_not_an_error`` expected an empty result where this
+  SDK raises. §5.12.6 stated no outcome, so neither side was provably wrong;
+  v1.36.0's clause 5 states one, and it is the raise. The case is now
+  ``missing_configured_dir_raises`` and is driven as an ordinary case.
+* the fixture's descriptor spelled the binding field ``target_id`` while this
+  SDK's loader — and ``binding_errors.json``, and both other SDKs — require
+  ``target``. §5.12.2 was the sole outlier and was corrected; the fixture's
+  descriptors now spell ``target``, so the driver's rewrite shim is deleted and
+  the descriptors are used as written.
 """
 
 from __future__ import annotations
@@ -57,7 +69,6 @@ import yaml
 from apcore.bindings import BindingLoader
 from apcore.client import APCore
 from apcore.config import Config
-from apcore.errors import BindingFileInvalidError
 from apcore.registry import Registry
 
 from .canonical_fixtures import case_ids, load_fixture, reject_unknown_expectations
@@ -67,26 +78,40 @@ FIXTURE = "bindings_dir_resolution.json"
 _FIXTURE = load_fixture(FIXTURE)
 _CASES: dict[str, dict[str, Any]] = {case["id"]: case for case in _FIXTURE["test_cases"]}
 
-#: The binding descriptor the fixture writes into every case's layout. Its
-#: ``module_id`` is what ``loaded_module_ids`` reports.
-_BINDING_FILE: dict[str, Any] = _FIXTURE["binding_file"]
+#: Named binding descriptors, ``name -> document``. Every ``fs`` value names one
+#: of these. They carry DISTINCT ``module_id``s on purpose: a case that plants
+#: files in two candidate directories can then tell which directory was
+#: enumerated, where a single shared id made such a case pass whichever
+#: directory won.
+#: The block's own ``comment`` key documents the map; it is prose, not a
+#: descriptor, and iterating it as one is how a driver ends up asserting against
+#: a string.
+_BINDING_FILES: dict[str, dict[str, Any]] = {
+    name: document for name, document in _FIXTURE["binding_files"].items() if isinstance(document, dict)
+}
 
-#: The descriptor's declared module ID (``greet``), which every winning layout
-#: also uses as the *filename* of the file in the directory that must be
-#: scanned. See :func:`_module_id_for`.
-_FIXTURE_MODULE_ID: str = _BINDING_FILE["bindings"][0]["module_id"]
-
-#: A real callable for the descriptor's target to resolve to. The fixture names
+#: A real callable for the descriptors' target to resolve to. The fixture names
 #: ``fixture_targets:greet``, which is a placeholder — the spec repo ships no
 #: such module, and each SDK supplies its own. ``auto_schema: true`` means the
 #: target must carry type annotations, so this points at the annotated helper
-#: the rest of this repo's binding tests use.
+#: the rest of this repo's binding tests use. Only the target *module* is
+#: substituted; the field name is the fixture's own (§5.12.2 ``target``).
 _REAL_TARGET = "binding_helpers:typed_function"
 
 
 def _case(case_id: str) -> dict[str, Any]:
     assert case_id in _CASES, f"canonical fixture {FIXTURE} no longer defines case {case_id!r}"
     return _CASES[case_id]
+
+
+def _descriptor(name: str) -> dict[str, Any]:
+    assert name in _BINDING_FILES, f"case names binding descriptor {name!r}, which {FIXTURE} does not define"
+    return _BINDING_FILES[name]
+
+
+def _module_ids_of(descriptor_name: str) -> list[str]:
+    """The module IDs the named descriptor registers."""
+    return [entry["module_id"] for entry in _descriptor(descriptor_name)["bindings"]]
 
 
 # ---------------------------------------------------------------------------
@@ -98,13 +123,12 @@ def _case(case_id: str) -> dict[str, Any]:
 def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Delete every ``APCORE_*`` variable; a case's ``env`` block puts its own back.
 
-    ``delenv``, never ``setenv(name, "")``. §9.2 lowers any ``APCORE_*``
-    variable — including one holding the empty string — into a config override,
-    so blanking ``APCORE_BINDINGS_DIR`` sets ``bindings.dir`` to ``""`` and
-    shadows the config file rather than standing aside. An inherited
-    ``APCORE_BINDINGS_DIR`` would turn the discriminating case into the case
-    that already passes; an inherited ``APCORE_CONFIG_FILE`` would point
-    discovery somewhere else entirely.
+    ``delenv``, never ``setenv(name, "")``. An inherited ``APCORE_BINDINGS_DIR``
+    would turn the discriminating case into the case that already passes; an
+    inherited ``APCORE_CONFIG_FILE`` would point discovery somewhere else
+    entirely. Blanking is not a substitute: §9.2 treats an empty variable as an
+    override, and §9.2.1 requirement 5 makes this SDK discard it — two different
+    behaviours, neither of which is "the variable is not set".
     """
     for name in [n for n in os.environ if n.startswith("APCORE_")]:
         monkeypatch.delenv(name, raising=False)
@@ -115,64 +139,42 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _binding_document(module_id: str, *, fixture_only: bool = False) -> dict[str, Any]:
-    """The fixture's ``binding_file`` block as a YAML-ready mapping.
+def _binding_document(descriptor_name: str) -> dict[str, Any]:
+    """The named descriptor, with only its placeholder target substituted.
 
-    With ``fixture_only`` the block is returned verbatim under the fixture's own
-    ``module_id``, which is what
-    ``test_fixture_binding_descriptor_uses_the_spec_field_spelling`` offers to
-    the loader. Otherwise the entry is translated into the field spelling this
-    SDK's ``BindingLoader`` accepts:
-
-    * ``target_id`` → ``target``. PROTOCOL_SPEC §5.12.2 makes ``target_id`` the
-      required binding-item field and this fixture uses it; this SDK's loader
-      requires ``target``, as does the older ``binding_errors.json`` fixture.
-      That divergence is real and is pinned by its own strict xfail below — it
-      is not what *this* fixture asserts, whose scope is which directory and
-      pattern a loader resolves.
-    * the placeholder target module is replaced by a real annotated callable, so
-      that ``auto_schema: true`` has type information to work from.
+    §5.12.2 declares the binding-item field ``target``, which is what the
+    descriptors spell and what this SDK's loader reads, so nothing about the
+    document's *shape* is rewritten here. Through spec v1.35.0 the section said
+    ``target_id`` — the sole outlier against the canonical schema, both binding
+    fixtures and all three SDKs — and this driver carried a rename shim and an
+    xfail for it. v1.36.0 corrected the section; the shim is deleted.
     """
-    document = {"bindings": [dict(entry) for entry in _BINDING_FILE["bindings"]]}
-    for entry in document["bindings"]:
-        entry["module_id"] = module_id
-        if not fixture_only:
-            entry["target"] = _REAL_TARGET
-            entry.pop("target_id", None)
-    return document
-
-
-def _module_id_for(relative: str) -> str:
-    """The module ID a binding file at *relative* registers: its filename stem.
-
-    This is the fixture's ``scan_observation`` mechanism and it is not
-    cosmetic. Every ``fs`` entry points at the SAME ``binding_file`` descriptor,
-    so if every file registered the descriptor's ``greet`` verbatim then
-    ``loaded_module_ids: ["greet"]`` would be satisfied by scanning ANY of the
-    candidate directories and would discriminate nothing. The layouts name the
-    decoys deliberately — ``from_file/file_side.binding.yaml``,
-    ``from_env/env_side.binding.yaml``, ``custom_bindings/decoy.binding.yaml``
-    — and place ``greet.*`` only in the directory that must win. Naming each
-    module after its file is therefore what turns ``loaded_module_ids`` into an
-    observation of *which directory was enumerated*, read off the loader's
-    result rather than off the config value this driver supplied.
-    """
-    return relative.rsplit("/", 1)[-1].split(".", 1)[0]
+    document = _descriptor(descriptor_name)
+    return {
+        "bindings": [
+            {**entry, "target": _REAL_TARGET if entry["target"].startswith("fixture_targets:") else entry["target"]}
+            for entry in document["bindings"]
+        ]
+    }
 
 
 def _write_layout(root: Path, case: dict[str, Any]) -> None:
-    """Materialise a case's ``config_file`` and ``fs`` blocks under *root*."""
+    """Materialise a case's ``config_file`` and ``fs`` blocks under *root*.
+
+    ``fs_values_name_a_descriptor``: each ``fs`` value is a key in
+    ``binding_files``, never a literal document and never one shared descriptor
+    reused everywhere.
+    """
     config_file = case.get("config_file")
     if config_file is not None:
         path = root / config_file["path"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(yaml.safe_dump(config_file["content"] or {}, sort_keys=False), encoding="utf-8")
 
-    for relative, content in (case.get("fs") or {}).items():
+    for relative, descriptor_name in (case.get("fs") or {}).items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        assert content == "binding_file", f"unhandled fs content marker {content!r} in case {case['id']!r}"
-        path.write_text(yaml.safe_dump(_binding_document(_module_id_for(relative)), sort_keys=False), encoding="utf-8")
+        path.write_text(yaml.safe_dump(_binding_document(descriptor_name), sort_keys=False), encoding="utf-8")
 
 
 def _load_config(root: Path, case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Config | None:
@@ -183,6 +185,9 @@ def _load_config(root: Path, case: dict[str, Any], monkeypatch: pytest.MonkeyPat
     under test is that the FILE tier of ``bindings.dir`` reaches the loader, and
     validation of unrelated required fields would stop every case before it
     started.
+
+    ``env_set_after_config_load`` is deliberately NOT applied here — see
+    :func:`_drive`.
     """
     for name, value in (case.get("env") or {}).items():
         monkeypatch.setenv(name, value)
@@ -198,7 +203,7 @@ def _module_ids(modules: list[Any]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Clause 1 — resolve the directory from ``bindings.dir``
+# Driving one case
 # ---------------------------------------------------------------------------
 
 
@@ -217,6 +222,12 @@ def _drive(
     the fixture's ``no_explicit_argument`` clause, which is the difference
     between exercising §5.12.6 and exercising the call shape that already
     worked.
+
+    ``env_set_after_config_load`` variables are applied *between* the ``Config``
+    construction and the loader call, which is the whole content of the clause-2
+    case: the merged ``Config`` therefore holds the FILE value while the raw
+    environment holds a different one, so a loader that reads the variable
+    itself is distinguishable from one that reads the merged configuration.
     """
     case = _case(case_id)
     reject_unknown_expectations(FIXTURE, case, known_expectations or {"expected"})
@@ -224,6 +235,9 @@ def _drive(
     monkeypatch.chdir(tmp_path)
     _write_layout(tmp_path, case)
     config = _load_config(tmp_path, case, monkeypatch)
+
+    for name, value in (case.get("env_set_after_config_load") or {}).items():
+        monkeypatch.setenv(name, value)
 
     registry = Registry()
     loader = BindingLoader()
@@ -237,6 +251,47 @@ def _drive(
     return case, modules
 
 
+def _assert_scan_was_of(case: dict[str, Any], modules: list[Any]) -> None:
+    """The enumerated directory, read off the loader's result and the layout.
+
+    The fixture's ``scan_observation`` clause forbids reading ``scanned_dir``
+    back off the config value this driver supplied. It is derived instead from
+    the two things the fixture *does* provide: the module IDs the loader
+    produced, and the layout that says which descriptor sits in which directory.
+    Every ID produced must be declared by a descriptor under ``scanned_dir``,
+    and no ID declared only by a descriptor in some other candidate directory
+    may appear — which is what makes the multi-directory layouts
+    (``from_file`` / ``from_env`` / ``from_argument``) prove that one directory
+    was enumerated rather than merely that one file was found.
+    """
+    scanned_dir = case["expected"]["scanned_dir"]
+    produced = set(_module_ids(modules))
+
+    inside: set[str] = set()
+    outside: set[str] = set()
+    for relative, descriptor_name in (case.get("fs") or {}).items():
+        target = inside if relative.rsplit("/", 1)[0] == scanned_dir else outside
+        target.update(_module_ids_of(descriptor_name))
+
+    assert produced <= inside, (
+        f"loader produced {sorted(produced - inside)}, which no descriptor under {scanned_dir!r} declares"
+    )
+    assert produced & (outside - inside) == set(), (
+        f"loader enumerated a directory other than {scanned_dir!r}: it produced {sorted(produced & outside)}"
+    )
+
+
+def _assert_loaded(case: dict[str, Any], modules: list[Any]) -> None:
+    assert case["expected"]["scanned"] is True
+    assert _module_ids(modules) == sorted(case["expected"]["loaded_module_ids"])
+    _assert_scan_was_of(case, modules)
+
+
+# ---------------------------------------------------------------------------
+# Clause 1 — resolve the directory from ``bindings.dir``
+# ---------------------------------------------------------------------------
+
+
 def test_config_file_dir_is_scanned_with_env_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """THE discriminating case: file tier, env unset, no explicit argument.
 
@@ -245,43 +300,48 @@ def test_config_file_dir_is_scanned_with_env_unset(tmp_path: Path, monkeypatch: 
     loader test passes an explicit directory (works either way) and TypeScript's
     pre-existing raw ``process.env`` read covered the env tier alone.
     """
-    case, modules = _drive("config_file_dir_is_scanned_with_env_unset", tmp_path, monkeypatch)
-
-    assert case["expected"]["scanned"] is True
-    assert _module_ids(modules) == case["expected"]["loaded_module_ids"]
-    _assert_scan_was_of(case, modules)
+    _assert_loaded(*_drive("config_file_dir_is_scanned_with_env_unset", tmp_path, monkeypatch))
 
 
 def test_default_dir_when_key_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No ``bindings.dir`` anywhere and no explicit argument: ``./bindings`` applies."""
-    case, modules = _drive("default_dir_when_key_absent", tmp_path, monkeypatch)
+    """No ``bindings.dir`` anywhere and no explicit argument: ``./bindings`` applies.
 
-    assert case["expected"]["scanned"] is True
-    assert _module_ids(modules) == case["expected"]["loaded_module_ids"]
-    _assert_scan_was_of(case, modules)
+    Since spec v1.36.0 that default reaches the loader by two routes at once —
+    the merged ``_DEFAULTS`` table and the loader's own last tier — and the case
+    is satisfied by either, which is the point: the *value* is canonical, the
+    tier that supplies it is not normative.
+    """
+    _assert_loaded(*_drive("default_dir_when_key_absent", tmp_path, monkeypatch))
 
 
 def test_env_overrides_config_file_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """§9.2 precedence, top tier: ``APCORE_BINDINGS_DIR`` beats the config file.
 
-    Both candidate directories exist and each holds a binding file, so exactly
-    one answer passes. A layout where only the env directory existed would pass
-    on an implementation that ignores the env tier and simply finds nothing.
+    Both candidate directories exist and each holds a binding file declaring a
+    DIFFERENT module id, so exactly one answer passes. With a shared id — which
+    is how the fixture first shipped — this case passed whichever directory the
+    implementation scanned and could not detect one that ignored the env tier.
     """
-    case, modules = _drive("env_overrides_config_file_dir", tmp_path, monkeypatch)
+    _assert_loaded(*_drive("env_overrides_config_file_dir", tmp_path, monkeypatch))
 
-    assert case["expected"]["scanned"] is True
-    assert _module_ids(modules) == case["expected"]["loaded_module_ids"]
-    _assert_scan_was_of(case, modules)
+
+def test_env_var_must_not_be_read_directly_at_the_loader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§5.12.6 clause 2: the env tier arrives through §9.2, never through the loader.
+
+    ``APCORE_BINDINGS_DIR`` is set **after** the ``Config`` is built, so the
+    merged configuration holds the FILE value while the raw environment holds a
+    different one. A conforming loader scans ``from_file``; one that reads the
+    variable itself scans ``from_env``. Without this case clause 2 has no
+    coverage at all — an implementation that reads the raw variable satisfies
+    every other case in the fixture, which is the defect apcore-typescript#36
+    was filed for.
+    """
+    _assert_loaded(*_drive("env_var_must_not_be_read_directly_at_the_loader", tmp_path, monkeypatch))
 
 
 def test_explicit_argument_wins_over_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """§5.12.6 clause 2: explicit > env > file > default, with all three present."""
-    case, modules = _drive("explicit_argument_wins_over_config", tmp_path, monkeypatch)
-
-    assert case["expected"]["scanned"] is True
-    assert _module_ids(modules) == case["expected"]["loaded_module_ids"]
-    _assert_scan_was_of(case, modules)
+    _assert_loaded(*_drive("explicit_argument_wins_over_config", tmp_path, monkeypatch))
 
 
 def test_config_file_pattern_is_honoured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,94 +352,52 @@ def test_config_file_pattern_is_honoured(tmp_path: Path, monkeypatch: pytest.Mon
     keeps the pattern in its signature loads the *wrong* file rather than none —
     a distinguishable wrong answer instead of an empty result.
     """
-    case, modules = _drive("config_file_pattern_is_honoured", tmp_path, monkeypatch)
-
-    assert case["expected"]["scanned"] is True
-    assert _module_ids(modules) == case["expected"]["loaded_module_ids"]
-    _assert_scan_was_of(case, modules)
+    _assert_loaded(*_drive("config_file_pattern_is_honoured", tmp_path, monkeypatch))
 
 
 def test_default_pattern_when_key_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No ``bindings.pattern``: ``*.binding.yaml`` applies and a sibling is skipped."""
-    case, modules = _drive("default_pattern_when_key_absent", tmp_path, monkeypatch)
-
-    assert case["expected"]["scanned"] is True
-    assert _module_ids(modules) == case["expected"]["loaded_module_ids"]
-    _assert_scan_was_of(case, modules)
-
-
-def _assert_scan_was_of(case: dict[str, Any], modules: list[Any]) -> None:
-    """The enumerated directory, read off the loader's result and the layout.
-
-    The fixture's ``scan_observation`` clause forbids reading ``scanned_dir``
-    back off the config value this driver supplied. It is derived instead from
-    the two things the fixture *does* provide: the module IDs the loader
-    produced, and the layout that says which file sits in which directory. Every
-    ID produced must belong to a file under ``scanned_dir``, and no ID belonging
-    to a file in any other candidate directory may appear — which is what makes
-    the multi-directory layouts (``from_file`` / ``from_env`` /
-    ``from_argument``) prove that one directory was enumerated rather than
-    merely that one file was found.
-    """
-    scanned_dir = case["expected"]["scanned_dir"]
-    produced = set(_module_ids(modules))
-
-    inside = {_module_id_for(rel) for rel in (case.get("fs") or {}) if rel.rsplit("/", 1)[0] == scanned_dir}
-    outside = {_module_id_for(rel) for rel in (case.get("fs") or {}) if rel.rsplit("/", 1)[0] != scanned_dir}
-
-    assert produced <= inside, (
-        f"loader produced {sorted(produced - inside)}, which no file under {scanned_dir!r} declares"
-    )
-    assert produced & outside == set(), (
-        f"loader enumerated a directory other than {scanned_dir!r}: it produced {sorted(produced & outside)}"
-    )
+    _assert_loaded(*_drive("default_pattern_when_key_absent", tmp_path, monkeypatch))
 
 
 # ---------------------------------------------------------------------------
-# A missing directory — the one behavioural divergence in this fixture
+# Clause 5 — a missing resolved directory raises
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "SDK/fixture divergence, reported not papered over: the fixture states that a configured "
-        "bindings.dir which does not exist yields an empty result and no error ('discovery is "
-        "opportunistic; the key carries a default most projects never create'). apcore-python "
-        "raises BindingFileInvalidError instead — see tests/test_bindings_dir_resolution.py "
-        "::test_missing_configured_dir_raises, which pins the raise deliberately. §5.12.6 states "
-        "no outcome for a missing directory, so neither side is provably wrong; this xfail turns "
-        "green->red the day the two agree."
-    ),
-)
-def test_missing_configured_dir_is_not_an_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A configured ``bindings.dir`` that does not exist: empty result, no error."""
-    case, modules = _drive("missing_configured_dir_is_not_an_error", tmp_path, monkeypatch)
+def test_missing_configured_dir_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§5.12.6 clause 5: an error naming the resolved directory, not an empty result.
 
-    assert case["expected"]["scanned"] is True
-    assert case["expected"]["error"] is None
-    assert _module_ids(modules) == case["expected"]["loaded_module_ids"]
+    Was a strict xfail. Through v1.35.0 the fixture expected an empty result
+    where this SDK raises, and §5.12.6 stated no outcome, so neither side was
+    provably wrong and the divergence was recorded rather than papered over.
+    v1.36.0 states an outcome and it is the raise — binding loading is
+    user-invoked, so a directory that is not there is a mistake, in deliberate
+    contrast with ``ACL.discover``'s no-op (D-64), where discovery is automatic
+    and a missing ``acl.root`` is the ordinary case.
 
-
-def test_missing_configured_dir_divergence_is_exactly_a_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The shape of the divergence above, pinned so it cannot drift unnoticed.
-
-    The xfail says "this SDK does not return an empty result". This says what it
-    does instead — raises ``BindingFileInvalidError`` naming the resolved
-    directory — so that an SDK change from "raises" to some third behaviour is a
-    failure here rather than a still-xfailing test.
+    The ``error_code`` and ``error_message_names_resolved_dir`` expectations are
+    both read from the fixture and both asserted: a raise carrying the right
+    code but a message that does not name the directory leaves the operator
+    unable to tell *which* directory the loader resolved, which is the whole
+    content of the clause's second half.
     """
-    case = _case("missing_configured_dir_is_not_an_error")
+    case = _case("missing_configured_dir_raises")
+    reject_unknown_expectations(FIXTURE, case, {"expected"})
+
     monkeypatch.chdir(tmp_path)
     _write_layout(tmp_path, case)
     config = _load_config(tmp_path, case, monkeypatch)
 
-    with pytest.raises(BindingFileInvalidError) as raised:
+    assert case["expected"]["scanned"] is True
+    with pytest.raises(Exception) as raised:  # noqa: PT011 - the code is what the fixture pins
         BindingLoader().load_binding_dir(registry=Registry(), config=config)
 
+    assert getattr(raised.value, "code", None) == case["expected"]["error_code"]
+    assert case["expected"]["error_message_names_resolved_dir"] is True
     assert case["expected"]["scanned_dir"] in str(raised.value), (
-        "the raise must still name the directory the loader resolved from bindings.dir; "
-        "otherwise this SDK is not even reaching the configured directory"
+        "the raise must name the directory the loader resolved from bindings.dir; "
+        "otherwise the operator cannot tell which directory was looked for"
     )
 
 
@@ -406,6 +424,7 @@ def test_no_auto_scan_at_init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     _write_layout(tmp_path, case)
     config = _load_config(tmp_path, case, monkeypatch)
 
+    planted = sorted({mid for name in case["fs"].values() for mid in _module_ids_of(name)})
     # The file that would be loaded, proving the layout is not the reason
     # nothing was registered.
     would_load = sorted((tmp_path / "custom_bindings").glob("*.binding.yaml"))
@@ -415,7 +434,7 @@ def test_no_auto_scan_at_init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
     assert case["expected"]["scanned"] is False
     registered = client.registry.list()
-    for module_id in (entry["module_id"] for entry in _BINDING_FILE["bindings"]):
+    for module_id in planted:
         assert module_id not in registered, (
             f"client construction scanned a binding directory and registered {module_id!r}"
         )
@@ -424,40 +443,7 @@ def test_no_auto_scan_at_init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     # And the loader still works when the application asks for it — clause 3
     # forbids the implicit scan, not the explicit one.
     modules = BindingLoader().load_binding_dir(registry=Registry(), config=config)
-    assert _module_ids(modules) == [entry["module_id"] for entry in _BINDING_FILE["bindings"]]
-
-
-# ---------------------------------------------------------------------------
-# The fixture's binding descriptor field spelling
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "SDK/fixture divergence, reported not papered over: PROTOCOL_SPEC §5.12.2 makes 'target_id' "
-        "the required binding-item field and bindings_dir_resolution.json uses it, but this SDK's "
-        "BindingLoader requires 'target' — as does the older binding_errors.json fixture, so the "
-        "spec repo's own fixtures disagree with each other. Not what this fixture asserts (its "
-        "scope is which directory and pattern a loader resolves), so the other cases translate the "
-        "spelling; this xfail keeps the divergence visible."
-    ),
-)
-def test_fixture_binding_descriptor_uses_the_spec_field_spelling(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The fixture's ``binding_file`` block, verbatim, loads through this SDK."""
-    monkeypatch.chdir(tmp_path)
-    directory = tmp_path / "bindings"
-    directory.mkdir()
-    (directory / "greet.binding.yaml").write_text(
-        yaml.safe_dump(_binding_document(_FIXTURE_MODULE_ID, fixture_only=True), sort_keys=False),
-        encoding="utf-8",
-    )
-
-    modules = BindingLoader().load_binding_dir(registry=Registry())
-
-    assert _module_ids(modules) == [entry["module_id"] for entry in _BINDING_FILE["bindings"]]
+    assert _module_ids(modules) == planted
 
 
 # ---------------------------------------------------------------------------
@@ -469,12 +455,17 @@ COVERED: dict[str, str] = {
     "config_file_dir_is_scanned_with_env_unset": "test_config_file_dir_is_scanned_with_env_unset",
     "default_dir_when_key_absent": "test_default_dir_when_key_absent",
     "env_overrides_config_file_dir": "test_env_overrides_config_file_dir",
+    "env_var_must_not_be_read_directly_at_the_loader": "test_env_var_must_not_be_read_directly_at_the_loader",
     "explicit_argument_wins_over_config": "test_explicit_argument_wins_over_config",
     "config_file_pattern_is_honoured": "test_config_file_pattern_is_honoured",
     "default_pattern_when_key_absent": "test_default_pattern_when_key_absent",
-    "missing_configured_dir_is_not_an_error": "test_missing_configured_dir_is_not_an_error",
+    "missing_configured_dir_raises": "test_missing_configured_dir_raises",
     "no_auto_scan_at_init": "test_no_auto_scan_at_init",
 }
+
+#: The canonical fixture's case count, asserted so that an upstream addition or
+#: removal is a named failure rather than a quietly smaller run.
+EXPECTED_CASE_COUNT = 9
 
 
 def test_every_canonical_case_is_driven() -> None:
@@ -483,6 +474,7 @@ def test_every_canonical_case_is_driven() -> None:
     claimed = set(COVERED)
     assert canonical - claimed == set(), f"canonical fixture {FIXTURE} gained case(s) with no driver here"
     assert claimed - canonical == set(), f"this file claims case(s) {FIXTURE} no longer defines"
+    assert len(canonical) == EXPECTED_CASE_COUNT
 
 
 def test_every_claimed_driver_exists() -> None:
@@ -493,40 +485,89 @@ def test_every_claimed_driver_exists() -> None:
     assert missing == [], f"claimed driver function(s) not defined: {missing}"
 
 
-def test_layout_convention_matches_the_fixture_descriptor() -> None:
-    """The stem convention :func:`_module_id_for` uses is the fixture's own.
+def test_descriptors_carry_distinct_module_ids() -> None:
+    """The property that makes the multi-directory cases discriminate at all.
 
-    In every case whose ``expected.loaded_module_ids`` is non-empty, the file
-    the fixture places in ``scanned_dir`` is named after the descriptor's
-    ``module_id`` and the expectation names exactly that ID. Pinning the
-    correspondence here means a fixture that renames the descriptor or the
-    winning file fails loudly instead of quietly making every case
-    non-discriminating.
+    ``binding_files`` replaced a single shared ``binding_file`` precisely so a
+    case placing files in two candidate directories can tell WHICH directory was
+    enumerated. Collapse the ids back to one and every such case passes whichever
+    directory won, silently — so the distinctness is pinned rather than assumed.
     """
-    checked = 0
+    ids = [mid for descriptor in _BINDING_FILES.values() for mid in (e["module_id"] for e in descriptor["bindings"])]
+    assert len(ids) == len(set(ids)), f"binding_files reuses module id(s): {sorted(ids)}"
+
     for case in _FIXTURE["test_cases"]:
-        expected_ids = (case.get("expected") or {}).get("loaded_module_ids")
-        if not expected_ids:
+        directories = {relative.rsplit("/", 1)[0] for relative in (case.get("fs") or {})}
+        if len(directories) < 2:
             continue
-        scanned_dir = case["expected"]["scanned_dir"]
-        winners = [rel for rel in (case.get("fs") or {}) if rel.rsplit("/", 1)[0] == scanned_dir]
-        stems = sorted({_module_id_for(rel) for rel in winners})
-        assert _FIXTURE_MODULE_ID in stems, (
-            f"case {case['id']!r}: no file under {scanned_dir!r} is named after the descriptor's "
-            f"module_id {_FIXTURE_MODULE_ID!r}, so loaded_module_ids cannot discriminate"
+        per_directory = {
+            directory: {
+                mid
+                for relative, name in case["fs"].items()
+                if relative.rsplit("/", 1)[0] == directory
+                for mid in _module_ids_of(name)
+            }
+            for directory in directories
+        }
+        merged: set[str] = set()
+        for module_ids in per_directory.values():
+            assert merged & module_ids == set(), (
+                f"case {case['id']!r} plants the same module id in two candidate directories, "
+                f"so it cannot tell which one was scanned"
+            )
+            merged |= module_ids
+
+
+def test_every_descriptor_uses_the_spec_field_spelling() -> None:
+    """§5.12.2's binding-item field is ``target``.
+
+    This replaces a strict xfail. Through spec v1.35.0 §5.12.2 declared
+    ``target_id`` a MUST while the canonical schema, ``binding_errors.json`` and
+    all three SDK loaders used ``target``, so a binding file written from the
+    section that defines the format loaded nowhere; this driver rewrote the
+    field and recorded the divergence. v1.36.0 corrected the section and the
+    fixture, so the descriptors now load through this SDK as written, and the
+    assertion is that they do.
+    """
+    for name, descriptor in _BINDING_FILES.items():
+        for entry in descriptor["bindings"]:
+            assert "target" in entry, f"descriptor {name!r} does not spell the §5.12.2 field 'target'"
+            assert "target_id" not in entry, f"descriptor {name!r} still carries the withdrawn 'target_id' spelling"
+
+
+def test_fixture_descriptors_load_verbatim_but_for_the_placeholder_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each descriptor, unmodified except for its placeholder target, loads here.
+
+    ``fixture_targets:greet`` is a placeholder the spec repo does not ship, so
+    every SDK substitutes its own annotated callable; nothing else about the
+    document is touched. Driving each descriptor through the loader proves the
+    substitution is the *only* difference — a driver that quietly reshaped a
+    descriptor would otherwise be testing a document the fixture never wrote.
+    """
+    monkeypatch.chdir(tmp_path)
+    for name in _BINDING_FILES:
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "probe.binding.yaml").write_text(
+            yaml.safe_dump(_binding_document(name), sort_keys=False), encoding="utf-8"
         )
-        assert expected_ids == [_FIXTURE_MODULE_ID]
-        checked += 1
-    assert checked >= 5, "expected most cases to state a non-empty loaded_module_ids"
+        modules = BindingLoader().load_binding_dir(str(directory), Registry())
+        assert _module_ids(modules) == sorted(_module_ids_of(name))
 
 
 def test_driver_contract_is_not_a_case() -> None:
-    """``driver_contract`` and ``binding_file`` are runner inputs, not test cases."""
+    """``driver_contract`` and ``binding_files`` are runner inputs, not test cases."""
     assert "driver_contract" in _FIXTURE
-    assert "binding_file" in _FIXTURE
+    assert "binding_files" in _FIXTURE
+    assert set(_FIXTURE["binding_files"]) - set(_BINDING_FILES) == {"comment"}, (
+        "binding_files gained a non-descriptor key this driver does not know to skip"
+    )
+    assert "binding_file" not in _FIXTURE, "the singular descriptor was replaced by the named map in spec v1.36.0"
     ids = set(case_ids(FIXTURE))
     assert "driver_contract" not in ids
-    assert "binding_file" not in ids
+    assert "binding_files" not in ids
     assert {
         "entry_point",
         "config_construction",
@@ -534,4 +575,6 @@ def test_driver_contract_is_not_a_case() -> None:
         "no_explicit_argument",
         "scan_observation",
         "no_startup_scan",
+        "fs_values_name_a_descriptor",
+        "env_set_after_config_load",
     } <= set(_FIXTURE["driver_contract"])
