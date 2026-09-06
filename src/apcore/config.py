@@ -13,6 +13,7 @@ import os
 
 import sys
 import threading
+import warnings
 from pathlib import Path
 from typing import Any, Type, TypeVar
 
@@ -754,25 +755,56 @@ def _collect_unknown_framework_keys(apcore_data: dict[str, Any], prefix: str = "
     return errors
 
 
-def discover_config_file() -> str | None:
-    """Search for a config file in the standard discovery order (§9.14).
+#: §9.14 discovery tiers, numbered exactly as the spec numbers them.
+#:
+#: The tier is not bookkeeping: PROTOCOL_SPEC §9.2.2 makes it the thing that
+#: *selects* the project root, so :func:`_discover_config_file_with_tier` has to
+#: report which candidate won and not merely which path.
+_TIER_ENV_CONFIG_FILE = 1
+_TIER_PROJECT_YAML = 2
+_TIER_PROJECT_YML = 3
+_TIER_APCORE_YAML = 4
+_TIER_APCORE_YML = 5
+_TIER_USER_XDG = 6
+_TIER_USER_LEGACY = 7
 
-    ``$APCORE_CONFIG_FILE`` is *consumed* here: ``_apply_env_overrides`` skips
-    it so it never becomes the ``config.file`` override (apcore#88).
+#: Tiers whose config file is *project-scoped* — pointed at explicitly, or found
+#: next to the working directory. For these the file's own directory is the
+#: project root (§9.2.2). Tiers 6-7 are deliberately absent: a user-level config
+#: is shared by every project its owner runs, so ``./extensions`` written there
+#: cannot mean ``~/.config/apcore/extensions``.
+_PROJECT_SCOPED_TIERS: frozenset[int] = frozenset(
+    {
+        _TIER_ENV_CONFIG_FILE,
+        _TIER_PROJECT_YAML,
+        _TIER_PROJECT_YML,
+        _TIER_APCORE_YAML,
+        _TIER_APCORE_YML,
+    }
+)
+
+#: CWD-relative candidates, in §9.14 order, paired with their tier number.
+_CWD_CANDIDATE_TIERS: tuple[tuple[str, int], ...] = (
+    ("project.yaml", _TIER_PROJECT_YAML),
+    ("project.yml", _TIER_PROJECT_YML),
+    ("apcore.yaml", _TIER_APCORE_YAML),
+    ("apcore.yml", _TIER_APCORE_YML),
+)
+
+
+def _discover_config_file_with_tier() -> tuple[str | None, int | None]:
+    """:func:`discover_config_file`, plus the §9.14 tier that produced the hit.
+
+    Returns ``(None, None)`` when no candidate exists.
     """
     env_path = os.environ.get(_ENV_CONFIG_FILE)
     if env_path:
-        return env_path
+        return env_path, _TIER_ENV_CONFIG_FILE
 
-    cwd_candidates = [
-        Path("project.yaml"),
-        Path("project.yml"),
-        Path("apcore.yaml"),
-        Path("apcore.yml"),
-    ]
-    for candidate in cwd_candidates:
+    for candidate_name, tier in _CWD_CANDIDATE_TIERS:
+        candidate = Path(candidate_name)
         if candidate.is_file():
-            return str(candidate)
+            return str(candidate), tier
 
     if sys.platform == "darwin":
         xdg_config = Path.home() / "Library" / "Application Support" / "apcore" / "config.yaml"
@@ -780,13 +812,96 @@ def discover_config_file() -> str | None:
         xdg_config = Path.home() / ".config" / "apcore" / "config.yaml"
 
     if xdg_config.is_file():
-        return str(xdg_config)
+        return str(xdg_config), _TIER_USER_XDG
 
     legacy = Path.home() / ".apcore" / "config.yaml"
     if legacy.is_file():
-        return str(legacy)
+        return str(legacy), _TIER_USER_LEGACY
 
-    return None
+    return None, None
+
+
+def discover_config_file() -> str | None:
+    """Search for a config file in the standard discovery order (§9.14).
+
+    ``$APCORE_CONFIG_FILE`` is *consumed* here: ``_apply_env_overrides`` skips
+    it so it never becomes the ``config.file`` override (apcore#88).
+    """
+    path, _tier = _discover_config_file_with_tier()
+    return path
+
+
+def _cwd() -> str:
+    """The process working directory, resolved, as a string."""
+    return str(Path.cwd().resolve())
+
+
+def _project_root_for(config_file: str | None, tier: int | None) -> str:
+    """PROTOCOL_SPEC §9.2.2 ``project_root(config)``.
+
+    The config file's directory for §9.14 tiers 1-5, the process CWD for tiers
+    6-7 and for a ``Config`` with no backing file.
+    """
+    if config_file is not None and tier in _PROJECT_SCOPED_TIERS:
+        return str(Path(config_file).resolve().parent)
+    return _cwd()
+
+
+def _relative_path_typed_keys(config: Config) -> list[str]:
+    """Path-typed keys (§9.2.1) whose *merged* value is a relative path.
+
+    Reads the merged view, not the declared one, because §9.2.2's target rule
+    covers "file-declared, environment-sourced, API-supplied, and the §9.1.1
+    defaults alike" — a relative default re-roots at v2.0 exactly as a written
+    value does, so a document that declares nothing is still affected.
+    """
+    found: list[str] = []
+    for key in Config.path_typed_keys():
+        if key.endswith("[]"):
+            elements = config.get(key[:-2])
+            if not isinstance(elements, list):
+                continue
+            for element in elements:
+                candidate = element.get("root") if isinstance(element, dict) else element
+                if isinstance(candidate, str) and candidate and not Path(candidate).is_absolute():
+                    found.append(key)
+                    break
+            continue
+        value = config.get(key)
+        if isinstance(value, str) and value and not Path(value).is_absolute():
+            found.append(key)
+    return found
+
+
+def _warn_if_project_root_diverges(config: Config) -> None:
+    """PROTOCOL_SPEC §9.2.2 requirement 2 — the *narrow* deprecation warning.
+
+    Fires only when both hold: the project root differs from the process CWD,
+    **and** at least one path-typed value is relative. A blanket warning is
+    explicitly not wanted — it would fire for every tier 2-5 project, where
+    nothing changes at v2.0, and train operators to ignore the one warning that
+    does matter.
+    """
+    project_root = config.project_root
+    cwd = _cwd()
+    if project_root == cwd:
+        return
+
+    relative_keys = _relative_path_typed_keys(config)
+    if not relative_keys:
+        return
+
+    warnings.warn(
+        f"apcore#113 (PROTOCOL_SPEC §9.2.2): project root {project_root!r} differs from the "
+        f"working directory {cwd!r}, and these path-typed keys hold relative values: "
+        f"{', '.join(relative_keys)}. Through 1.x they keep resolving as they do today "
+        "(against the working directory, except acl.root which already resolves against the "
+        "config file's directory). From 2.0 every relative path-typed value resolves against "
+        "the project root, so these will point somewhere else. Make them absolute, or run "
+        "from the project root, to pin today's behaviour. Nothing has changed in this release.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 class Config:
@@ -820,6 +935,14 @@ class Config:
         # overwrite this with the parsed file data.
         self._declared: dict[str, Any] = copy.deepcopy(self._data)
         self._yaml_path: str | None = None
+        # PROTOCOL_SPEC §9.2.2: one project root per Config, determined once.
+        # A Config built from an in-memory mapping has no backing file, so the
+        # root is CWD; ``load()`` overwrites both fields once the §9.14 tier is
+        # known. Captured eagerly rather than read at each access because §9.2.2
+        # clause 4 exists to stop a chdir() between load and consumption leaving
+        # two consumers of one Config looking at two directories.
+        self._config_file_tier: int | None = None
+        self._project_root: str = _cwd()
         self._lock = threading.Lock()
         self._mode: str = "legacy"
         self._mounts: dict[str, dict[str, Any]] = {}
@@ -1024,11 +1147,36 @@ class Config:
             ConfigNotFoundError: If the file does not exist.
             ConfigError: If the YAML is invalid or validation fails.
         """
+        tier: int | None
         if yaml_path is None:
-            yaml_path = discover_config_file()
+            yaml_path, tier = _discover_config_file_with_tier()
             if yaml_path is None:
+                # No configuration file at all -> project root is CWD (§9.2.2).
+                # ``from_defaults()`` already set that in ``__init__``.
                 return cls.from_defaults()
+        else:
+            # A path handed in by the caller is tier-1 shaped: the config file
+            # was pointed at explicitly, from an arbitrary location, exactly as
+            # ``$APCORE_CONFIG_FILE`` does it. Its directory is the project root.
+            tier = _TIER_ENV_CONFIG_FILE
 
+        config = cls._load_document(yaml_path, validate=validate)
+        config._config_file_tier = tier
+        config._project_root = _project_root_for(config._yaml_path, tier)
+        _warn_if_project_root_diverges(config)
+        return config
+
+    @classmethod
+    def _load_document(cls, yaml_path: str, *, validate: bool) -> Config:
+        """Parse and merge one config file, without deciding a project root.
+
+        Split out of :meth:`load` so that :meth:`reload` can re-read the same
+        document without re-deriving the §9.14 tier. Reload passes an explicit
+        path, which :meth:`load` would read as tier 1 — moving the project root
+        of a config that had been discovered at tier 6-7 onto the user-level
+        directory, and emitting §9.2.2's deprecation warning for a config the
+        warning is not about.
+        """
         path = Path(yaml_path)
         if not path.is_file():
             raise ConfigNotFoundError(config_path=str(path))
@@ -1264,6 +1412,39 @@ class Config:
         """
         with self._lock:
             return self._yaml_path
+
+    @property
+    def project_root(self) -> str:
+        """Return this config's project root (PROTOCOL_SPEC §9.2.2), absolute.
+
+        The directory containing the configuration file when that file was
+        selected by §9.14 discovery tiers 1-5 — ``$APCORE_CONFIG_FILE``, a path
+        passed to :meth:`load`, or a project-local
+        ``./project.yaml|.yml|apcore.yaml|.yml``. The process working directory
+        when the file came from the user-level tiers 6-7
+        (``~/.config/apcore/config.yaml``, ``~/.apcore/config.yaml``), when no
+        file was found, or when the ``Config`` was built from an in-memory
+        mapping. The tier is what selects the base: in tiers 2-5 the file's
+        directory *is* CWD, in tier 1 it is the better answer, and in tiers 6-7
+        it is the wrong one, since a user-level config is shared by every project
+        its owner runs.
+
+        Determined once, when the config is loaded, and never re-read from the
+        process afterwards — a ``chdir()`` between load and consumption would
+        otherwise leave two consumers of one ``Config`` looking at two
+        directories (§9.2.2 clause 4).
+
+        **This accessor carries no resolution behaviour.** Through the whole 1.x
+        line it is purely informational: ``ACL.discover`` still anchors
+        ``acl.root`` at ``source_path``'s directory, and ``SchemaLoader``,
+        ``Registry`` and ``BindingLoader`` still resolve their roots against the
+        working directory. §9.2.2's requirement 3 forbids adopting the target
+        semantics before 2.0; this exists so an application, a CLI, or a
+        conformance driver can ask what the base *will* be before anything
+        depends on it.
+        """
+        with self._lock:
+            return self._project_root
 
     # ------------------------------------------------------------------
     # Namespace-mode instance methods
@@ -1507,7 +1688,13 @@ class Config:
                 raise ConfigError(message="Cannot reload: Config was not loaded from a YAML file")
             stored_mounts = copy.deepcopy(self._mounts)
 
-        reloaded = Config.load(yaml_path, validate=self._validate_on_load)
+        # ``_load_document``, not ``load``: the project root belongs to how this
+        # config file was *found*, which reload does not redo (§9.2.2 — the root
+        # is determined once, at load). Going through ``load()`` here would read
+        # the stored path as tier 1 and re-root a tier 6-7 config onto the
+        # user-level directory. ``_project_root`` and ``_config_file_tier`` are
+        # deliberately left untouched below for the same reason.
+        reloaded = Config._load_document(yaml_path, validate=self._validate_on_load)
 
         with self._lock:
             self._data = reloaded._data
