@@ -285,7 +285,19 @@ class BindingLoader:
 
         p = pathlib.Path(resolved_dir)
         if not p.is_dir():
-            raise BindingFileInvalidError(file_path=resolved_dir, reason="Directory does not exist")
+            # PROTOCOL_SPEC §5.12.6 clause 5: a resolved directory that does not
+            # exist is an error naming that directory, never an empty result.
+            # It holds for all three provenances — the explicit argument, the
+            # `bindings.dir` chain, and the `./bindings` default — because the
+            # check sits after resolution and cannot see which tier won.
+            # Contrast ACL.discover (D-64), where discovery is automatic and a
+            # missing `acl.root` attaches nothing: loading bindings is an action
+            # the application takes, so a directory that is not there is a
+            # mistake rather than the ordinary case.
+            raise BindingFileInvalidError(
+                file_path=resolved_dir,
+                reason="Resolved binding directory does not exist",
+            )
 
         results: list[FunctionModule] = []
         for f in sorted(p.glob(resolved_pattern)):

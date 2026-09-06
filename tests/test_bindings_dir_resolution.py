@@ -157,6 +157,108 @@ class TestBindingsDirFromConfig:
         assert str(tmp_path / "absent") in str(exc.value)
 
 
+class TestMissingResolvedDirRaisesForEveryProvenance:
+    """§5.12.6 clause 5, on all three provenances the clause names.
+
+    "This holds whether the directory came from an explicit argument, from
+    ``bindings.dir``, or from the ``./bindings`` default." A test that covered
+    only the configured directory would pass an implementation that checked for
+    existence inside the config branch alone — and the default branch is the one
+    that fires for a project which never configured anything, which is exactly
+    the population that would otherwise get a silent empty result.
+
+    The message MUST name the *resolved* directory, so each case asserts the
+    directory the loader worked out rather than the input it was handed.
+    """
+
+    def test_explicit_argument(self, loader: BindingLoader, registry: Registry, tmp_path: Path) -> None:
+        absent = tmp_path / "absent_argument"
+
+        with pytest.raises(BindingFileInvalidError) as exc:
+            loader.load_binding_dir(str(absent), registry)
+
+        assert str(absent) in str(exc.value)
+        assert exc.value.code == "BINDING_FILE_INVALID"
+
+    def test_bindings_dir_from_the_config_file(
+        self,
+        loader: BindingLoader,
+        registry: Registry,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        config = Config.load(str(_write_config(tmp_path, {"dir": "./absent_from_file"})), validate=False)
+
+        with pytest.raises(BindingFileInvalidError) as exc:
+            loader.load_binding_dir(registry=registry, config=config)
+
+        # The value as resolved, which is what clause 5 asks the message to name.
+        assert "./absent_from_file" in str(exc.value)
+        assert exc.value.code == "BINDING_FILE_INVALID"
+
+    def test_bindings_dir_from_the_environment(
+        self,
+        loader: BindingLoader,
+        registry: Registry,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("APCORE_BINDINGS_DIR", "./absent_from_env")
+        config = Config.load(str(_write_config(tmp_path, {"dir": "./absent_from_file"})), validate=False)
+
+        with pytest.raises(BindingFileInvalidError) as exc:
+            loader.load_binding_dir(registry=registry, config=config)
+
+        assert "./absent_from_env" in str(exc.value)
+        assert "./absent_from_file" not in str(exc.value), (
+            "the message named the file tier, so the env tier never reached the loader"
+        )
+
+    def test_the_bindings_default(
+        self,
+        loader: BindingLoader,
+        registry: Registry,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Nothing configured, no ``./bindings`` on disk: still an error.
+
+        The population that would otherwise silently get an empty result.
+        """
+        monkeypatch.chdir(tmp_path)
+        assert not (tmp_path / "bindings").exists()
+
+        with pytest.raises(BindingFileInvalidError) as exc:
+            loader.load_binding_dir(registry=registry)
+
+        assert Config.get_default("bindings.dir") in str(exc.value)
+        assert exc.value.code == "BINDING_FILE_INVALID"
+
+    def test_the_bindings_default_reached_through_a_config(
+        self,
+        loader: BindingLoader,
+        registry: Registry,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The same default, now arriving through ``Config`` rather than the loader.
+
+        Since spec v1.36.0 there are two routes to ``./bindings`` — the merged
+        default table and the loader's own last tier — and clause 5 has to hold
+        on both.
+        """
+        monkeypatch.chdir(tmp_path)
+        config = Config.load(str(_write_config(tmp_path, None)), validate=False)
+        assert config.get("bindings.dir") == "./bindings"
+
+        with pytest.raises(BindingFileInvalidError) as exc:
+            loader.load_binding_dir(registry=registry, config=config)
+
+        assert "./bindings" in str(exc.value)
+
+
 class TestBindingsPatternFromConfig:
     """§5.12.6 clause 1 — ``bindings.pattern`` travels the same chain."""
 
