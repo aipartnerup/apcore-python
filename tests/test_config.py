@@ -671,3 +671,177 @@ class TestPathTypedConfigKeys:
                 "extensions.roots",
                 "bindings.dir",
             }, base
+
+
+class TestEmptyPathTypedValueIsDiscarded:
+    """PROTOCOL_SPEC §9.2.1 requirement 5 — an empty string is not a path.
+
+    §9.2 treats a *set but empty* ``APCORE_*`` variable as an override like any
+    other, so ``export APCORE_ACL_ROOT=`` used to blank a directory the
+    configuration file correctly declared — and because ``""`` is a legal
+    relative path to the filesystem API, resolution then landed on the working
+    directory rather than failing. Requirement 5 discards the empty value and
+    falls through to the next tier, as if the variable had not been set.
+
+    **What makes these discriminating.** Every case declares a *different*
+    value at the tier below, so "fell through" and "was blanked" are two
+    distinguishable answers rather than one absent one. A case whose lower tier
+    held nothing would pass on an implementation that simply deleted the key.
+    """
+
+    SCALAR_KEYS = ("acl.root", "bindings.dir", "extensions.root", "schema.root")
+
+    ENV_VAR = {
+        "acl.root": "APCORE_ACL_ROOT",
+        "bindings.dir": "APCORE_BINDINGS_DIR",
+        "extensions.root": "APCORE_EXTENSIONS_ROOT",
+        "schema.root": "APCORE_SCHEMA_ROOT",
+    }
+
+    @staticmethod
+    @pytest.fixture(autouse=True)
+    def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+        import os as _os
+
+        for name in [n for n in _os.environ if n.startswith("APCORE_")]:
+            monkeypatch.delenv(name, raising=False)
+
+    @staticmethod
+    def _write(tmp_path: Path, document: dict[str, Any]) -> str:
+        document = {"version": "1.0", "project": {"name": "empty-path"}, **document}
+        path = tmp_path / "apcore.yaml"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return str(path)
+
+    @pytest.mark.parametrize("key", SCALAR_KEYS)
+    def test_empty_env_var_falls_through_to_the_file_value(
+        self, key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tier below the variable is the configuration file, and it wins."""
+        section, leaf = key.split(".")
+        declared = f"./declared_{leaf}"
+        config_path = self._write(tmp_path, {section: {leaf: declared}})
+
+        monkeypatch.setenv(self.ENV_VAR[key], "")
+        config = Config.load(config_path, validate=False)
+
+        assert config.get(key) == declared
+
+    @pytest.mark.parametrize("key", SCALAR_KEYS)
+    def test_empty_env_var_falls_through_to_the_default(
+        self, key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With nothing declared, the tier below the variable is ``_DEFAULTS``."""
+        config_path = self._write(tmp_path, {})
+
+        monkeypatch.setenv(self.ENV_VAR[key], "")
+        config = Config.load(config_path, validate=False)
+
+        assert config.get(key) == Config.get_default(key)
+        assert config.get(key) != ""
+
+    @pytest.mark.parametrize("key", SCALAR_KEYS)
+    def test_empty_env_var_is_absent_from_the_declared_document(
+        self, key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "As if the variable had been unset" reaches ``declared`` too.
+
+        §9.1 counts an env override as a declaration, so a variable that was
+        *not* discarded would show up here — and would then satisfy a required
+        field with the empty string.
+        """
+        config_path = self._write(tmp_path, {})
+
+        monkeypatch.setenv(self.ENV_VAR[key], "")
+        config = Config.load(config_path, validate=False)
+
+        section, leaf = key.split(".")
+        assert leaf not in config.declared.get(section, {})
+
+    @pytest.mark.parametrize("key", SCALAR_KEYS)
+    def test_empty_env_var_does_not_resolve_to_the_working_directory(
+        self, key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The failure requirement 5 names: ``""`` resolving to CWD.
+
+        Stated as its own assertion because it is the *consequence* operators
+        actually meet — an unguarded implementation does not report an error, it
+        silently scans the directory the process happens to be sitting in.
+        """
+        config_path = self._write(tmp_path, {})
+        monkeypatch.chdir(tmp_path)
+
+        monkeypatch.setenv(self.ENV_VAR[key], "")
+        config = Config.load(config_path, validate=False)
+
+        assert Path(str(config.get(key))).resolve() != Path.cwd().resolve()
+
+    @pytest.mark.parametrize("key", SCALAR_KEYS)
+    def test_empty_value_in_the_file_falls_through_to_the_default(self, key: str, tmp_path: Path) -> None:
+        """Requirement 5 is about the value, not only about the variable."""
+        section, leaf = key.split(".")
+        config_path = self._write(tmp_path, {section: {leaf: ""}})
+
+        config = Config.load(config_path, validate=False)
+
+        assert config.get(key) == Config.get_default(key)
+
+    @pytest.mark.parametrize("key", SCALAR_KEYS)
+    def test_a_non_empty_env_var_still_overrides(
+        self, key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard is one value wide: ordinary §9.2 override behaviour is intact.
+
+        Without this, "discard the empty string" and "ignore the variable
+        entirely" are the same test result.
+        """
+        section, leaf = key.split(".")
+        config_path = self._write(tmp_path, {section: {leaf: "./declared"}})
+
+        monkeypatch.setenv(self.ENV_VAR[key], "./from_env")
+        config = Config.load(config_path, validate=False)
+
+        assert config.get(key) == "./from_env"
+
+    def test_a_non_path_typed_key_may_still_be_set_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Requirement 5 covers the path-typed set and nothing else.
+
+        ``bindings.pattern`` sits in the same section as ``bindings.dir`` and is
+        deliberately NOT path-typed (§9.2.1 requirement 4), so an implementation
+        that guards by section rather than by the declared set fails here.
+        """
+        config_path = self._write(tmp_path, {})
+
+        monkeypatch.setenv("APCORE_BINDINGS_PATTERN", "")
+        monkeypatch.setenv("APCORE_SCHEMA_STRATEGY", "")
+        config = Config.load(config_path, validate=False)
+
+        assert config.get("bindings.pattern") == ""
+        assert config.get("schema.strategy") == ""
+
+    def test_empty_extensions_roots_elements_are_dropped(self, tmp_path: Path) -> None:
+        """``extensions.roots[]`` is path-typed in both element forms.
+
+        A list element has no tier to fall through to, so the available form of
+        "MUST NOT use it as a directory" is to drop it. The non-empty siblings —
+        one of each element form — must survive, or this passes on an
+        implementation that discards the whole key.
+        """
+        config_path = self._write(
+            tmp_path,
+            {"extensions": {"roots": ["./kept", "", {"root": "", "namespace": "blank"}, {"root": "./also_kept"}]}},
+        )
+
+        config = Config.load(config_path, validate=False)
+
+        assert config.get("extensions.roots") == ["./kept", {"root": "./also_kept"}]
+
+    def test_the_guard_covers_every_scalar_path_typed_key(self) -> None:
+        """The parametrisation above is the full §9.2.1 set, not a sample.
+
+        A key added to ``path_typed_keys()`` without a case here is a silent
+        gap: the fix would then cover four keys out of five and the suite would
+        stay green.
+        """
+        scalar = {key for key in Config.path_typed_keys() if not key.endswith("[]")}
+        assert scalar == set(self.SCALAR_KEYS)

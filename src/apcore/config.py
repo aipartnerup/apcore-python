@@ -246,6 +246,14 @@ _PATH_TYPED_CONFIG_KEYS: tuple[str, ...] = (
     "schema.root",
 )
 
+#: The path-typed keys that resolve through §9.2's *scalar* precedence chain
+#: (environment > file > default). ``extensions.roots[]`` is excluded because it
+#: is list-valued and §9.2.1 requirement 3 gives it no environment tier at all;
+#: its elements are guarded separately by :func:`_discard_empty_path_values`.
+_SCALAR_PATH_TYPED_CONFIG_KEYS: frozenset[str] = frozenset(
+    key for key in _PATH_TYPED_CONFIG_KEYS if not key.endswith("[]")
+)
+
 _FRAMEWORK_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         "$schema",
@@ -430,8 +438,81 @@ def _set_nested(data: dict[str, Any], dot_path: str, value: Any) -> None:
     current[parts[-1]] = value
 
 
+def _is_empty_path_value(value: Any) -> bool:
+    """PROTOCOL_SPEC §9.2.1 requirement 5 — "an empty string is not a path".
+
+    Exactly the empty string, not whitespace and not a falsy value of some other
+    type. Requirement 5 names ``""`` and nothing else, and a guard that widened
+    the test would start discarding values §9.2.1 says nothing about.
+    """
+    return isinstance(value, str) and value == ""
+
+
+def _discard_empty_path_values(data: dict[str, Any], *, tier: str) -> dict[str, Any]:
+    """Drop path-typed keys (§9.2.1) whose value in *data* is the empty string.
+
+    PROTOCOL_SPEC §9.2.1 requirement 5. §9.2 treats a *set but empty*
+    ``APCORE_*`` variable as an override like any other, so ``export
+    APCORE_ACL_ROOT=`` silently blanks a directory the configuration file
+    correctly declared — and ``""`` is a legal relative path to the filesystem
+    API, so it then resolves to the working directory rather than failing. The
+    empty value is discarded here and resolution falls through to the next tier
+    exactly as if nothing had been set.
+
+    *data* is the document for ONE tier, so removing the key is what "fall
+    through" means: the tier below it — the configuration file, then the
+    ``_DEFAULTS`` table — supplies the value instead. Applying this to an
+    already-merged document would leave the key absent altogether, which is a
+    different outcome and not the one requirement 5 asks for.
+
+    ``extensions.roots`` is list-valued, so an element cannot fall through to
+    anything; an empty element is dropped from the list, which is the same
+    "never use it as a directory" outcome available for a list.
+    """
+    for key in _SCALAR_PATH_TYPED_CONFIG_KEYS:
+        sentinel = object()
+        if not _is_empty_path_value(_get_nested(data, key, sentinel)):
+            continue
+        parts = key.split(".")
+        node: Any = data
+        for part in parts[:-1]:
+            node = node[part]
+        del node[parts[-1]]
+        _logger.warning(
+            "%s set path-typed config key %r to the empty string, which is not a path "
+            "(PROTOCOL_SPEC §9.2.1 requirement 5). Discarded; resolution falls through to "
+            "the next tier as if it had not been set.",
+            tier,
+            key,
+        )
+
+    roots = _get_nested(data, "extensions.roots", None)
+    if isinstance(roots, list):
+        kept = [
+            element
+            for element in roots
+            if not _is_empty_path_value(element.get("root") if isinstance(element, dict) else element)
+        ]
+        if len(kept) != len(roots):
+            _set_nested(data, "extensions.roots", kept)
+            _logger.warning(
+                "%s carried %d empty element(s) in path-typed config key 'extensions.roots[]', "
+                "which are not paths (PROTOCOL_SPEC §9.2.1 requirement 5). Discarded.",
+                tier,
+                len(roots) - len(kept),
+            )
+    return data
+
+
 def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
-    """Apply APCORE_* environment variable overrides and global mappings."""
+    """Apply APCORE_* environment variable overrides and global mappings.
+
+    A path-typed key (§9.2.1) whose variable is *set but empty* is skipped
+    rather than written: requirement 5 makes such a value no override at all, so
+    whatever *data* already carries — the configuration file's value, or the
+    default — stands. See :func:`_discard_empty_path_values` for why the guard
+    belongs at the tier rather than on the merged document.
+    """
     result = copy.deepcopy(data)  # deep copy to protect shared defaults
     for env_key, env_value in os.environ.items():
         coerced = _coerce_env_value(env_value)
@@ -454,6 +535,18 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
             continue
         # Convert: single _ → . (separator), double __ → literal _
         dot_path = suffix.lower().replace("__", "\x00").replace("_", ".").replace("\x00", "_")
+        # §9.2.1 requirement 5: an empty string is not a path. The variable is
+        # set, so §9.2 would call it an override; discarding it here is what
+        # makes resolution fall through to the tier below instead of blanking a
+        # directory the configuration file declared.
+        if dot_path in _SCALAR_PATH_TYPED_CONFIG_KEYS and _is_empty_path_value(coerced):
+            _logger.warning(
+                "%s is set but empty; %r is path-typed and an empty string is not a path "
+                "(PROTOCOL_SPEC §9.2.1 requirement 5). Ignoring the override.",
+                env_key,
+                dot_path,
+            )
+            continue
         _set_nested(result, dot_path, coerced)
     return result
 
@@ -1229,6 +1322,11 @@ class Config:
         # first-class deployment shape. §9.3 step 1 evaluates requiredness
         # against this, not against ``merged``, where every key is present by
         # construction.
+        # §9.2.1 requirement 5, applied to the FILE tier: a path-typed key
+        # written as "" in the document is discarded so the default table below
+        # it supplies the value, exactly as the env tier's guard in
+        # ``_apply_env_overrides`` does for a set-but-empty variable.
+        file_data = _discard_empty_path_values(copy.deepcopy(file_data), tier="the configuration file")
         declared = _apply_env_overrides(copy.deepcopy(file_data))
         merged = _deep_merge_dicts(_DEFAULTS, file_data)
         merged = _apply_env_overrides(merged)
@@ -1244,6 +1342,14 @@ class Config:
         """Load in namespace mode: namespace defaults < file < env overrides."""
         with _GLOBAL_NS_REGISTRY_LOCK:
             registrations = list(_GLOBAL_NS_REGISTRY.values())
+
+        # §9.2.1 requirement 5 at the file tier — see ``_load_legacy_mode``.
+        # The framework's own path-typed keys live under the ``apcore``
+        # namespace here, which is where ``_apply_env_overrides`` also reaches
+        # them below.
+        file_data = copy.deepcopy(file_data)
+        if isinstance(file_data.get("apcore"), dict):
+            file_data["apcore"] = _discard_empty_path_values(file_data["apcore"], tier="the configuration file")
 
         # Apply namespace defaults (lower priority than file data)
         merged = _apply_namespace_defaults(file_data, registrations)
