@@ -13,6 +13,7 @@ from typing import Any, Callable
 import yaml
 from pydantic import BaseModel, ConfigDict, create_model
 
+from apcore.config import Config
 from apcore.decorator import (
     FunctionModule,
     generate_input_model,
@@ -48,6 +49,24 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, type] = {
 _UNSUPPORTED_KEYS = {"oneOf", "anyOf", "allOf", "$ref", "format"}
 
 _SUPPORTED_SPEC_VERSIONS = {"1.0"}
+
+#: Last tier of the ``bindings.dir`` / ``bindings.pattern`` precedence chains
+#: (PROTOCOL_SPEC §5.12.6 clauses 1-2: explicit argument > ``APCORE_BINDINGS_*``
+#: env > config file > these).
+#:
+#: These live here rather than arriving through ``Config``'s default tier, and
+#: that is not an oversight. ``Config._DEFAULTS`` mirrors
+#: ``schemas/defaults.schema.json`` key for key — a correspondence
+#: ``tests/conformance/test_config_key_governance.py`` pins in both directions —
+#: and that file declares no ``bindings`` section at all. The canonical
+#: ``"./bindings"`` / ``"*.binding.yaml"`` defaults are declared only by
+#: ``BindingsConfig`` in ``schemas/apcore-config.schema.json``, which the Python
+#: SDK does not merge into the document. So ``config.get("bindings.dir")``
+#: answers ``None`` even for a fully loaded ``Config``, and the default has to be
+#: applied at the point of consumption. Adding a ``bindings`` section to
+#: ``_DEFAULTS`` instead would break the governance fixture, not fix this.
+_DEFAULT_BINDING_DIR = "./bindings"
+_DEFAULT_BINDING_PATTERN = "*.binding.yaml"
 
 _AUTO_SCHEMA_VALID_STRINGS = {"true", "permissive", "strict"}
 
@@ -197,17 +216,77 @@ class BindingLoader:
 
     def load_binding_dir(
         self,
-        dir_path: str,
-        registry: Registry,
-        pattern: str = "*.binding.yaml",
+        dir_path: str | None = None,
+        registry: Registry | None = None,
+        pattern: str | None = None,
+        *,
+        config: Config | None = None,
     ) -> list[FunctionModule]:
-        """Load all binding files matching pattern in directory."""
-        p = pathlib.Path(dir_path)
+        """Load all binding files matching ``pattern`` in a directory.
+
+        PROTOCOL_SPEC §5.12.6 (apcore#114). The scan directory resolves as::
+
+            explicit ``dir_path`` > ``config.get("bindings.dir")`` > "./bindings"
+
+        and ``pattern`` follows the same chain against ``bindings.pattern`` with
+        the default ``"*.binding.yaml"``. The environment tier
+        (``APCORE_BINDINGS_DIR`` / ``APCORE_BINDINGS_PATTERN``) is *not* read
+        here: §5.12.6 clause 2 forbids a loader-level ``os.environ`` read
+        precisely so that one precedence chain governs the key, and it already
+        arrives inside ``config`` through §9.2's ordinary ``APCORE_*`` override
+        pass.
+
+        Passing ``config`` is what makes an ``apcore.yaml`` that sets
+        ``bindings.dir`` take effect; before this, the key was registered in the
+        §9.1.1 key surface and read by nothing.
+
+        A relative directory is resolved against the process working directory,
+        which is the v1.x behaviour §9.2.2 records for path-typed keys. This
+        method does **not** consult ``config.project_root``; that base takes
+        effect at v2.0.
+
+        Nothing calls this during client or framework initialisation, and §5.12.6
+        clause 3 forbids adding such a call: loading bindings is an action the
+        application takes, never an implicit startup scan.
+
+        Args:
+            dir_path: Directory to scan. When ``None``, resolved from config.
+            registry: Registry the loaded modules are registered into. Required;
+                it keeps its historical second-positional slot so that every
+                existing ``load_binding_dir(dir, registry)`` call is unchanged.
+            pattern: Glob matched against filenames within the directory. When
+                ``None``, resolved from config.
+            config: Configuration supplying ``bindings.dir`` /
+                ``bindings.pattern`` when the corresponding argument is omitted.
+
+        Raises:
+            TypeError: If ``registry`` is omitted.
+            BindingFileInvalidError: If the resolved directory does not exist.
+        """
+        if registry is None:
+            raise TypeError("load_binding_dir() missing required argument: 'registry'")
+
+        resolved_dir: Any = dir_path
+        if resolved_dir is None and config is not None:
+            resolved_dir = config.get("bindings.dir")
+        if resolved_dir is None:
+            resolved_dir = _DEFAULT_BINDING_DIR
+
+        resolved_pattern: Any = pattern
+        if resolved_pattern is None and config is not None:
+            resolved_pattern = config.get("bindings.pattern")
+        if resolved_pattern is None:
+            resolved_pattern = _DEFAULT_BINDING_PATTERN
+
+        resolved_dir = str(resolved_dir)
+        resolved_pattern = str(resolved_pattern)
+
+        p = pathlib.Path(resolved_dir)
         if not p.is_dir():
-            raise BindingFileInvalidError(file_path=dir_path, reason="Directory does not exist")
+            raise BindingFileInvalidError(file_path=resolved_dir, reason="Directory does not exist")
 
         results: list[FunctionModule] = []
-        for f in sorted(p.glob(pattern)):
+        for f in sorted(p.glob(resolved_pattern)):
             results.extend(self.load_bindings(str(f), registry))
         return results
 
